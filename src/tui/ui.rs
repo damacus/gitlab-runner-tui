@@ -18,12 +18,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Header
     let title = if app.is_loading {
-        format!(
-            "IGOR - Interactive GitLab Object Retriever {} Loading...",
-            app.spinner_char()
-        )
+        format!("GitLab Runner TUI {} Loading...", app.spinner_char())
     } else {
-        "IGOR - Interactive GitLab Object Retriever".to_string()
+        "GitLab Runner TUI".to_string()
     };
     let title = Paragraph::new(title).block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, chunks[0]);
@@ -372,7 +369,7 @@ fn render_runners_table_in_area(app: &mut App, frame: &mut Frame, area: ratatui:
 
 fn render_help_view(_app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
     let help_text = vec![
-        "IGOR Help",
+        "GitLab Runner TUI - Help",
         "---------",
         "",
         "Navigation:",

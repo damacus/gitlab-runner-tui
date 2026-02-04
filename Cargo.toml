@@ -1,5 +1,5 @@
 [package]
-name = "igor"
+name = "gitlab-runner-tui"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,7 +10,10 @@ crossterm = { version = "0.27", features = ["event-stream"] }
 
 # Async & HTTP
 tokio = { version = "1.36", features = ["full"] }
-reqwest = { version = "0.11", features = ["json", "native-tls"] }
+reqwest = { version = "0.11", features = [
+	"json",
+	"rustls-tls-native-roots",
+], default-features = false }
 futures = "0.3"
 
 # Serialization
