@@ -49,7 +49,7 @@ jobs:
 
       - name: Install cross-compilation tools
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --locked
 
       - name: Build with cargo
         if: ${{ !matrix.use_cross }}
