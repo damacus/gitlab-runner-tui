@@ -1,0 +1,1885 @@
+# Interactive GitLab Object Retriever (IGOR) - Complete Specification
+
+## Executive Summary
+
+This document provides a comprehensive specification for recreating the **Interactive GitLab Object Retriever (IGOR)**, a Terminal User Interface (TUI) application that queries the GitLab API to retrieve and display information about GitLab Runners, Runner Managers, and Users.
+
+**Target Audience**: Large Language Models (LLMs) tasked with implementing this application from scratch.
+
+**Target GitLab Instance**: Configurable (GitLab.com or self-hosted)
+
+**Supported Implementation Languages**:
+- Rust with [ratatui](https://ratatui.rs/)
+
+**Methodology**:
+- Test-Driven Development (TDD)
+
+**Delivery Format**:
+- Single statically-linked binary executable
+- OR Docker container image published to:
+  - GitHub Container Registry (ghcr.io)
+  - Docker Hub
+
+---
+
+## Table of Contents
+
+1. [Application Overview](#application-overview)
+2. [Architecture](#architecture)
+3. [Data Models](#data-models)
+4. [GitLab API Integration](#gitlab-api-integration)
+5. [Core Business Logic](#core-business-logic)
+6. [Terminal User Interface (TUI)](#terminal-user-interface-tui)
+7. [Commands and Filters](#commands-and-filters)
+8. [Configuration and Environment](#configuration-and-environment)
+9. [Error Handling](#error-handling)
+10. [Testing Requirements](#testing-requirements)
+11. [Build and Deployment](#build-and-deployment)
+12. [Language-Specific Implementation Guides](#language-specific-implementation-guides)
+
+---
+
+## 1. Application Overview
+
+### 1.1 Purpose
+
+IGOR is a command-line tool that provides an interactive, visually appealing interface for querying GitLab's API. It is designed to help DevOps engineers, SREs, and GitLab administrators quickly inspect the state of GitLab Runners across their infrastructure.
+
+### 1.2 Key Features
+
+- **Interactive TUI**: Beautiful, keyboard-driven interface with color highlighting
+- **Multiple Query Commands**: Seven distinct commands for different runner/user queries
+- **Flexible Filtering**: Filter runners by tags, status, version, type, and pause state
+- **Real-time API Queries**: Direct integration with GitLab REST API v4
+- **Detailed Results**: Tabular display of runner and manager information
+- **No Prior Knowledge Required**: Guided interface helps users discover available options
+- **Proxy Support**: Automatic detection of HTTP/HTTPS proxy settings
+- **SSL Flexibility**: Support for self-signed certificates
+
+### 1.3 User Workflow
+
+1. **Launch Application**: User runs the `igor` binary
+2. **Command Selection**: TUI displays available commands; user navigates and selects
+3. **Filter Configuration**: User optionally configures filters (tags, status, version, etc.)
+4. **Execute Query**: Application queries GitLab API
+5. **Display Results**: Results shown in formatted table
+6. **Iterate or Exit**: User can run another query or exit
+
+---
+
+## 2. Architecture
+
+### 2.1 High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         IGOR Application                     │
+│                                                               │
+│  ┌────────────┐    ┌──────────────┐    ┌─────────────────┐ │
+│  │    TUI     │───▶│  Conductor   │───▶│  GitLab Client  │ │
+│  │  (View)    │    │  (Business)  │    │  (API Client)   │ │
+│  └────────────┘    └──────────────┘    └─────────────────┘ │
+│        │                   │                      │          │
+│        │                   │                      │          │
+│        ▼                   ▼                      ▼          │
+│  ┌────────────┐    ┌──────────────┐    ┌─────────────────┐ │
+│  │  User      │    │    Models    │    │   HTTP Client   │ │
+│  │  Input     │    │  (Data)      │    │   (reqwest/etc) │ │
+│  └────────────┘    └──────────────┘    └─────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌────────────────────────┐
+                    │  GitLab API v4 Instance│
+                    │  (e.g., gitlab.com)    │
+                    └────────────────────────┘
+```
+
+### 2.2 Component Responsibilities
+
+#### 2.2.1 TUI Layer (View)
+- **Responsibility**: User interface, event handling, rendering
+- **Input**: Keyboard events
+- **Output**: Rendered terminal screens
+- **State Management**: Current mode, selected command, filter inputs, results display
+- **No Business Logic**: Pure presentation layer
+
+#### 2.2.2 Conductor Layer (Business Logic)
+- **Responsibility**: Orchestrate operations, apply business rules, format results
+- **Input**: User requests with filters
+- **Output**: Processed data ready for display
+- **Functions**:
+  - Validate filter combinations
+  - Orchestrate multi-step operations (e.g., fetch runners + their managers)
+  - Apply client-side filtering
+  - Sort and organize results
+
+#### 2.2.3 GitLab Client Layer (Data Access)
+- **Responsibility**: All HTTP communication with GitLab API
+- **Input**: API endpoints, query parameters, authentication tokens
+- **Output**: Parsed JSON responses as data models
+- **Functions**:
+  - Construct API URLs
+  - Add authentication headers
+  - Handle pagination (if needed)
+  - Parse JSON responses
+  - Retry logic for transient failures
+  - Respect rate limits
+
+#### 2.2.4 Models Layer (Data)
+- **Responsibility**: Data structures and serialization
+- **Input**: JSON from API
+- **Output**: Typed data structures
+- **Functions**:
+  - Define all data structures
+  - Implement JSON deserialization
+  - Provide filtering logic
+  - Validation rules
+
+---
+
+## 3. Data Models
+
+### 3.1 Runner Model
+
+Represents a GitLab Runner instance.
+
+**Fields**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | Integer | Yes | Unique runner ID |
+| `runner_type` | String | Yes | Type: `instance_type`, `group_type`, `project_type` |
+| `active` | Boolean | Yes | Whether runner is active |
+| `paused` | Boolean | Yes | Whether runner is paused (not accepting jobs) |
+| `description` | String | No | Human-readable description |
+| `created_at` | DateTime | No | When runner was created |
+| `ip_address` | String | No | IP address of runner |
+| `is_shared` | Boolean | Yes | Whether runner is shared |
+| `status` | String | Yes | Status: `online`, `offline`, `stale`, `never_contacted` |
+| `version` | String | No | GitLab Runner version (e.g., "17.0.0") |
+| `revision` | String | No | Git revision of runner binary |
+| `tag_list` | Array[String] | Yes | List of tags (e.g., ["alm", "dps", "production"]) |
+| `managers` | Array[RunnerManager] | Yes | List of runner managers (may be empty) |
+
+**Example JSON**:
+```json
+{
+  "id": 12345,
+  "runner_type": "group_type",
+  "active": true,
+  "paused": false,
+  "description": "Production ALM Runner",
+  "created_at": "2024-01-15T10:30:00.000Z",
+  "ip_address": "10.0.1.50",
+  "is_shared": false,
+  "status": "online",
+  "version": "17.5.0",
+  "revision": "abc123def",
+  "tag_list": ["alm", "production", "linux"],
+  "managers": []
+}
+```
+
+### 3.2 RunnerManager Model
+
+Represents a Runner Manager (a process managing a runner).
+
+**Fields**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | Integer | Yes | Unique manager ID |
+| `system_id` | String | Yes | System identifier (hostname/container ID) |
+| `created_at` | DateTime | Yes | When manager was created |
+| `contacted_at` | DateTime | No | Last contact time (null if never contacted) |
+| `ip_address` | String | No | IP address of manager |
+| `status` | String | Yes | Status: `online`, `offline`, `stale` |
+| `version` | String | No | Runner version on this manager |
+| `revision` | String | No | Git revision |
+
+**Example JSON**:
+```json
+{
+  "id": 67890,
+  "system_id": "runner-host-01",
+  "created_at": "2024-01-15T10:30:00.000Z",
+  "contacted_at": "2024-01-20T14:22:00.000Z",
+  "ip_address": "10.0.1.50",
+  "status": "online",
+  "version": "17.5.0",
+  "revision": "abc123def"
+}
+```
+
+### 3.3 User Model
+
+Represents a GitLab user.
+
+**Fields**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `username` | String | Yes | Unique username |
+| `name` | String | Yes | Full name |
+| `avatar_url` | String | No | URL to avatar image |
+| `bot` | Boolean | Yes | Whether user is a bot |
+| `can_create_group` | Boolean | Yes | User permission |
+| `can_create_project` | Boolean | Yes | User permission |
+| `last_sign_in_at` | DateTime | No | Last sign-in timestamp |
+| `locked` | Boolean | Yes | Whether account is locked |
+| `state` | String | Yes | User state: `active`, `blocked`, etc. |
+
+**Example JSON**:
+```json
+{
+  "username": "john.doe",
+  "name": "John Doe",
+  "avatar_url": "https://secure.gravatar.com/avatar/...",
+  "bot": false,
+  "can_create_group": true,
+  "can_create_project": true,
+  "last_sign_in_at": "2024-01-20T09:15:00.000Z",
+  "locked": false,
+  "state": "active"
+}
+```
+
+### 3.4 RunnerFilters Model
+
+Represents filter criteria for runner queries.
+
+**Fields**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `tag_list` | Array[String] | No | Filter by tags (OR logic: any tag matches) |
+| `status` | String | No | Filter by status: `online`, `offline`, `stale`, `never_contacted` |
+| `version_prefix` | String | No | Filter by version prefix (e.g., "17" matches "17.x.x") |
+| `runner_type` | String | No | Filter by type: `instance_type`, `group_type`, `project_type` |
+| `paused` | Boolean | No | Filter by pause state: `true` (paused only), `false` (active only) |
+
+**Filter Matching Logic**:
+- All filters are AND-ed together
+- `tag_list`: Runner must have at least one matching tag
+- `status`: Exact match
+- `version_prefix`: Runner version must start with prefix
+- `runner_type`: Exact match
+- `paused`: Exact match
+
+---
+
+## 4. GitLab API Integration
+
+### 4.1 Base Configuration
+
+**Base URL**: `${GITLAB_BASE_URL}/api/v4` (defaults to `https://gitlab.com/api/v4`)
+
+**Authentication**:
+- Method: Personal Access Token
+- Header: `PRIVATE-TOKEN: <token>`
+- Required Scopes: `api`, `read_api`
+
+### 4.2 API Endpoints
+
+#### 4.2.1 List All Runners
+
+**Endpoint**: `GET /runners/all`
+
+**Purpose**: Fetch all GitLab runners with optional filters
+
+**Query Parameters**:
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `order_by` | String | Sort field | `tag_list` |
+| `sort` | String | Sort direction | `desc`, `asc` |
+| `status` | String | Filter by status | `online`, `offline` |
+| `type` | String | Filter by type | `instance_type`, `group_type` |
+| `paused` | Boolean | Filter by pause state | `true`, `false` |
+| `per_page` | Integer | Results per page | `100` (max) |
+| `page` | Integer | Page number | `1`, `2`, ... |
+
+**Response**: Array of Runner objects (without managers)
+
+**Example Request**:
+```
+GET /api/v4/runners/all?order_by=tag_list&sort=desc&status=online&per_page=100
+Headers:
+  PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx
+```
+
+**Example Response**:
+```json
+[
+  {
+    "id": 12345,
+    "runner_type": "group_type",
+    "active": true,
+    "paused": false,
+    "description": "Production Runner",
+    "status": "online",
+    "tag_list": ["production", "linux"],
+    ...
+  },
+  ...
+]
+```
+
+#### 4.2.2 Get Runner Managers
+
+**Endpoint**: `GET /runners/{runner_id}/managers`
+
+**Purpose**: Fetch all managers for a specific runner
+
+**Path Parameters**:
+- `runner_id`: Integer, the runner ID
+
+**Response**: Array of RunnerManager objects
+
+**Example Request**:
+```
+GET /api/v4/runners/12345/managers
+Headers:
+  PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx
+```
+
+**Example Response**:
+```json
+[
+  {
+    "id": 67890,
+    "system_id": "runner-host-01",
+    "status": "online",
+    "contacted_at": "2024-01-20T14:22:00.000Z",
+    ...
+  }
+]
+```
+
+**Note**: This endpoint may return `404 Not Found` if the runner has no managers endpoint available. Treat this as an empty array.
+
+#### 4.2.3 List Users
+
+**Endpoint**: `GET /users`
+
+**Purpose**: Fetch GitLab users
+
+**Query Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `active` | Boolean | Filter by active users only |
+| `blocked` | Boolean | Filter by blocked users only |
+| `external` | Boolean | Filter by external users |
+| `per_page` | Integer | Results per page (max 100) |
+
+**Response**: Array of User objects
+
+**Example Request**:
+```
+GET /api/v4/users?active=true&per_page=100
+Headers:
+  PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx
+```
+
+### 4.3 Pagination
+
+GitLab API uses pagination for large result sets.
+
+**Response Headers**:
+- `x-total`: Total number of items
+- `x-total-pages`: Total number of pages
+- `x-per-page`: Items per page
+- `x-page`: Current page number
+- `x-next-page`: Next page number (empty if last page)
+
+**Implementation**:
+1. Use an asynchronous, stream-based or background-loading approach.
+2. Fetch the first page (`per_page=100`) and display it immediately.
+3. Continue fetching subsequent pages in the background or on-demand (scrolling).
+4. Provide visual feedback (e.g., "Loading more...") to the user during background fetches.
+5. This ensures "snappy" feedback even with large datasets.
+
+### 4.4 Rate Limiting
+
+GitLab.com rate limits:
+- **Authenticated requests**: 2000 requests per minute
+- **Response header**: `RateLimit-Remaining`
+
+**Implementation**:
+- Check `RateLimit-Remaining` header after each request
+- If low (< 10), implement exponential backoff
+- Handle `429 Too Many Requests` response with retry
+
+### 4.5 Error Handling
+
+**Common HTTP Status Codes**:
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| `200 OK` | Success | Parse response |
+| `401 Unauthorized` | Invalid token | Show error, exit |
+| `403 Forbidden` | Insufficient permissions | Show error, exit |
+| `404 Not Found` | Endpoint/resource missing | Handle gracefully (e.g., empty managers) |
+| `429 Too Many Requests` | Rate limited | Retry with backoff |
+| `500 Internal Server Error` | GitLab error | Retry up to 3 times |
+| `502/503/504` | Service unavailable | Retry with backoff |
+
+### 4.6 SSL/TLS Configuration
+
+**Default**: Verify SSL certificates
+
+**Self-Signed Certificates**:
+- Environment variable: `DISABLE_SSL_WARNINGS=true`
+- If set, disable certificate verification
+- Log warning to user
+
+**Proxy Support**:
+- Respect system environment variables:
+  - `HTTP_PROXY` / `http_proxy`
+  - `HTTPS_PROXY` / `https_proxy`
+  - `NO_PROXY` / `no_proxy`
+
+### 4.7 Timeout Configuration
+
+**Connection Timeout**: 10 seconds
+**Read Timeout**: 30 seconds
+**Total Request Timeout**: 60 seconds
+
+---
+
+## 5. Core Business Logic
+
+### 5.1 Conductor Operations
+
+The Conductor orchestrates all business operations. It should have the following methods:
+
+#### 5.1.1 `fetch_runners(filters: RunnerFilters) -> Vec<Runner>`
+
+**Purpose**: Fetch all runners matching filters, including their managers
+
+**Algorithm**:
+1. Call `client.get_runners(filters)` to get runners
+2. For each runner:
+   a. Call `client.get_runner_managers(runner.id)`
+   b. Attach managers to runner
+   c. Sort managers by `created_at` (most recent first)
+3. Return runners with managers attached
+
+**Client-Side Filtering**:
+Some filters (tags, version_prefix) cannot be applied via API and must be filtered client-side.
+
+#### 5.1.2 `list_runners_without_managers(filters: RunnerFilters) -> Vec<Runner>`
+
+**Purpose**: Find runners with empty managers list
+
+**Algorithm**:
+1. Fetch all runners with managers
+2. Filter: `runner.managers.is_empty()`
+3. Return filtered list
+
+#### 5.1.3 `check_runner_statuses(filters: RunnerFilters) -> (usize, usize)`
+
+**Purpose**: Count how many runners have online managers
+
+**Algorithm**:
+1. Fetch all runners with managers
+2. Count total: `runners.len()`
+3. Count online: runners where `!managers.is_empty()` AND `managers[0].status == "online"`
+4. Return `(online_count, total_count)`
+
+**Note**: Only check the first (most recent) manager
+
+#### 5.1.4 `list_offline_runners(filters: RunnerFilters) -> Vec<Runner>`
+
+**Purpose**: Find runners with no online managers
+
+**Algorithm**:
+1. Fetch all runners with managers
+2. Filter: runners where `!managers.is_empty()` AND `managers[0].status != "online"`
+3. Return filtered list
+
+#### 5.1.5 `list_uncontacted_runners(filters: RunnerFilters, time_threshold_secs: u64) -> Vec<Runner>`
+
+**Purpose**: Find runners not contacted within time threshold
+
+**Algorithm**:
+1. Fetch all runners with managers
+2. Calculate threshold: `current_time - time_threshold_secs`
+3. Filter runners where:
+   - `!managers.is_empty()` AND
+   - `managers[0].contacted_at.is_none()` OR `managers[0].contacted_at < threshold`
+4. Return filtered list
+
+**Default threshold**: 3600 seconds (1 hour)
+
+#### 5.1.6 `get_users(active_only: bool, humans_only: bool) -> Vec<User>`
+
+**Purpose**: Fetch GitLab users
+
+**Algorithm**:
+1. Build query parameters:
+   - If `active_only`: add `active=true`
+   - If `humans_only`: filter out users where `bot == true` (client-side)
+2. Call `client.get_users(params)`
+3. Apply client-side filters
+4. Return users
+
+### 5.2 Filter Application Strategy
+
+**API-Level Filters** (applied in HTTP request):
+- `status`
+- `runner_type` (as `type` parameter)
+- `paused`
+
+**Client-Level Filters** (applied after API response):
+- `tag_list`: GitLab API doesn't support tag filtering, so filter after fetching
+- `version_prefix`: API doesn't support version filtering
+
+**Implementation Note**: Fetch broader results from API, then narrow down client-side. This trades bandwidth for simplicity.
+
+### 5.3 Data Sorting
+
+**Default Sorting**:
+- Runners: Order by `tag_list` descending (API parameter)
+- Managers: Order by `created_at` descending (most recent first)
+- Users: Order by `name` ascending
+
+---
+
+## 6. Terminal User Interface (TUI)
+
+### 6.1 TUI Framework Selection
+
+Choose a TUI framework appropriate for your language:
+
+**Rust**: [ratatui](https://ratatui.rs/) (v0.27+)
+
+### 6.2 Application Modes
+
+The TUI operates in four modes:
+
+```
+┌──────────────────┐
+│ CommandSelection │ ◄────┐
+└────────┬─────────┘      │
+         │                │
+         ▼                │
+┌──────────────────┐      │
+│  FilterInput     │      │
+└────────┬─────────┘      │
+         │                │
+         ▼                │
+┌──────────────────┐      │
+│  ResultsView     │ ─────┘
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│      Help        │
+└──────────────────┘
+```
+
+#### 6.2.1 CommandSelection Mode
+
+**Purpose**: User selects a command to run
+
+**Display**:
+- Title: "Interactive GitLab Object Retriever (IGOR)"
+- List of commands with descriptions
+- Highlight selected command
+- Footer: Keyboard shortcuts
+
+**Commands**:
+1. **fetch**: Fetch GitLab Runner details
+2. **lights**: Check if all tagged runners are online
+3. **switch**: List runners with no online managers
+4. **workers**: Get list of Runner Managers
+5. **flames**: Get runners not contacted recently
+6. **empty**: Get runners with no managers
+7. **bodies**: Get details on GitLab users
+
+**Keyboard Controls**:
+- `↑` / `k`: Move up
+- `↓` / `j`: Move down
+- `Enter` / `Space`: Select command
+- `?`: Show help
+- `q` / `Esc`: Quit
+
+**Visual Layout**:
+```
+╔══════════════════════════════════════════════════════════╗
+║     Interactive GitLab Object Retriever (IGOR)           ║
+║                                                           ║
+║  Select a command:                                        ║
+║                                                           ║
+║  ▶ fetch    - Fetch GitLab Runner details                ║
+║    lights   - Check if all tagged runners are online     ║
+║    switch   - List runners with no online managers       ║
+║    workers  - Get list of Runner Managers                ║
+║    flames   - Get runners not contacted recently         ║
+║    empty    - Get runners with no managers               ║
+║    bodies   - Get details on GitLab users                ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║  ↑/↓: Navigate | Enter: Select | ?: Help | q: Quit       ║
+╚═══════════════════════════════════════════════════════════╝
+```
+
+#### 6.2.2 FilterInput Mode
+
+**Purpose**: User configures filters for the selected command
+
+**Display**:
+- Title: "Command: <command_name>"
+- Input fields for filters (depending on command)
+- Highlight active field
+- Footer: Keyboard shortcuts
+
+**Filter Fields** (command-dependent):
+
+| Command | Tags | Status | Version | Type | Paused | Time |
+|---------|------|--------|---------|------|--------|------|
+| fetch   | ✓    | ✓      | ✓       | ✓    | ✓      |      |
+| lights  | ✓    |        | ✓       | ✓    | ✓      |      |
+| switch  | ✓    |        | ✓       | ✓    | ✓      |      |
+| workers | ✓    | ✓      | ✓       | ✓    | ✓      |      |
+| flames  | ✓    |        |         |      |        | ✓    |
+| empty   | ✓    |        |         |      |        |      |
+| bodies  |      |        |         |      |        |      |
+
+**Keyboard Controls**:
+- `Tab` / `↓`: Next field
+- `Shift+Tab` / `↑`: Previous field
+- `a-z, 0-9, comma, etc.`: Type input
+- `Backspace`: Delete character
+- `Enter`: Execute command
+- `Esc`: Back to command selection
+
+**Visual Layout**:
+```
+╔══════════════════════════════════════════════════════════╗
+║     Command: fetch                                        ║
+║                                                           ║
+║  Configure filters (leave empty to skip):                 ║
+║                                                           ║
+║  Tag List (comma-separated):                              ║
+║  ▶ [alm,production                    ]                   ║
+║                                                           ║
+║  Status (online/offline/stale/never_contacted):           ║
+║    [                                  ]                   ║
+║                                                           ║
+║  Version Prefix (e.g., 17, 18.5):                         ║
+║    [                                  ]                   ║
+║                                                           ║
+║  Type (instance_type/group_type/project_type):            ║
+║    [                                  ]                   ║
+║                                                           ║
+║  Paused (true/false):                                     ║
+║    [                                  ]                   ║
+║                                                           ║
+╠═══════════════════════════════════════════════════════════╣
+║  Tab: Next Field | Enter: Execute | Esc: Back             ║
+╚═══════════════════════════════════════════════════════════╝
+```
+
+#### 6.2.3 ResultsView Mode
+
+**Purpose**: Display query results
+
+**Display**:
+- Title: "Results: <command_name>"
+- Table of results with headers
+- Scrollable if results exceed screen height
+- Summary (e.g., "Showing 25 of 150 runners")
+- Footer: Keyboard shortcuts
+
+**Table Columns** (command-dependent):
+
+**fetch / lights / switch / empty**:
+| Column | Description |
+|--------|-------------|
+| ID | Runner ID |
+| Type | instance_type, group_type, project_type |
+| Tags | Comma-separated tag list |
+| Version | Runner version |
+| Status | online, offline, stale, never_contacted |
+| Managers | Count of managers |
+| IP | IP address |
+
+**workers**:
+| Column | Description |
+|--------|-------------|
+| Runner ID | Runner ID |
+| Tags | Tag list |
+| Manager ID | Manager ID |
+| System ID | Manager system ID |
+| Status | Manager status |
+| Created | Manager created timestamp |
+| Contacted | Manager last contact timestamp |
+| IP | Manager IP address |
+
+**flames**:
+| Column | Description |
+|--------|-------------|
+| ID | Runner ID |
+| Tags | Tag list |
+| Last Contact | Manager last contact timestamp |
+| Status | Manager status |
+| Offline Duration | Time since last contact |
+
+**bodies**:
+| Column | Description |
+|--------|-------------|
+| Username | User username |
+| Name | Full name |
+| Bot | true/false |
+| Last Sign-In | Last sign-in timestamp |
+| Locked | true/false |
+| State | active, blocked, etc. |
+
+**Keyboard Controls**:
+- `↑` / `k`: Scroll up
+- `↓` / `j`: Scroll down
+- `PageUp` / `u`: Scroll up one page
+- `PageDown` / `d`: Scroll down one page
+- `Home` / `g`: Go to top
+- `End` / `G`: Go to bottom
+- `Enter` / `Space`: Run new query
+- `Esc` / `q`: Back to command selection
+
+**Visual Layout**:
+```
+╔══════════════════════════════════════════════════════════════════════╗
+║     Results: fetch                                                    ║
+║                                                                       ║
+║  ┌────────┬─────────┬───────────────┬─────────┬────────┬──────────┐ ║
+║  │ ID     │ Type    │ Tags          │ Version │ Status │ Managers │ ║
+║  ├────────┼─────────┼───────────────┼─────────┼────────┼──────────┤ ║
+║  │ 12345  │ group   │ alm,prod      │ 17.5.0  │ online │ 3        │ ║
+║  │ 12346  │ group   │ alm,staging   │ 17.5.0  │ online │ 2        │ ║
+║  │ 12347  │ instance│ platform      │ 17.4.0  │ stale  │ 1        │ ║
+║  │ ...    │ ...     │ ...           │ ...     │ ...    │ ...      │ ║
+║  └────────┴─────────┴───────────────┴─────────┴────────┴──────────┘ ║
+║                                                                       ║
+║  Showing 3 of 150 runners                                             ║
+║                                                                       ║
+╠═══════════════════════════════════════════════════════════════════════╣
+║  ↑/↓: Scroll | Enter: New Query | Esc: Back                          ║
+╚═══════════════════════════════════════════════════════════════════════╝
+```
+
+#### 6.2.4 Help Mode
+
+**Purpose**: Show keyboard shortcuts and usage help
+
+**Display**:
+- Title: "Help"
+- List of all keyboard shortcuts per mode
+- Description of each command
+- Footer: "Press any key to close"
+
+### 6.3 Color Scheme
+
+Use colors to enhance readability and user experience:
+
+**Theme**:
+- **Background**: Black or Dark Gray
+- **Title Bar**: Cyan/Bright Blue background, Black text
+- **Selected Item**: Yellow/Bright Yellow background, Black text
+- **Normal Text**: White/Light Gray
+- **Headers**: Bright White, Bold
+- **Borders**: Light Gray/Blue
+- **Status Indicators**:
+  - **Green**: online, active, success
+  - **Red**: offline, error
+  - **Yellow**: stale, warning
+  - **Gray**: never_contacted, unknown
+
+**Accessibility**: Ensure sufficient contrast for terminals with different color schemes.
+
+### 6.4 Loading Indicator
+
+When executing API queries:
+- Display "Loading..." message
+- Show spinner animation (rotating characters: `|`, `/`, `-`, `\`)
+- Prevent user input during loading
+- Timeout after 60 seconds with error message
+
+### 6.5 Error Display
+
+On error:
+- Show error in ResultsView mode
+- Display error message in red
+- Show actionable troubleshooting steps
+- Allow user to retry or go back
+
+**Example Error Messages**:
+```
+✗ Failed to connect to GitLab
+
+Error: Connection timeout
+
+Troubleshooting:
+1. Verify GITLAB_HOST is correct: (e.g., https://gitlab.com)
+2. Check network connectivity: ping <your-gitlab-host>
+3. Check proxy settings: HTTPS_PROXY=<your-proxy>
+4. Check firewall rules
+
+Press Enter to retry or Esc to go back
+```
+
+---
+
+## 7. Commands and Filters
+
+### 7.1 Command: fetch
+
+**Description**: Fetch GitLab Runner details
+
+**Purpose**: Retrieve comprehensive information about runners matching filters
+
+**Filters**:
+- `tag_list`: Comma-separated tags (e.g., "alm,production")
+- `status`: online, offline, stale, never_contacted
+- `version_prefix`: Version prefix (e.g., "17", "18.5")
+- `runner_type`: instance_type, group_type, project_type
+- `paused`: true (paused runners) or false (active runners)
+
+**Output Columns**:
+- ID, Type, Tags, Version, Status, Managers (count), IP
+
+**Algorithm**:
+1. Build filters from user input
+2. Call `conductor.fetch_runners(filters)`
+3. Display results in table
+
+### 7.2 Command: lights
+
+**Description**: Check if all tagged runners are online
+
+**Purpose**: Health check to verify all runners have online managers
+
+**Filters**:
+- `tag_list`
+- `version_prefix`
+- `runner_type`
+- `paused`
+
+**Output**:
+- Display runners in table
+- Show summary: "X of Y runners online"
+- Highlight overall status:
+  - Green: All online
+  - Red: Some offline
+
+**Algorithm**:
+1. Build filters
+2. Call `conductor.check_runner_statuses(filters)`
+3. Display results with health check summary
+
+### 7.3 Command: switch
+
+**Description**: List runners with no online managers
+
+**Purpose**: Identify runners that need attention (offline managers)
+
+**Filters**:
+- `tag_list`
+- `version_prefix`
+- `runner_type`
+- `paused`
+
+**Output Columns**:
+- ID, Type, Tags, Manager Status, Manager Last Contact, Manager IP
+
+**Algorithm**:
+1. Build filters
+2. Call `conductor.list_offline_runners(filters)`
+3. Display results
+
+### 7.4 Command: workers
+
+**Description**: Get list of Runner Managers
+
+**Purpose**: Show all runner manager details
+
+**Filters**:
+- `tag_list`
+- `status`
+- `version_prefix`
+- `runner_type`
+- `paused`
+
+**Output Columns**:
+- Runner ID, Tags, Manager ID, System ID, Manager Status, Created, Contacted, IP
+
+**Algorithm**:
+1. Build filters
+2. Call `conductor.fetch_runners(filters)`
+3. Flatten: For each runner, show each of its managers as a separate row
+4. Display results
+
+### 7.5 Command: flames
+
+**Description**: Get runners not contacted recently
+
+**Purpose**: Identify stale runners that haven't checked in within a time threshold
+
+**Filters**:
+- `tag_list`
+- `time`: Time threshold in seconds (default: 3600)
+
+**Output Columns**:
+- ID, Tags, Last Contact, Status, Offline Duration
+
+**Algorithm**:
+1. Build filters
+2. Get time threshold from user (default: 3600 seconds)
+3. Call `conductor.list_uncontacted_runners(filters, time)`
+4. Calculate offline duration: `current_time - contacted_at`
+5. Display results
+
+### 7.6 Command: empty
+
+**Description**: Get runners with no managers
+
+**Purpose**: Find runners that have no associated runner managers
+
+**Filters**:
+- `tag_list`
+
+**Output Columns**:
+- ID, Type, Tags, Status
+
+**Algorithm**:
+1. Build filters
+2. Call `conductor.list_runners_without_managers(filters)`
+3. Display results
+
+### 7.7 Command: bodies
+
+**Description**: Get details on GitLab users
+
+**Purpose**: List GitLab users for auditing or management
+
+**Filters**:
+- None (in TUI; API-level filters handled internally)
+
+**Output Columns**:
+- Username, Name, Bot, Last Sign-In, Locked, State
+
+**Algorithm**:
+1. Call `conductor.get_users(active_only=true, humans_only=false)`
+2. Display results
+
+**Optional Enhancement**: Add filter fields for active_only and humans_only in future versions
+
+---
+
+## 8. Configuration and Environment
+
+### 8.1 Required Environment Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `GITLAB_HOST` | Yes | GitLab instance URL | `https://gitlab.com` |
+| `GITLAB_TOKEN` | Yes | Personal access token | `glpat-xxxxxxxxxxxx` |
+
+### 8.2 Optional Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `info` | Logging level: `debug`, `info`, `warn`, `error` |
+| `DISABLE_SSL_WARNINGS` | `false` | Disable SSL verification: `true`, `false` |
+| `HTTP_PROXY` | (none) | HTTP proxy URL |
+| `HTTPS_PROXY` | (none) | HTTPS proxy URL |
+| `NO_PROXY` | (none) | Comma-separated list of hosts to bypass proxy |
+
+### 8.3 Configuration File Support
+
+**Optional Enhancement**: Support a configuration file (`.igor.toml` or `.igor.yaml`) in the user's home directory:
+
+```toml
+# ~/.igor.toml
+gitlab_host = "https://gitlab.com"
+gitlab_token = "glpat-xxxxxxxxxxxx"
+log_level = "info"
+disable_ssl_warnings = false
+default_time_threshold = 3600
+```
+
+**Priority** (highest to lowest):
+1. Command-line flags (if implemented)
+2. Environment variables
+3. Configuration file
+4. Built-in defaults
+
+### 8.4 Command-Line Flags
+
+**Optional Enhancement**: Support CLI flags:
+
+```
+igor --host https://gitlab.com --token glpat-xxx --verbose
+```
+
+**Flags**:
+- `--host <URL>`: GitLab host (overrides `GITLAB_HOST`)
+- `--token <TOKEN>`: GitLab token (overrides `GITLAB_TOKEN`)
+- `--verbose` / `-v`: Enable debug logging
+- `--help` / `-h`: Show help message
+- `--version` / `-V`: Show version
+
+---
+
+## 9. Error Handling
+
+### 9.1 Error Categories
+
+#### 9.1.1 Configuration Errors
+
+**Missing Credentials**:
+- Message: "GITLAB_HOST and GITLAB_TOKEN must be set"
+- Action: Show helpful message with instructions, exit with code 1
+
+**Invalid URL**:
+- Message: "Invalid GITLAB_HOST: must be a valid URL"
+- Action: Show example, exit with code 1
+
+#### 9.1.2 Network Errors
+
+**Connection Timeout**:
+- Message: "Connection timeout - could not reach GitLab"
+- Troubleshooting: Check network, proxy settings, firewall
+- Action: Offer retry, allow user to exit
+
+**DNS Resolution Failure**:
+- Message: "Could not resolve hostname: <host>"
+- Troubleshooting: Check GITLAB_HOST, DNS settings
+- Action: Offer retry, allow user to exit
+
+**Proxy Errors**:
+- Message: "Proxy connection failed"
+- Troubleshooting: Check HTTPS_PROXY, NO_PROXY settings
+- Action: Offer retry, allow user to exit
+
+#### 9.1.3 Authentication Errors
+
+**401 Unauthorized**:
+- Message: "Authentication failed - invalid token"
+- Troubleshooting: Verify GITLAB_TOKEN is correct, check token expiration
+- Action: Exit with code 1
+
+**403 Forbidden**:
+- Message: "Insufficient permissions"
+- Troubleshooting: Ensure token has `api` and `read_api` scopes
+- Action: Exit with code 1
+
+#### 9.1.4 API Errors
+
+**429 Rate Limited**:
+- Message: "Rate limit exceeded - retrying in X seconds"
+- Action: Automatic retry with exponential backoff (1s, 2s, 4s, ...)
+
+**500/502/503/504 Server Errors**:
+- Message: "GitLab server error - retrying..."
+- Action: Automatic retry up to 3 times, then show error
+
+**Unexpected Response**:
+- Message: "Unexpected API response"
+- Action: Log full response to file (e.g., `/tmp/igor_error.log`), show error
+
+#### 9.1.5 Data Parsing Errors
+
+**JSON Parse Failure**:
+- Message: "Failed to parse API response"
+- Action: Log response to file, show error
+
+### 9.2 Logging
+
+**Log Levels**:
+- **DEBUG**: Detailed HTTP requests, responses, internal state
+- **INFO**: High-level operations (e.g., "Fetching runners...")
+- **WARN**: Recoverable errors (e.g., "Retrying request...")
+- **ERROR**: Fatal errors
+
+**Log Output**:
+- **TUI Mode**: Log to file (`~/.igor/logs/igor.log`)
+- **CLI Mode** (if implemented): Log to stdout/stderr
+
+**Log Rotation**:
+- Keep last 5 log files
+- Max file size: 10 MB
+
+### 9.3 User-Friendly Error Messages
+
+Always include:
+1. **What happened**: Clear description of the error
+2. **Why it happened**: Root cause (if known)
+3. **How to fix it**: Actionable troubleshooting steps
+4. **What to do next**: Retry, exit, check logs, etc.
+
+**Example**:
+```
+✗ Failed to connect to GitLab
+
+What happened:
+  Connection to https://gitlab.com timed out after 30 seconds
+
+Possible causes:
+  • Network connectivity issues
+  • Firewall blocking outbound HTTPS
+  • Proxy misconfiguration
+  • Incorrect GITLAB_HOST
+
+Troubleshooting steps:
+  1. Check network: ping gitlab.com
+  2. Verify GITLAB_HOST: echo $GITLAB_HOST
+  3. Check proxy: echo $HTTPS_PROXY
+  4. Check firewall rules
+
+Press Enter to retry, Esc to exit, ? for help
+```
+
+---
+
+## 10. Testing Requirements (TDD Approach)
+
+### 10.1 Methodology: Test-Driven Development (TDD)
+
+All core logic (Models, Conductor, Client) MUST be developed using TDD.
+
+**TDD Workflow**:
+1. **Red**: Write a failing test for a small piece of functionality.
+2. **Green**: Write the minimum amount of code to pass the test.
+3. **Refactor**: Clean up the code while ensuring tests remain green.
+
+**Mandatory TDD Areas**:
+- **JSON Deserialization**: Write tests for various API response scenarios before implementing the models.
+- **Filter Logic**: Write tests for all filter combinations before implementing the conductor logic.
+- **Pagination**: Write tests for the asynchronous/background loading logic.
+
+### 10.2 Native Rust Testing
+
+Use Rust's built-in testing framework (`cargo test`) for all tests.
+
+**Categories**:
+
+**Coverage Target**: ≥80% code coverage
+
+**Test Categories**:
+
+#### 10.1.1 Model Tests
+- Test JSON deserialization for all models
+- Test filter matching logic
+- Test edge cases (null fields, empty arrays, etc.)
+
+#### 10.1.2 Client Tests
+- Mock HTTP responses
+- Test successful API calls
+- Test error handling (401, 403, 404, 429, 500, etc.)
+- Test pagination logic
+- Test timeout handling
+- Test proxy configuration
+
+#### 10.1.3 Conductor Tests
+- Test all business operations
+- Test filter application
+- Test data transformation
+- Test edge cases (empty results, no managers, etc.)
+
+#### 10.1.4 TUI Tests
+- Test keyboard event handling
+- Test mode transitions
+- Test input validation
+- Test rendering (if framework supports it)
+
+### 10.2 Integration Tests
+
+**Purpose**: Test end-to-end workflows with real (or mocked) GitLab API
+
+**Test Cases**:
+1. **Fetch runners with filters**: Verify correct API calls and data flow
+2. **List offline runners**: Verify filtering logic
+3. **Get runner managers**: Verify manager fetching and attachment
+4. **Handle no results**: Verify graceful handling of empty responses
+5. **Handle API errors**: Verify error handling and retry logic
+
+**Mock Server**: Use a mock HTTP server (e.g., `wiremock`, `mockito`) to simulate GitLab API
+
+### 10.3 Manual Testing Checklist
+
+Before release, manually test:
+
+- [ ] Launch TUI successfully
+- [ ] Navigate commands with keyboard
+- [ ] Select each command
+- [ ] Enter filters
+- [ ] Execute query
+- [ ] View results
+- [ ] Scroll through results
+- [ ] Handle large result sets (>100 items)
+- [ ] Handle empty result sets
+- [ ] Handle network errors (disconnect wifi)
+- [ ] Handle authentication errors (invalid token)
+- [ ] Test with proxy
+- [ ] Test with self-signed certificate
+- [ ] Test all keyboard shortcuts
+- [ ] Test help screen
+- [ ] Test quit functionality
+- [ ] Verify colors render correctly in different terminals
+
+### 10.4 Test Data
+
+Create test fixtures for:
+- Sample runners (various types, statuses, tags)
+- Sample runner managers (various statuses)
+- Sample users
+- Sample API error responses
+
+**Example Fixture** (Rust):
+```rust
+// tests/fixtures.rs
+pub fn sample_runner() -> Runner {
+    Runner {
+        id: 12345,
+        runner_type: "group_type".to_string(),
+        active: true,
+        paused: false,
+        description: Some("Test Runner".to_string()),
+        status: "online".to_string(),
+        tag_list: vec!["alm".to_string(), "production".to_string()],
+        managers: vec![],
+        // ... other fields
+    }
+}
+```
+
+---
+
+## 11. Build and Deployment
+
+### 11.1 Build Process
+
+#### 11.1.1 Rust
+
+**Dependencies** (Cargo.toml):
+```toml
+[package]
+name = "igor"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "igor"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ratatui = "0.27"
+crossterm = "0.27"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+```
+
+**Build Commands**:
+```bash
+# Development build
+cargo build
+
+# Release build (optimized)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run with logging
+RUST_LOG=debug cargo run
+```
+
+**Cross-Compilation** (for different OS/architectures):
+```bash
+# Install cross-compilation tool
+cargo install cross
+
+# Build for Linux x86_64
+cross build --release --target x86_64-unknown-linux-gnu
+
+# Build for macOS x86_64
+cross build --release --target x86_64-apple-darwin
+
+# Build for macOS ARM64 (M1/M2)
+cross build --release --target aarch64-apple-darwin
+
+# Build for Windows x86_64
+cross build --release --target x86_64-pc-windows-gnu
+```
+
+**Static Linking** (for portable binary):
+```bash
+# Linux (using musl for static linking)
+cargo build --release --target x86_64-unknown-linux-musl
+
+# Set RUSTFLAGS for fully static binary
+RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-musl
+```
+
+```bash
+# Run
+docker-compose run --rm igor
+```
+
+### 11.3 GitHub Actions CI/CD
+
+**Workflow** (.github/workflows/release.yml):
+
+```yaml
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-binaries:
+    name: Build Binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: igor-linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: igor-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: igor-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: igor-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/igor*
+
+  build-docker:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/igor:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/igor:${{ steps.version.outputs.VERSION }}
+
+  release:
+    name: Create GitHub Release
+    needs: [build-binaries, build-docker]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Setup**:
+1. Add secrets to GitHub repository:
+   - `DOCKERHUB_USERNAME`: Docker Hub username
+   - `DOCKERHUB_TOKEN`: Docker Hub access token
+2. Tag and push to trigger release:
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+### 11.4 Release Checklist
+
+Before creating a release:
+
+- [ ] All tests passing
+- [ ] Code reviewed
+- [ ] Version updated in code and documentation
+- [ ] CHANGELOG.md updated
+- [ ] README.md accurate
+- [ ] Build succeeds on all platforms
+- [ ] Docker image builds successfully
+- [ ] Manual testing completed
+- [ ] Documentation up to date
+
+---
+
+## 12. Language-Specific Implementation Guides
+
+### 12.1 Rust Implementation
+
+**Recommended Crates**:
+
+| Crate | Purpose |
+|-------|---------|
+| `ratatui` | TUI framework |
+| `crossterm` | Terminal control (events, colors) |
+| `reqwest` | HTTP client |
+| `tokio` | Async runtime |
+| `serde` | JSON serialization |
+| `serde_json` | JSON parsing |
+| `anyhow` | Error handling |
+| `chrono` | Date/time handling |
+| `clap` | CLI argument parsing |
+| `dotenvy` | .env file loading |
+| `tracing` | Logging |
+
+**Project Structure**:
+```
+igor/
+├── Cargo.toml
+├── src/
+│   ├── main.rs           # Entry point, CLI parsing
+│   ├── lib.rs            # Library exports
+│   ├── client.rs         # GitLab API client
+│   ├── conductor.rs      # Business logic orchestration
+│   ├── models.rs         # Data models
+│   ├── tui.rs            # TUI main loop and rendering
+│   └── error.rs          # Custom error types
+├── tests/
+│   ├── integration/
+│   │   ├── client.rs
+│   │   └── conductor.rs
+│   └── fixtures/
+│       └── api_responses.json
+└── README.md
+```
+
+**Key Implementation Notes**:
+
+1. **Async Runtime**: Use `tokio` for async HTTP requests
+2. **Error Handling**: Use `anyhow::Result` for propagating errors
+3. **TUI Event Loop**: Run TUI in async context, handle events with `tokio::select!`
+4. **Logging**: Use `tracing` crate, log to file in TUI mode
+5. **Testing**: Use `mockito` for HTTP mocking
+
+**Example Main Function**:
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Load .env
+    dotenvy::dotenv().ok();
+
+    // Parse CLI args
+    let args = Args::parse();
+
+    // Setup logging
+    setup_logging(&args)?;
+
+    // Create GitLab client
+    let client = GitLabClient::new(
+        args.host.unwrap_or_else(|| env::var("GITLAB_HOST").unwrap()),
+        args.token.unwrap_or_else(|| env::var("GITLAB_TOKEN").unwrap()),
+    )?;
+
+    // Test connection
+    client.check_connection().await?;
+
+    // Create conductor
+    let conductor = Conductor::new(client);
+
+    // Run TUI
+    run_tui(conductor).await?;
+
+    Ok(())
+}
+```
+
+
+---
+
+## 13. Additional Requirements
+
+### 13.1 Performance
+
+- **Startup Time**: < 2 seconds
+- **API Query Time**: < 5 seconds for typical queries (< 100 runners)
+- **TUI Responsiveness**: < 100ms for keyboard input
+- **Memory Usage**: < 50 MB for typical workloads
+
+### 13.2 Accessibility
+
+- Support standard terminal key bindings
+- Provide alternative keys (arrow keys + vim keys)
+- Ensure sufficient color contrast
+- Provide help documentation
+
+### 13.3 Documentation
+
+**Required Documentation**:
+
+1. **README.md**:
+   - Quick start guide
+   - Installation instructions
+   - Configuration examples
+   - Usage examples with screenshots
+   - Troubleshooting section
+
+2. **CHANGELOG.md**:
+   - Version history
+   - Breaking changes
+   - New features
+   - Bug fixes
+
+3. **CONTRIBUTING.md**:
+   - Development setup
+   - Testing guidelines
+   - Code style
+   - Pull request process
+
+4. **API Documentation**:
+   - For library use (if applicable)
+   - Public API reference
+
+### 13.4 Security
+
+- **Never log tokens**: Redact tokens in logs
+- **Secure credential storage**: Use environment variables, not hardcoded
+- **SSL verification**: Default to enabled, allow override for self-signed certs
+- **Input validation**: Sanitize user input to prevent injection attacks
+- **Dependency scanning**: Regularly update dependencies for security patches
+
+### 13.5 Versioning
+
+Follow [Semantic Versioning](https://semver.org/):
+
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
+
+**Example**: `v1.2.3`
+
+---
+
+## 14. Success Criteria
+
+The implementation is considered complete when:
+
+1. **Functionality**:
+   - [ ] All 7 commands implemented and working
+   - [ ] All filters working correctly
+   - [ ] Results displayed accurately
+   - [ ] Error handling robust
+
+2. **User Experience**:
+   - [ ] TUI is intuitive and responsive
+   - [ ] Keyboard navigation smooth
+   - [ ] Colors enhance readability
+   - [ ] Help is accessible and clear
+
+3. **Quality**:
+   - [ ] Code coverage ≥80%
+   - [ ] All tests passing
+   - [ ] No critical bugs
+   - [ ] Performance targets met
+
+4. **Documentation**:
+   - [ ] README complete with examples
+   - [ ] Code comments for complex logic
+   - [ ] Troubleshooting guide included
+
+5. **Deployment**:
+   - [ ] Single binary builds successfully
+   - [ ] Docker image builds and runs
+   - [x] Published to ghcr.io and Docker Hub
+- [x] GitHub release created with binaries
+
+6. **Platform Support**:
+   - [ ] Works on Linux (x86_64)
+   - [ ] Works on macOS (Intel and ARM)
+   - [ ] Works on Windows (optional, but recommended)
+
+---
+
+## 15. Future Enhancements
+
+These features are not required for the initial release but can be added later:
+
+1. **Export Results**: Export to CSV, JSON, or Markdown
+2. **Saved Filters**: Save frequently used filter combinations
+3. **History**: Remember previous queries
+4. **Search**: Full-text search within results
+5. **Sorting**: Dynamic sorting by column
+6. **Pagination**: Handle very large result sets (>1000 items) efficiently
+7. **Webhooks**: Integrate with alerting systems
+8. **Runner Management**: Not just query, but pause/resume/delete runners
+9. **Dashboard Mode**: Real-time monitoring dashboard
+10. **Plugin System**: Allow extending with custom commands
+
+---
+
+## 16. Glossary
+
+| Term | Definition |
+|------|------------|
+| **GitLab Runner** | A lightweight agent that executes CI/CD jobs |
+| **Runner Manager** | A process managing a runner instance |
+| **TUI** | Terminal User Interface |
+| **API** | Application Programming Interface |
+| **REST** | Representational State Transfer |
+| **Token** | Authentication credential for API access |
+| **Tag** | Label assigned to runners for job targeting |
+| **Status** | Current state of a runner (online, offline, stale, never_contacted) |
+| **Filter** | Criteria to narrow down query results |
+| **Conductor** | Business logic orchestration layer |
+| **Client** | HTTP API client for GitLab |
+
+---
+
+## 17. References
+
+**GitLab API Documentation**:
+- [GitLab REST API v4](https://docs.gitlab.com/ee/api/api_resources.html)
+- [Runners API](https://docs.gitlab.com/ee/api/runners.html)
+- [Users API](https://docs.gitlab.com/ee/api/users.html)
+
+**TUI Frameworks**:
+- [Ratatui (Rust)](https://ratatui.rs/)
+
+**HTTP Clients**:
+- [reqwest (Rust)](https://docs.rs/reqwest/)
+
+**Testing**:
+- [mockito (Rust)](https://docs.rs/mockito/)
+
+---
+
+## 18. Contact and Support
+
+**For Questions**:
+- Open an issue on GitHub repository
+- Check existing issues for solutions
+- Review README and documentation first
+
+**Contributing**:
+- Fork the repository
+- Create a feature branch
+- Submit a pull request
+- Follow code style guidelines
+
+---
+
+## Appendix A: Complete API Examples
+
+### A.1 Fetch All Runners (Online, Group Type)
+
+**Request**:
+```http
+GET /api/v4/runners/all?status=online&type=group_type&per_page=100&page=1 HTTP/1.1
+Host: gitlab.com
+PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx
+```
+
+**Response**:
+```json
+[
+  {
+    "id": 12345,
+    "runner_type": "group_type",
+    "active": true,
+    "paused": false,
+    "description": "Production Runner",
+    "created_at": "2024-01-15T10:30:00.000Z",
+    "ip_address": "10.0.1.50",
+    "is_shared": false,
+    "status": "online",
+    "version": "17.5.0",
+    "revision": "abc123def",
+    "tag_list": ["alm", "production"]
+  }
+]
+```
+
+### A.2 Fetch Runner Managers
+
+**Request**:
+```http
+GET /api/v4/runners/12345/managers HTTP/1.1
+Host: gitlab.com
+PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx
+```
+
+**Response**:
+```json
+[
+  {
+    "id": 67890,
+    "system_id": "runner-host-01",
+    "created_at": "2024-01-15T10:30:00.000Z",
+    "contacted_at": "2024-01-20T14:22:00.000Z",
+    "ip_address": "10.0.1.50",
+    "status": "online",
+    "version": "17.5.0",
+    "revision": "abc123def"
+  }
+]
+```
+
+---
+
+## Appendix B: Complete Example Outputs
+
+### B.1 Fetch Command Output
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║     Results: fetch                                                           ║
+║                                                                              ║
+║  ┌────────┬─────────────┬─────────────────┬─────────┬────────┬──────────┐  ║
+║  │ ID     │ Type        │ Tags            │ Version │ Status │ Managers │  ║
+║  ├────────┼─────────────┼─────────────────┼─────────┼────────┼──────────┤  ║
+║  │ 12345  │ group_type  │ alm,production  │ 17.5.0  │ online │ 3        │  ║
+║  │ 12346  │ group_type  │ alm,staging     │ 17.5.0  │ online │ 2        │  ║
+║  │ 12347  │ instance    │ platform        │ 17.4.0  │ stale  │ 1        │  ║
+║  │ 12348  │ project     │ test            │ 17.3.0  │ offline│ 0        │  ║
+║  └────────┴─────────────┴─────────────────┴─────────┴────────┴──────────┘  ║
+║                                                                              ║
+║  Showing 4 of 4 runners                                                      ║
+║                                                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  ↑/↓: Scroll | Enter: New Query | Esc: Back                                 ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+### B.2 Lights Command Output
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║     Results: lights                                                          ║
+║                                                                              ║
+║  Health Check Summary:                                                       ║
+║  ✓ 3 of 4 runners online (75%)                                              ║
+║                                                                              ║
+║  ┌────────┬─────────────┬─────────────────┬─────────┬────────┬──────────┐  ║
+║  │ ID     │ Type        │ Tags            │ Version │ Status │ Managers │  ║
+║  ├────────┼─────────────┼─────────────────┼─────────┼────────┼──────────┤  ║
+║  │ 12345  │ group_type  │ alm,production  │ 17.5.0  │ online │ 3        │  ║
+║  │ 12346  │ group_type  │ alm,staging     │ 17.5.0  │ online │ 2        │  ║
+║  │ 12347  │ instance    │ platform        │ 17.4.0  │ stale  │ 1        │  ║
+║  │ 12348  │ project     │ test            │ 17.3.0  │ offline│ 0        │  ║
+║  └────────┴─────────────┴─────────────────┴─────────┴────────┴──────────┘  ║
+║                                                                              ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  ↑/↓: Scroll | Enter: New Query | Esc: Back                                 ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## Appendix C: Environment Setup Examples
+
+### C.1 .env File
+
+```env
+# GitLab Configuration
+GITLAB_HOST=https://gitlab.com
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+
+# Logging
+LOG_LEVEL=info
+
+# SSL Configuration (for self-signed certificates)
+DISABLE_SSL_WARNINGS=false
+
+# Proxy Configuration (if behind corporate proxy)
+# HTTPS_PROXY=http://proxy.corp.com:8080
+# NO_PROXY=localhost,127.0.0.1
+```
+
+### C.2 Shell Export
+
+```bash
+export GITLAB_HOST=https://gitlab.com
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+export LOG_LEVEL=info
+```
+
+---
+
+## Conclusion
+
+This specification provides all the information needed to recreate the IGOR application from scratch. The implementation should prioritize:
+
+1. **User Experience**: Intuitive, responsive TUI
+2. **Reliability**: Robust error handling, retry logic
+3. **Performance**: Fast queries, efficient rendering
+4. **Maintainability**: Clean architecture, well-tested code
+5. **Documentation**: Clear README, helpful error messages
+
+Good luck with the implementation! 🚀
+
