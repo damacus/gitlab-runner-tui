@@ -55,7 +55,7 @@ mod tests {
 
         assert_eq!(runner.id, 12345);
         assert_eq!(runner.runner_type, "group_type");
-        assert_eq!(runner.active, true);
+        assert!(runner.active);
         assert_eq!(runner.status, "online");
         assert_eq!(runner.tag_list.len(), 3);
     }
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_filter_runners_with_online_managers() {
-        let runners = vec![
+        let runners = [
             create_test_runner(1, "online", Some("online")),
             create_test_runner(2, "online", Some("offline")),
             create_test_runner(3, "online", None),
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_filter_runners_without_managers() {
-        let runners = vec![
+        let runners = [
             create_test_runner(1, "online", Some("online")),
             create_test_runner(2, "online", None),
             create_test_runner(3, "never_contacted", None),
