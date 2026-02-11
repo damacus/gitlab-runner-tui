@@ -129,4 +129,202 @@ impl Conductor {
             .collect();
         Ok(empty)
     }
+
+    pub async fn detect_rotating_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
+        let runners = self.fetch_runners(filters).await?;
+        let rotating = runners
+            .into_iter()
+            .filter(|r| r.managers.len() > 1)
+            .collect();
+        Ok(rotating)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::{Matcher, Server};
+
+    fn manager_json(id: u64, system_id: &str, status: &str, version: &str) -> String {
+        format!(
+            r#"{{"id":{},"system_id":"{}","created_at":"2024-01-15T10:30:00.000Z","contacted_at":"2024-01-20T14:22:00.000Z","ip_address":"10.0.1.1","status":"{}","version":"{}","revision":"abc123"}}"#,
+            id, system_id, status, version
+        )
+    }
+
+    fn runner_list_json(id: u64, status: &str) -> String {
+        format!(
+            r#"{{"id":{},"runner_type":"group_type","active":true,"paused":false,"description":"Runner {}","ip_address":"","is_shared":false,"status":"{}","name":null,"online":{},"tag_list":[]}}"#,
+            id,
+            id,
+            status,
+            status == "online"
+        )
+    }
+
+    async fn setup_rotation_mocks(
+        server: &mut Server,
+        runners_with_managers: &[(u64, &str, Vec<(u64, &str, &str, &str)>)],
+    ) -> Vec<mockito::Mock> {
+        let mut mocks = Vec::new();
+
+        // Build list response
+        let list_bodies: Vec<String> = runners_with_managers
+            .iter()
+            .map(|(id, status, _)| runner_list_json(*id, status))
+            .collect();
+        let list_body = format!("[{}]", list_bodies.join(","));
+
+        mocks.push(
+            server
+                .mock("GET", "/runners/all")
+                .match_query(Matcher::AllOf(vec![
+                    Matcher::UrlEncoded("per_page".into(), "100".into()),
+                    Matcher::UrlEncoded("page".into(), "1".into()),
+                ]))
+                .with_status(200)
+                .with_body(list_body)
+                .create_async()
+                .await,
+        );
+
+        // Manager endpoints per runner
+        for (id, _, managers) in runners_with_managers {
+            let mgr_bodies: Vec<String> = managers
+                .iter()
+                .map(|(mid, sys, status, ver)| manager_json(*mid, sys, status, ver))
+                .collect();
+            let mgr_body = format!("[{}]", mgr_bodies.join(","));
+
+            mocks.push(
+                server
+                    .mock("GET", format!("/runners/{}/managers", id).as_str())
+                    .with_status(200)
+                    .with_body(mgr_body)
+                    .create_async()
+                    .await,
+            );
+        }
+
+        mocks
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_finds_multi_manager() {
+        let mut server = Server::new_async().await;
+        let _mocks = setup_rotation_mocks(
+            &mut server,
+            &[
+                // Runner 1: two managers (rotation in progress)
+                (
+                    1,
+                    "online",
+                    vec![
+                        (10, "old-host", "offline", "17.4.0"),
+                        (11, "new-host", "online", "17.5.0"),
+                    ],
+                ),
+                // Runner 2: single manager (no rotation)
+                (2, "online", vec![(20, "stable-host", "online", "17.5.0")]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].id, 1);
+        assert_eq!(rotating[0].managers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_empty_when_no_rotation() {
+        let mut server = Server::new_async().await;
+        let _mocks = setup_rotation_mocks(
+            &mut server,
+            &[
+                (1, "online", vec![(10, "host-a", "online", "17.5.0")]),
+                (2, "online", vec![(20, "host-b", "online", "17.5.0")]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert!(rotating.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_excludes_no_managers() {
+        let mut server = Server::new_async().await;
+        let _mocks = setup_rotation_mocks(
+            &mut server,
+            &[
+                // Runner with no managers
+                (1, "online", vec![]),
+                // Runner with two managers (rotating)
+                (
+                    2,
+                    "online",
+                    vec![
+                        (20, "old-host", "stale", "17.3.0"),
+                        (21, "new-host", "online", "17.5.0"),
+                    ],
+                ),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_three_managers() {
+        let mut server = Server::new_async().await;
+        let _mocks = setup_rotation_mocks(
+            &mut server,
+            &[(
+                1,
+                "online",
+                vec![
+                    (10, "host-v1", "offline", "17.3.0"),
+                    (11, "host-v2", "stale", "17.4.0"),
+                    (12, "host-v3", "online", "17.5.0"),
+                ],
+            )],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].managers.len(), 3);
+    }
 }
