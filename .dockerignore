@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+.beads/
+.vscode/
+.env
+*.md
+TODO.md
+app_spec.txt
