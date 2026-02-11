@@ -200,9 +200,11 @@ mod tests {
         )
     }
 
+    type RunnerSpec<'a> = (u64, &'a str, &'a [&'a str], &'a [(u64, &'a str)]);
+
     async fn setup_runner_mocks(
         server: &mut Server,
-        runners: &[(u64, &str, &[&str], &[(u64, &str)])],
+        runners: &[RunnerSpec<'_>],
     ) -> Vec<mockito::Mock> {
         let mut mocks = Vec::new();
 
