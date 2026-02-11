@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/damacus/gitlab-runner-tui/compare/gitlab-runner-tui-v0.1.1...gitlab-runner-tui-v0.1.2) (2026-02-11)
+
+
+### Bug Fixes
+
+* switch Docker image to Alpine builder and scratch runtime ([#6](https://github.com/damacus/gitlab-runner-tui/issues/6)) ([758bba2](https://github.com/damacus/gitlab-runner-tui/commit/758bba2de050d9511d12be88a8a46e62d66c275a))
+
 ## [0.1.1](https://github.com/damacus/gitlab-runner-tui/compare/gitlab-runner-tui-v0.1.0...gitlab-runner-tui-v0.1.1) (2026-02-11)
 
 
