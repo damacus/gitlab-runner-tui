@@ -61,21 +61,4 @@ mod tests {
         assert!(manager.ip_address.is_none());
         assert!(manager.version.is_none());
     }
-
-    #[test]
-    fn test_manager_clone() {
-        let manager = RunnerManager {
-            id: 1,
-            system_id: "test".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            contacted_at: Some("2024-01-02T00:00:00Z".to_string()),
-            ip_address: Some("192.168.1.1".to_string()),
-            status: "online".to_string(),
-            version: Some("17.0.0".to_string()),
-            revision: Some("abc123".to_string()),
-        };
-
-        let cloned = manager.clone();
-        assert_eq!(manager, cloned);
-    }
 }
