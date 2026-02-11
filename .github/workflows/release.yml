@@ -1,13 +1,18 @@
-name: Build and Release
+---
+name: release
 
-on:
+"on":
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+  attestations: write
+  id-token: write
 
 jobs:
   build-binaries:
