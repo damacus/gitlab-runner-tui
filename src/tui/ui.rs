@@ -375,7 +375,6 @@ fn render_help_view(_app: &mut App, frame: &mut Frame, area: ratatui::layout::Re
         "Navigation:",
         "  ↑/↓ or k/j    Navigate commands / Scroll results",
         "  Enter         Select command / Execute search",
-        "  Tab           Next filter field",
         "  Esc           Back / Cancel",
         "  ?             Toggle this help",
         "  q             Quit application",
