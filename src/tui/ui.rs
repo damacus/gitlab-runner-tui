@@ -1,4 +1,4 @@
-use crate::tui::app::{App, ResultsViewType};
+use crate::tui::app::{App, AppMode, ResultsViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -40,12 +40,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Content based on mode
     match app.mode {
-        crate::tui::app::AppMode::CommandSelection => {
-            render_command_selection(app, frame, chunks[1])
-        }
-        crate::tui::app::AppMode::FilterInput => render_filter_input(app, frame, chunks[1]),
-        crate::tui::app::AppMode::ResultsView => render_results(app, frame, chunks[1]),
-        crate::tui::app::AppMode::Help => render_help_view(app, frame, chunks[1]),
+        AppMode::CommandSelection => render_command_selection(app, frame, chunks[1]),
+        AppMode::FilterInput => render_filter_input(app, frame, chunks[1]),
+        AppMode::ResultsView => render_results(app, frame, chunks[1]),
+        AppMode::Help => render_help_view(app, frame, chunks[1]),
     };
 
     // Status bar with context-sensitive help
@@ -53,14 +51,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         "Press Esc to dismiss error and go back"
     } else {
         match app.mode {
-            crate::tui::app::AppMode::CommandSelection => {
-                "↑/↓: Navigate | Enter: Select | ?: Help | q: Quit"
-            }
-            crate::tui::app::AppMode::FilterInput => {
-                "Enter: Search | Esc: Back | Type to filter by tags"
-            }
-            crate::tui::app::AppMode::ResultsView => "↑/↓: Scroll | Esc: Back | q: Quit",
-            crate::tui::app::AppMode::Help => "Press any key to close help",
+            AppMode::CommandSelection => "↑/↓: Navigate | Enter: Select | ?: Help | q: Quit",
+            AppMode::FilterInput => "Enter: Search | Esc: Back | Type to filter by tags",
+            AppMode::ResultsView => "↑/↓: Scroll | Esc: Back | q: Quit",
+            AppMode::Help => "Press any key to close help",
         }
     };
     let status = Paragraph::new(status_text).block(Block::default().borders(Borders::ALL));
