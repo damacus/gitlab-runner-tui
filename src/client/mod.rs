@@ -26,7 +26,7 @@ impl GitLabClient {
 
     fn request(&self, method: Method, endpoint: &str) -> RequestBuilder {
         let url = format!(
-            "{}/{}",
+            "{}/api/v4/{}",
             self.host.trim_end_matches('/'),
             endpoint.trim_start_matches('/')
         );
@@ -57,6 +57,9 @@ impl GitLabClient {
         // tag_list and version_prefix are client-side filters, so not added to query
 
         let response = request.send().await.context("Failed to send request")?;
+        let response = response
+            .error_for_status()
+            .context("GitLab API request failed")?;
         let runners = response
             .json::<Vec<Runner>>()
             .await
@@ -114,7 +117,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/all")
+            .mock("GET", "/api/v4/runners/all")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -158,7 +161,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/all")
+            .mock("GET", "/api/v4/runners/all")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -187,7 +190,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/all")
+            .mock("GET", "/api/v4/runners/all")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -214,7 +217,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/12345/managers")
+            .mock("GET", "/api/v4/runners/12345/managers")
             .match_header("PRIVATE-TOKEN", "test-token")
             .with_status(200)
             .with_body(
@@ -248,7 +251,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/99999/managers")
+            .mock("GET", "/api/v4/runners/99999/managers")
             .match_header("PRIVATE-TOKEN", "test-token")
             .with_status(404)
             .with_body(r#"{"message":"404 Runner Not Found"}"#)
@@ -268,7 +271,7 @@ mod tests {
         let mut server = Server::new_async().await;
 
         let mock = server
-            .mock("GET", "/runners/all")
+            .mock("GET", "/api/v4/runners/all")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -287,5 +290,61 @@ mod tests {
 
         mock.assert_async().await;
         assert!(runners.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runners_returns_error_on_401() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .match_header("PRIVATE-TOKEN", "bad-token")
+            .with_status(401)
+            .with_body(r#"{"message":"401 Unauthorized"}"#)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "bad-token".to_string()).unwrap();
+        let filters = RunnerFilters::default();
+
+        let result = client.fetch_runners(&filters, 1, 100).await;
+
+        mock.assert_async().await;
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("401"),
+            "Error should mention 401, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runners_returns_error_on_500() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(500)
+            .with_body(r#"{"message":"500 Internal Server Error"}"#)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let filters = RunnerFilters::default();
+
+        let result = client.fetch_runners(&filters, 1, 100).await;
+
+        mock.assert_async().await;
+        assert!(result.is_err());
     }
 }
