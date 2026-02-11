@@ -2,6 +2,7 @@ use crate::client::GitLabClient;
 use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use futures::stream::{self, StreamExt};
 
 pub struct Conductor {
     client: GitLabClient,
@@ -26,23 +27,29 @@ impl Conductor {
             let count = runners.len();
 
             // Enrich each runner with detail (tags, version) and managers
-            let futures: Vec<_> = runners
-                .into_iter()
-                .map(|r| {
-                    let client = self.client.clone();
-                    async move {
-                        let mut detail = client.fetch_runner_detail(r.id).await.unwrap_or(r);
-                        let managers = client
-                            .fetch_runner_managers(detail.id)
-                            .await
-                            .unwrap_or_default();
-                        detail.managers = managers;
-                        detail
+            // Use buffer_unordered to limit concurrent API requests
+            let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
+                let client = self.client.clone();
+                async move {
+                    let mut detail = match client.fetch_runner_detail(r.id).await {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::warn!(runner_id = r.id, error = %e, "Failed to fetch runner detail, using list data");
+                            r
+                        }
+                    };
+                    match client.fetch_runner_managers(detail.id).await {
+                        Ok(managers) => detail.managers = managers,
+                        Err(e) => {
+                            tracing::warn!(runner_id = detail.id, error = %e, "Failed to fetch runner managers");
+                        }
                     }
-                })
-                .collect();
-
-            let enriched = futures::future::join_all(futures).await;
+                    detail
+                }
+            }))
+            .buffer_unordered(10)
+            .collect()
+            .await;
             all_runners.extend(enriched);
 
             if count < per_page as usize {
