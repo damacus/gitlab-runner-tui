@@ -14,6 +14,7 @@ pub struct Runner {
     pub status: String,
     pub version: Option<String>,
     pub revision: Option<String>,
+    #[serde(default)]
     pub tag_list: Vec<String>,
     #[serde(default)]
     pub managers: Vec<RunnerManager>,

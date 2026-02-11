@@ -18,41 +18,37 @@ impl Conductor {
         let per_page = 100;
 
         loop {
-            let mut runners = self.client.fetch_runners(&filters, page, per_page).await?;
+            let runners = self.client.fetch_runners(&filters, page, per_page).await?;
             if runners.is_empty() {
                 break;
             }
 
-            // For each runner, fetch managers
-            for runner in &mut runners {
-                let managers = self.client.fetch_runner_managers(runner.id).await?;
-                // Sort managers by ID descending (proxy for creation time if created_at is string)
-                // Or parse created_at if needed. For now, rely on API order or simple sort.
-                // Managers usually returned ordered.
-                runner.managers = managers;
-            }
-
             let count = runners.len();
-            all_runners.append(&mut runners);
+
+            // Enrich each runner with detail (tags, version) and managers
+            let futures: Vec<_> = runners
+                .into_iter()
+                .map(|r| {
+                    let client = self.client.clone();
+                    async move {
+                        let mut detail = client.fetch_runner_detail(r.id).await.unwrap_or(r);
+                        let managers = client
+                            .fetch_runner_managers(detail.id)
+                            .await
+                            .unwrap_or_default();
+                        detail.managers = managers;
+                        detail
+                    }
+                })
+                .collect();
+
+            let enriched = futures::future::join_all(futures).await;
+            all_runners.extend(enriched);
 
             if count < per_page as usize {
                 break;
             }
             page += 1;
-        }
-
-        // Apply client-side filters
-        if let Some(tags) = &filters.tag_list {
-            all_runners.retain(|r| tags.iter().any(|t| r.tag_list.contains(t)));
-        }
-
-        if let Some(prefix) = &filters.version_prefix {
-            all_runners.retain(|r| {
-                r.version
-                    .as_deref()
-                    .map(|v| v.starts_with(prefix))
-                    .unwrap_or(false)
-            });
         }
 
         Ok(all_runners)
