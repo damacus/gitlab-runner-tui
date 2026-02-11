@@ -2,7 +2,6 @@ mod client;
 mod conductor;
 mod models;
 mod tui;
-mod utils; // Ensure this file exists even if empty
 
 use anyhow::Result;
 use clap::Parser;
