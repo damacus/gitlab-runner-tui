@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.4...v0.1.5) (2026-02-11)
+
+
+### Bug Fixes
+
+* add crates.io metadata and LICENSE for publishing ([#13](https://github.com/damacus/gitlab-runner-tui/issues/13)) ([2d0cbc5](https://github.com/damacus/gitlab-runner-tui/commit/2d0cbc559114094ce0e974e93dc3613c920a7a18))
+
 ## [0.1.4](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.3...v0.1.4) (2026-02-11)
 
 
