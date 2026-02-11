@@ -66,11 +66,11 @@ impl Conductor {
         let offline = runners
             .into_iter()
             .filter(|r| {
-                if let Some(manager) = r.managers.first() {
-                    manager.status != "online"
-                } else {
-                    false // No manager means we can't determine status from manager, or it's "never_contacted"
+                if r.managers.is_empty() {
+                    return false;
                 }
+                // Runner is offline if none of its managers are online
+                !r.managers.iter().any(|m| m.status == "online")
             })
             .collect();
         Ok(offline)
@@ -87,17 +87,24 @@ impl Conductor {
         let uncontacted = runners
             .into_iter()
             .filter(|r| {
-                if let Some(manager) = r.managers.first() {
-                    if let Some(contacted_at_str) = &manager.contacted_at {
-                        if let Ok(contacted_at) = DateTime::parse_from_rfc3339(contacted_at_str) {
-                            let duration = now.signed_duration_since(contacted_at);
-                            return duration.num_seconds() > threshold_secs as i64;
-                        }
-                    }
-                    true // If contacted_at is missing or unparseable, treat as uncontacted? Or maybe safe to ignore. Spec says "managers[0].contacted_at.is_none() OR ..."
-                } else {
-                    false
+                if r.managers.is_empty() {
+                    return false;
                 }
+                // Runner is uncontacted if ALL managers are past the threshold
+                r.managers.iter().all(|m| {
+                    match &m.contacted_at {
+                        Some(contacted_at_str) => {
+                            match DateTime::parse_from_rfc3339(contacted_at_str) {
+                                Ok(contacted_at) => {
+                                    let duration = now.signed_duration_since(contacted_at);
+                                    duration.num_seconds() > threshold_secs as i64
+                                }
+                                Err(_) => true, // Unparseable timestamp treated as uncontacted
+                            }
+                        }
+                        None => true, // Missing contacted_at treated as uncontacted
+                    }
+                })
             })
             .collect();
         Ok(uncontacted)
@@ -110,13 +117,7 @@ impl Conductor {
         let total = runners.len();
         let online = runners
             .iter()
-            .filter(|r| {
-                if let Some(manager) = r.managers.first() {
-                    manager.status == "online"
-                } else {
-                    false
-                }
-            })
+            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
             .count();
         Ok((online, total))
     }
@@ -201,7 +202,7 @@ mod tests {
 
     async fn setup_runner_mocks(
         server: &mut Server,
-        runners: &[(u64, &str, &[&str], Option<(u64, &str)>)],
+        runners: &[(u64, &str, &[&str], &[(u64, &str)])],
     ) -> Vec<mockito::Mock> {
         let mut mocks = Vec::new();
 
@@ -226,7 +227,7 @@ mod tests {
         );
 
         // Detail + manager endpoints per runner
-        for (id, status, tags, manager) in runners {
+        for (id, status, tags, managers) in runners {
             mocks.push(
                 server
                     .mock("GET", format!("/api/v4/runners/{}", id).as_str())
@@ -236,12 +237,11 @@ mod tests {
                     .await,
             );
 
-            let managers_body = match manager {
-                Some((mid, mstatus)) => {
-                    format!("[{}]", manager_response_body(*mid, *id, mstatus))
-                }
-                None => "[]".to_string(),
-            };
+            let manager_bodies: Vec<String> = managers
+                .iter()
+                .map(|(mid, mstatus)| manager_response_body(*mid, *id, mstatus))
+                .collect();
+            let managers_body = format!("[{}]", manager_bodies.join(","));
             mocks.push(
                 server
                     .mock("GET", format!("/api/v4/runners/{}/managers", id).as_str())
@@ -260,7 +260,7 @@ mod tests {
         let mut server = Server::new_async().await;
         let mocks = setup_runner_mocks(
             &mut server,
-            &[(1, "online", &["alm", "production"], Some((10, "online")))],
+            &[(1, "online", &["alm", "production"], &[(10, "online")])],
         )
         .await;
 
@@ -338,9 +338,9 @@ mod tests {
         let mocks = setup_runner_mocks(
             &mut server,
             &[
-                (1, "online", &["prod"], Some((10, "online"))),
-                (2, "offline", &["staging"], Some((20, "offline"))),
-                (3, "online", &["dev"], None),
+                (1, "online", &["prod"], &[(10, "online")]),
+                (2, "offline", &["staging"], &[(20, "offline")]),
+                (3, "online", &["dev"], &[]),
             ],
         )
         .await;
@@ -363,13 +363,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_offline_runners_with_multiple_managers() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                // Runner 1: two managers, one online + one offline → NOT offline
+                (1, "online", &["prod"], &[(10, "online"), (11, "offline")]),
+                // Runner 2: two managers, both offline → IS offline
+                (
+                    2,
+                    "offline",
+                    &["staging"],
+                    &[(20, "offline"), (21, "offline")],
+                ),
+                // Runner 3: one manager, online → NOT offline
+                (3, "online", &["dev"], &[(30, "online")]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let offline = conductor
+            .list_offline_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        // Only runner 2 should be offline (all managers offline)
+        assert_eq!(offline.len(), 1);
+        assert_eq!(offline[0].id, 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
     async fn test_list_runners_without_managers() {
         let mut server = Server::new_async().await;
         let mocks = setup_runner_mocks(
             &mut server,
             &[
-                (1, "online", &["prod"], Some((10, "online"))),
-                (2, "online", &["staging"], None),
+                (1, "online", &["prod"], &[(10, "online")]),
+                (2, "online", &["staging"], &[]),
             ],
         )
         .await;

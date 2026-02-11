@@ -183,12 +183,7 @@ impl App {
                 } else if is_lights {
                     let online_count = runners
                         .iter()
-                        .filter(|r| {
-                            r.managers
-                                .first()
-                                .map(|m| m.status == "online")
-                                .unwrap_or(false)
-                        })
+                        .filter(|r| r.managers.iter().any(|m| m.status == "online"))
                         .count();
                     self.health_summary = Some(HealthSummary {
                         online_count,
