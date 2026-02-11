@@ -1,7 +1,9 @@
 use crate::conductor::Conductor;
+use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::Runner;
 use ratatui::widgets::TableState;
+use std::time::Instant;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AppMode {
@@ -18,6 +20,7 @@ pub enum ResultsViewType {
     Runners,
     Workers,
     HealthCheck,
+    Rotation,
 }
 
 /// Flattened row for workers view: runner info + manager info
@@ -51,6 +54,7 @@ impl HealthSummary {
 
 pub struct App {
     pub conductor: Conductor,
+    pub config: AppConfig,
     pub mode: AppMode,
     pub should_quit: bool,
     pub runners: Vec<Runner>,
@@ -68,27 +72,38 @@ pub struct App {
     pub is_loading: bool,
     pub error_message: Option<String>,
     pub spinner_frame: usize,
+
+    // Polling state
+    pub polling_active: bool,
+    pub poll_started_at: Option<Instant>,
+    pub last_poll_at: Option<Instant>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl App {
-    pub fn new(conductor: Conductor) -> Self {
+    pub fn new(conductor: Conductor, config: AppConfig) -> Self {
         Self {
             conductor,
+            config,
             mode: AppMode::default(),
             should_quit: false,
             runners: Vec::new(),
             manager_rows: Vec::new(),
             results_view_type: ResultsViewType::default(),
             health_summary: None,
-            commands: vec!["fetch", "lights", "switch", "workers", "flames", "empty"],
+            commands: vec![
+                "fetch", "lights", "switch", "workers", "flames", "empty", "rotate",
+            ],
             selected_command_index: 0,
             input_buffer: String::new(),
             table_state: TableState::default(),
             is_loading: false,
             error_message: None,
             spinner_frame: 0,
+            polling_active: false,
+            poll_started_at: None,
+            last_poll_at: None,
         }
     }
 
@@ -143,14 +158,12 @@ impl App {
             );
         }
 
-        let is_workers = command == "workers";
-        let is_lights = command == "lights";
-
         let result = match command {
             "fetch" | "lights" | "workers" => self.conductor.fetch_runners(filters).await,
             "switch" => self.conductor.list_offline_runners(filters).await,
             "flames" => self.conductor.list_uncontacted_runners(filters, 3600).await,
             "empty" => self.conductor.list_runners_without_managers(filters).await,
+            "rotate" => self.conductor.detect_rotating_runners(filters).await,
             _ => {
                 self.is_loading = false;
                 return;
@@ -161,39 +174,45 @@ impl App {
 
         match result {
             Ok(runners) => {
-                if is_workers {
-                    // Flatten runners into manager rows
-                    self.manager_rows = runners
-                        .iter()
-                        .flat_map(|r| {
-                            r.managers.iter().map(move |m| ManagerRow {
-                                runner_id: r.id,
-                                runner_tags: r.tag_list.clone(),
-                                manager: m.clone(),
+                match command {
+                    "workers" => {
+                        self.manager_rows = runners
+                            .iter()
+                            .flat_map(|r| {
+                                r.managers.iter().map(move |m| ManagerRow {
+                                    runner_id: r.id,
+                                    runner_tags: r.tag_list.clone(),
+                                    manager: m.clone(),
+                                })
                             })
-                        })
-                        .collect();
-                    self.results_view_type = ResultsViewType::Workers;
-                } else if is_lights {
-                    // Calculate health summary for lights command
-                    let online_count = runners
-                        .iter()
-                        .filter(|r| {
-                            r.managers
-                                .first()
-                                .map(|m| m.status == "online")
-                                .unwrap_or(false)
-                        })
-                        .count();
-                    self.health_summary = Some(HealthSummary {
-                        online_count,
-                        total_count: runners.len(),
-                    });
-                    self.runners = runners;
-                    self.results_view_type = ResultsViewType::HealthCheck;
-                } else {
-                    self.runners = runners;
-                    self.results_view_type = ResultsViewType::Runners;
+                            .collect();
+                        self.results_view_type = ResultsViewType::Workers;
+                    }
+                    "lights" => {
+                        let online_count = runners
+                            .iter()
+                            .filter(|r| {
+                                r.managers
+                                    .first()
+                                    .map(|m| m.status == "online")
+                                    .unwrap_or(false)
+                            })
+                            .count();
+                        self.health_summary = Some(HealthSummary {
+                            online_count,
+                            total_count: runners.len(),
+                        });
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::HealthCheck;
+                    }
+                    "rotate" => {
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::Rotation;
+                    }
+                    _ => {
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::Runners;
+                    }
                 }
                 self.mode = AppMode::ResultsView;
                 if !self.runners.is_empty() || !self.manager_rows.is_empty() {
@@ -209,7 +228,9 @@ impl App {
 
     pub fn next_result(&mut self) {
         let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck => self.runners.len(),
+            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
+                self.runners.len()
+            }
             ResultsViewType::Workers => self.manager_rows.len(),
         };
         if len == 0 {
@@ -230,7 +251,9 @@ impl App {
 
     pub fn previous_result(&mut self) {
         let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck => self.runners.len(),
+            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
+                self.runners.len()
+            }
             ResultsViewType::Workers => self.manager_rows.len(),
         };
         if len == 0 {
@@ -249,9 +272,55 @@ impl App {
         self.table_state.select(Some(i));
     }
 
+    pub fn toggle_polling(&mut self) {
+        if self.polling_active {
+            self.polling_active = false;
+            self.poll_started_at = None;
+            self.last_poll_at = None;
+        } else {
+            self.polling_active = true;
+            self.poll_started_at = Some(Instant::now());
+            self.last_poll_at = Some(Instant::now());
+        }
+    }
+
+    pub fn poll_elapsed_secs(&self) -> u64 {
+        self.poll_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
+    pub fn poll_timed_out(&self) -> bool {
+        self.poll_elapsed_secs() >= self.config.poll_timeout_secs
+    }
+
+    fn should_poll_now(&self) -> bool {
+        if !self.polling_active || self.is_loading {
+            return false;
+        }
+        if self.mode != AppMode::ResultsView {
+            return false;
+        }
+        if self.poll_timed_out() {
+            return false;
+        }
+        self.last_poll_at
+            .map(|t| t.elapsed().as_secs() >= self.config.poll_interval_secs)
+            .unwrap_or(false)
+    }
+
     pub async fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
+        }
+
+        if self.should_poll_now() {
+            self.last_poll_at = Some(Instant::now());
+            self.execute_search().await;
+        }
+
+        if self.polling_active && self.poll_timed_out() {
+            self.polling_active = false;
         }
     }
 }
@@ -330,6 +399,8 @@ mod tests {
             status: "online".to_string(),
             version: Some("17.5.0".to_string()),
             revision: None,
+            platform: None,
+            architecture: None,
         };
 
         let row = ManagerRow {
