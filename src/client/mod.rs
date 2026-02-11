@@ -144,6 +144,7 @@ mod tests {
     async fn test_fetch_runners_success() {
         let mut server = Server::new_async().await;
 
+        // Real /runners/all response does NOT include tag_list, version, revision, or managers
         let mock = server
             .mock("GET", "/api/v4/runners/all")
             .match_query(Matcher::AllOf(vec![
@@ -159,14 +160,11 @@ mod tests {
                     "active": true,
                     "paused": false,
                     "description": "Test Runner",
-                    "created_at": "2024-01-15T10:30:00.000Z",
                     "ip_address": "10.0.1.50",
                     "is_shared": false,
                     "status": "online",
-                    "version": "17.5.0",
-                    "revision": "abc123",
-                    "tag_list": ["alm", "production"],
-                    "managers": []
+                    "name": null,
+                    "online": true
                 }]"#,
             )
             .create_async()
@@ -181,7 +179,8 @@ mod tests {
         assert_eq!(runners.len(), 1);
         assert_eq!(runners[0].id, 12345);
         assert_eq!(runners[0].status, "online");
-        assert_eq!(runners[0].tag_list, vec!["alm", "production"]);
+        // tag_list defaults to empty since /runners/all doesn't return it
+        assert!(runners[0].tag_list.is_empty());
     }
 
     #[tokio::test]
