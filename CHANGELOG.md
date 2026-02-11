@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/damacus/gitlab-runner-tui/compare/gitlab-runner-tui-v0.1.2...gitlab-runner-tui-v0.1.3) (2026-02-11)
+
+
+### Bug Fixes
+
+* trigger docker and release workflows on release-please tags ([#8](https://github.com/damacus/gitlab-runner-tui/issues/8)) ([ff15d30](https://github.com/damacus/gitlab-runner-tui/commit/ff15d3050dee17df1b8dc9d248ad80b6a3b0fc13))
+
 ## [0.1.2](https://github.com/damacus/gitlab-runner-tui/compare/gitlab-runner-tui-v0.1.1...gitlab-runner-tui-v0.1.2) (2026-02-11)
 
 
