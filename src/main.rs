@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{env, io};
+use std::io;
 use tui::{
     app::App,
     event::{Event, EventHandler},
@@ -44,16 +44,12 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // GITLAB_HOST defaults to gitlab.com if not provided
     let host = args
         .host
-        .or_else(|| env::var("GITLAB_HOST").ok())
         .unwrap_or_else(|| "https://gitlab.com".to_string());
 
-    // GITLAB_TOKEN is required
     let token = args
         .token
-        .or_else(|| env::var("GITLAB_TOKEN").ok())
         .expect("GITLAB_TOKEN must be set via environment variable or --token flag");
 
     let client = GitLabClient::new(host, token)?;
