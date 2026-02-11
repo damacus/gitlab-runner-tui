@@ -1,19 +1,19 @@
-# IGOR - Interactive GitLab Object Retriever
+# GitLab Runner TUI
 
 A fast, beautiful Terminal User Interface (TUI) for querying and inspecting GitLab Runners.
 
 ## Overview
 
-IGOR provides DevOps engineers and GitLab administrators with an intuitive command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags, status, version, and more—all from your terminal.
+GitLab Runner TUI provides DevOps engineers and GitLab administrators with an intuitive command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags—all from your terminal.
 
 ## Features
 
 - 🚀 **Interactive TUI** - Beautiful, keyboard-driven interface built with [ratatui](https://ratatui.rs/)
 - 🔍 **Multiple Query Commands** - Six specialized commands for different runner queries
-- 🏷️ **Flexible Filtering** - Filter by tags, status, version, type, and pause state
+- 🏷️ **Tag Filtering** - Filter runners by comma-separated tags
 - ⚡ **Real-time API Queries** - Direct integration with GitLab REST API v4
 - 📊 **Detailed Results** - Tabular display of runners and managers with color highlighting
-- 🔐 **Secure** - Token-based authentication with proxy and SSL support
+- 🔐 **Secure** - Token-based authentication
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ IGOR provides DevOps engineers and GitLab administrators with an intuitive comma
 git clone https://github.com/damacus/gitlab-runner-tui.git
 cd gitlab-runner-tui
 cargo build --release
-./target/release/igor
+./target/release/gitlab-runner-tui
 ```
 
 ### Configuration
@@ -53,22 +53,22 @@ GITLAB_HOST=https://gitlab.com
 
 ```bash
 # Using environment variables
-igor
+gitlab-runner-tui
 
 # Or specify via CLI flags
-igor --host https://gitlab.example.com --token glpat-xxx
+gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `fetch` | Fetch all GitLab Runner details with optional filters |
-| `lights` | Health check - verify all tagged runners are online |
-| `switch` | List runners with no online managers |
-| `workers` | Show detailed list of Runner Managers |
-| `flames` | Find runners not contacted recently (default: 1 hour) |
-| `empty` | List runners with no managers |
+| Command   | Description                                           |
+|-----------|-------------------------------------------------------|
+| `fetch`   | Fetch all GitLab Runner details with optional filters |
+| `lights`  | Health check - verify all tagged runners are online   |
+| `switch`  | List runners with no online managers                  |
+| `workers` | Show detailed list of Runner Managers                 |
+| `flames`  | Find runners not contacted recently (default: 1 hour) |
+| `empty`   | List runners with no managers                         |
 
 ## Keyboard Navigation
 
@@ -95,21 +95,16 @@ igor --host https://gitlab.example.com --token glpat-xxx
 
 ### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GITLAB_TOKEN` | Yes | - | Personal access token (needs `read_api` scope) |
-| `GITLAB_HOST` | No | `https://gitlab.com` | GitLab instance URL |
-| `LOG_LEVEL` | No | `info` | Logging level: `debug`, `info`, `warn`, `error` |
-| `DISABLE_SSL_WARNINGS` | No | `false` | Disable SSL verification (for self-signed certs) |
-| `HTTP_PROXY` | No | - | HTTP proxy URL |
-| `HTTPS_PROXY` | No | - | HTTPS proxy URL |
-| `NO_PROXY` | No | - | Comma-separated hosts to bypass proxy |
+| Variable       | Required | Default              | Description                                    |
+|----------------|----------|----------------------|------------------------------------------------|
+| `GITLAB_TOKEN` | Yes      | -                    | Personal access token (needs `read_api` scope) |
+| `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
 
 ### CLI Flags
 
 ```bash
-igor --host <URL>     # Override GITLAB_HOST
-igor --token <TOKEN>  # Override GITLAB_TOKEN
+gitlab-runner-tui --host <URL>     # Override GITLAB_HOST
+gitlab-runner-tui --token <TOKEN>  # Override GITLAB_TOKEN
 ```
 
 ## Examples
@@ -185,8 +180,7 @@ cargo test test_name
 
 **Error:** "SSL certificate verify failed"
 
-- For self-signed certificates, set: `DISABLE_SSL_WARNINGS=true`
-- Not recommended for production use
+- Self-signed certificate support is not currently implemented
 
 ## Contributing
 
@@ -194,9 +188,9 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 
 ## Architecture
 
-IGOR follows a three-layer architecture:
+GitLab Runner TUI follows a three-layer architecture:
 
-```
+```text
 TUI (View) → Conductor (Business Logic) → GitLabClient (API)
 ```
 
