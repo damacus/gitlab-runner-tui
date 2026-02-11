@@ -70,61 +70,7 @@ async fn main() -> Result<()> {
 
         if let Some(event) = event_handler.next().await {
             match event {
-                Event::Key(key) => {
-                    match key.code {
-                        crossterm::event::KeyCode::Char('?') => {
-                            if app.mode != tui::app::AppMode::Help {
-                                app.mode = tui::app::AppMode::Help;
-                            } else {
-                                app.mode = tui::app::AppMode::CommandSelection; // Or back to previous?
-                            }
-                        }
-                        crossterm::event::KeyCode::Char('q') => app.should_quit = true,
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            match app.mode {
-                                tui::app::AppMode::CommandSelection => app.previous_command(),
-                                tui::app::AppMode::ResultsView => app.previous_result(),
-                                _ => {}
-                            }
-                        }
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            match app.mode {
-                                tui::app::AppMode::CommandSelection => app.next_command(),
-                                tui::app::AppMode::ResultsView => app.next_result(),
-                                _ => {}
-                            }
-                        }
-                        crossterm::event::KeyCode::Enter => match app.mode {
-                            tui::app::AppMode::CommandSelection => app.select_command(),
-                            tui::app::AppMode::FilterInput => app.execute_search().await,
-                            _ => {}
-                        },
-                        crossterm::event::KeyCode::Esc => match app.mode {
-                            tui::app::AppMode::CommandSelection => app.should_quit = true,
-                            tui::app::AppMode::FilterInput => {
-                                app.error_message = None;
-                                app.mode = tui::app::AppMode::CommandSelection;
-                            }
-                            tui::app::AppMode::ResultsView => {
-                                app.error_message = None;
-                                app.mode = tui::app::AppMode::CommandSelection;
-                            }
-                            _ => app.mode = tui::app::AppMode::CommandSelection,
-                        },
-                        // FilterInput text entry
-                        crossterm::event::KeyCode::Char(c)
-                            if app.mode == tui::app::AppMode::FilterInput =>
-                        {
-                            app.input_buffer.push(c);
-                        }
-                        crossterm::event::KeyCode::Backspace
-                            if app.mode == tui::app::AppMode::FilterInput =>
-                        {
-                            app.input_buffer.pop();
-                        }
-                        _ => {}
-                    }
-                }
+                Event::Key(key) => app.handle_key(key).await,
                 Event::Tick => app.tick(),
             }
         }

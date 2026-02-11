@@ -1,6 +1,7 @@
 use crate::conductor::Conductor;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::Runner;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
@@ -256,6 +257,67 @@ impl App {
     pub fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
+        }
+    }
+
+    pub async fn handle_key(&mut self, key: KeyEvent) {
+        // FilterInput mode: route all chars/backspace to input buffer first
+        if self.mode == AppMode::FilterInput {
+            match key.code {
+                KeyCode::Enter => self.execute_search().await,
+                KeyCode::Esc => {
+                    self.error_message = None;
+                    self.mode = AppMode::CommandSelection;
+                }
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.input_buffer.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Help mode: any key closes help
+        if self.mode == AppMode::Help {
+            self.mode = AppMode::CommandSelection;
+            return;
+        }
+
+        // CommandSelection and ResultsView modes
+        match key.code {
+            KeyCode::Char('?') => {
+                self.mode = AppMode::Help;
+            }
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
+            KeyCode::Up | KeyCode::Char('k') => match self.mode {
+                AppMode::CommandSelection => self.previous_command(),
+                AppMode::ResultsView => self.previous_result(),
+                _ => {}
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.mode {
+                AppMode::CommandSelection => self.next_command(),
+                AppMode::ResultsView => self.next_result(),
+                _ => {}
+            },
+            KeyCode::Enter => {
+                if self.mode == AppMode::CommandSelection {
+                    self.select_command();
+                }
+            }
+            KeyCode::Esc => match self.mode {
+                AppMode::CommandSelection => self.should_quit = true,
+                AppMode::ResultsView => {
+                    self.error_message = None;
+                    self.mode = AppMode::CommandSelection;
+                }
+                _ => self.mode = AppMode::CommandSelection,
+            },
+            _ => {}
         }
     }
 }
