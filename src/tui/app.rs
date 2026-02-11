@@ -122,7 +122,7 @@ impl App {
         }
     }
 
-    pub async fn select_command(&mut self) {
+    pub fn select_command(&mut self) {
         self.mode = AppMode::FilterInput;
         self.input_buffer.clear();
     }
@@ -253,7 +253,7 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub async fn tick(&mut self) {
+    pub fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
         }

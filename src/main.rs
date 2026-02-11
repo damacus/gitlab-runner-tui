@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         crossterm::event::KeyCode::Enter => match app.mode {
-                            tui::app::AppMode::CommandSelection => app.select_command().await,
+                            tui::app::AppMode::CommandSelection => app.select_command(),
                             tui::app::AppMode::FilterInput => app.execute_search().await,
                             _ => {}
                         },
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 }
-                Event::Tick => app.tick().await,
+                Event::Tick => app.tick(),
             }
         }
 
