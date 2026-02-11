@@ -1,6 +1,6 @@
-use crate::tui::app::{App, ResultsViewType};
+use crate::tui::app::{App, AppMode, ResultsViewType};
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
     Frame,
@@ -13,6 +13,10 @@ fn status_style(status: &str) -> Style {
         "stale" => Style::default().fg(Color::Yellow),
         _ => Style::default().fg(Color::Gray),
     }
+}
+
+fn dash_or(value: &Option<String>) -> String {
+    value.as_deref().unwrap_or("-").to_string()
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -46,12 +50,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Content based on mode
     match app.mode {
-        crate::tui::app::AppMode::CommandSelection => {
-            render_command_selection(app, frame, chunks[1])
-        }
-        crate::tui::app::AppMode::FilterInput => render_filter_input(app, frame, chunks[1]),
-        crate::tui::app::AppMode::ResultsView => render_results(app, frame, chunks[1]),
-        crate::tui::app::AppMode::Help => render_help_view(app, frame, chunks[1]),
+        AppMode::CommandSelection => render_command_selection(app, frame, chunks[1]),
+        AppMode::FilterInput => render_filter_input(app, frame, chunks[1]),
+        AppMode::ResultsView => render_results(app, frame, chunks[1]),
+        AppMode::Help => render_help_view(app, frame, chunks[1]),
     };
 
     // Status bar with context-sensitive help
@@ -59,27 +61,23 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         "Press Esc to dismiss error and go back"
     } else {
         match app.mode {
-            crate::tui::app::AppMode::CommandSelection => {
-                "↑/↓: Navigate | Enter: Select | ?: Help | q: Quit"
-            }
-            crate::tui::app::AppMode::FilterInput => {
-                "Enter: Search | Esc: Back | Type to filter by tags"
-            }
-            crate::tui::app::AppMode::ResultsView => {
+            AppMode::CommandSelection => "↑/↓: Navigate | Enter: Select | ?: Help | q: Quit",
+            AppMode::FilterInput => "Enter: Search | Esc: Back | Type to filter by tags",
+            AppMode::ResultsView => {
                 if app.polling_active {
                     "↑/↓: Scroll | p: Stop polling | Esc: Back | q: Quit"
                 } else {
                     "↑/↓: Scroll | p: Start polling | Esc: Back | q: Quit"
                 }
             }
-            crate::tui::app::AppMode::Help => "Press any key to close help",
+            AppMode::Help => "Press any key to close help",
         }
     };
     let status = Paragraph::new(status_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(status, chunks[2]);
 }
 
-fn render_command_selection(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .commands
         .iter()
@@ -106,7 +104,7 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: ratatui::lay
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_filter_input(app: &App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
     let input = Paragraph::new(app.input_buffer.as_str())
         .style(Style::default().fg(Color::Yellow))
         .block(
@@ -117,7 +115,7 @@ fn render_filter_input(app: &App, frame: &mut Frame, area: ratatui::layout::Rect
     frame.render_widget(input, area);
 }
 
-fn render_results(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_results(app: &mut App, frame: &mut Frame, area: Rect) {
     // Check for error message first
     if let Some(error) = &app.error_message {
         render_error(error, frame, area);
@@ -132,7 +130,7 @@ fn render_results(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect)
     }
 }
 
-fn render_error(error: &str, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_error(error: &str, frame: &mut Frame, area: Rect) {
     let error_detail = format!("  {}", error);
     let error_text: Vec<String> = vec![
         "".to_string(),
@@ -162,64 +160,16 @@ fn render_error(error: &str, frame: &mut Frame, area: ratatui::layout::Rect) {
     frame.render_widget(list, area);
 }
 
-fn render_runners_table(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
-    let header = Row::new(vec![
-        Cell::from("ID"),
-        Cell::from("Type"),
-        Cell::from("Status"),
-        Cell::from("Version"),
-        Cell::from("Tags"),
-        Cell::from("Managers"),
-        Cell::from("IP"),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+fn render_runners_table(app: &mut App, frame: &mut Frame, area: Rect) {
+    render_runners_table_impl(
+        app,
+        frame,
+        area,
+        format!("Results ({} runners)", app.runners.len()),
     );
-
-    let rows = app.runners.iter().map(|runner| {
-        let status_style = match runner.status.as_str() {
-            "online" => Style::default().fg(Color::Green),
-            "offline" => Style::default().fg(Color::Red),
-            "stale" => Style::default().fg(Color::Yellow),
-            _ => Style::default().fg(Color::Gray),
-        };
-        Row::new(vec![
-            Cell::from(runner.id.to_string()),
-            Cell::from(runner.runner_type.clone()),
-            Cell::from(runner.status.clone()).style(status_style),
-            Cell::from(runner.version.clone().unwrap_or_else(|| "-".to_string())),
-            Cell::from(runner.tag_list.join(", ")),
-            Cell::from(runner.managers.len().to_string()),
-            Cell::from(runner.ip_address.clone().unwrap_or_else(|| "-".to_string())),
-        ])
-    });
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),     // ID
-            Constraint::Length(15),     // Type
-            Constraint::Length(10),     // Status
-            Constraint::Length(10),     // Version
-            Constraint::Percentage(30), // Tags
-            Constraint::Length(10),     // Managers
-            Constraint::Length(15),     // IP
-        ],
-    )
-    .header(header)
-    .highlight_style(Style::default().bg(Color::DarkGray))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Results ({} runners)", app.runners.len())),
-    );
-
-    frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn render_workers_table(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let header = Row::new(vec![
         Cell::from("Runner ID"),
         Cell::from("Tags"),
@@ -237,36 +187,21 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: ratatui::layout:
     );
 
     let rows = app.manager_rows.iter().map(|row| {
-        let status_style = match row.manager.status.as_str() {
-            "online" => Style::default().fg(Color::Green),
-            "offline" => Style::default().fg(Color::Red),
-            "stale" => Style::default().fg(Color::Yellow),
-            _ => Style::default().fg(Color::Gray),
-        };
         Row::new(vec![
             Cell::from(row.runner_id.to_string()),
             Cell::from(row.runner_tags.join(", ")),
             Cell::from(row.manager.id.to_string()),
             Cell::from(row.manager.system_id.clone()),
-            Cell::from(row.manager.status.clone()).style(status_style),
-            Cell::from(
-                row.manager
-                    .version
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
+            Cell::from(row.manager.status.clone()).style(status_style(&row.manager.status)),
+            Cell::from(dash_or(&row.manager.version)),
             Cell::from(
                 row.manager
                     .contacted_at
-                    .clone()
-                    .unwrap_or_else(|| "Never".to_string()),
+                    .as_deref()
+                    .unwrap_or("Never")
+                    .to_string(),
             ),
-            Cell::from(
-                row.manager
-                    .ip_address
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
+            Cell::from(dash_or(&row.manager.ip_address)),
         ])
     });
 
@@ -294,12 +229,10 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: ratatui::layout:
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn render_health_check(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
-    use ratatui::layout::Layout;
-
+fn render_health_check(app: &mut App, frame: &mut Frame, area: Rect) {
     // Split area: summary at top, table below
     let chunks = Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
+        .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(10)])
         .split(area);
 
@@ -333,16 +266,21 @@ fn render_health_check(app: &mut App, frame: &mut Frame, area: ratatui::layout::
     }
 
     // Render runners table in remaining space
-    render_runners_table_in_area(app, frame, chunks[1]);
+    render_runners_table_impl(
+        app,
+        frame,
+        chunks[1],
+        format!("Runners ({})", app.runners.len()),
+    );
 }
 
-fn render_runners_table_in_area(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title: String) {
     let header = Row::new(vec![
         Cell::from("ID"),
         Cell::from("Type"),
-        Cell::from("Tags"),
-        Cell::from("Version"),
         Cell::from("Status"),
+        Cell::from("Version"),
+        Cell::from("Tags"),
         Cell::from("Managers"),
         Cell::from("IP"),
     ])
@@ -353,47 +291,37 @@ fn render_runners_table_in_area(app: &mut App, frame: &mut Frame, area: ratatui:
     );
 
     let rows = app.runners.iter().map(|runner| {
-        let status_style = match runner.status.as_str() {
-            "online" => Style::default().fg(Color::Green),
-            "offline" => Style::default().fg(Color::Red),
-            "stale" => Style::default().fg(Color::Yellow),
-            _ => Style::default().fg(Color::Gray),
-        };
         Row::new(vec![
             Cell::from(runner.id.to_string()),
             Cell::from(runner.runner_type.clone()),
+            Cell::from(runner.status.clone()).style(status_style(&runner.status)),
+            Cell::from(dash_or(&runner.version)),
             Cell::from(runner.tag_list.join(", ")),
-            Cell::from(runner.version.clone().unwrap_or_else(|| "-".to_string())),
-            Cell::from(runner.status.clone()).style(status_style),
             Cell::from(runner.managers.len().to_string()),
-            Cell::from(runner.ip_address.clone().unwrap_or_else(|| "-".to_string())),
+            Cell::from(dash_or(&runner.ip_address)),
         ])
     });
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(8),
-            Constraint::Length(14),
-            Constraint::Percentage(25),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(15),
+            Constraint::Length(10),     // ID
+            Constraint::Length(15),     // Type
+            Constraint::Length(10),     // Status
+            Constraint::Length(10),     // Version
+            Constraint::Percentage(25), // Tags
+            Constraint::Length(10),     // Managers
+            Constraint::Length(15),     // IP
         ],
     )
     .header(header)
     .highlight_style(Style::default().bg(Color::DarkGray))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Runners ({})", app.runners.len())),
-    );
+    .block(Block::default().borders(Borders::ALL).title(title));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn render_rotation_table(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
     if app.runners.is_empty() {
         let msg = Paragraph::new("  No rotation detected - all runners have a single manager")
             .style(Style::default().fg(Color::Green))
@@ -494,7 +422,7 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: ratatui::layout
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn render_help_view(_app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_help_view(_app: &mut App, frame: &mut Frame, area: Rect) {
     let help_text = vec![
         "GitLab Runner TUI - Help",
         "---------",
@@ -502,7 +430,6 @@ fn render_help_view(_app: &mut App, frame: &mut Frame, area: ratatui::layout::Re
         "Navigation:",
         "  ↑/↓ or k/j    Navigate commands / Scroll results",
         "  Enter         Select command / Execute search",
-        "  Tab           Next filter field",
         "  Esc           Back / Cancel",
         "  ?             Toggle this help",
         "  q             Quit application",
@@ -519,12 +446,8 @@ fn render_help_view(_app: &mut App, frame: &mut Frame, area: ratatui::layout::Re
         "Polling (in results view):",
         "  p             Toggle auto-refresh polling",
         "",
-        "Filters (in filter mode):",
-        "  Tag List      Comma-separated tags (e.g., alm,prod)",
-        "  Status        online, offline, stale, never_contacted",
-        "  Version       Version prefix (e.g., 17, 18.5)",
-        "  Type          instance_type, group_type, project_type",
-        "  Paused        true or false",
+        "Filter (in filter mode):",
+        "  Tags          Comma-separated tags (e.g., alm,prod)",
         "",
         "Press any key to close help",
     ];

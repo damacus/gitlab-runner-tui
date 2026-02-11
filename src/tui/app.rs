@@ -2,8 +2,47 @@ use crate::conductor::Conductor;
 use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::Runner;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
+use std::fmt;
 use std::time::Instant;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Command {
+    Fetch,
+    Lights,
+    Switch,
+    Workers,
+    Flames,
+    Empty,
+    Rotate,
+}
+
+impl Command {
+    pub const ALL: &[Command] = &[
+        Command::Fetch,
+        Command::Lights,
+        Command::Switch,
+        Command::Workers,
+        Command::Flames,
+        Command::Empty,
+        Command::Rotate,
+    ];
+}
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Fetch => write!(f, "fetch"),
+            Command::Lights => write!(f, "lights"),
+            Command::Switch => write!(f, "switch"),
+            Command::Workers => write!(f, "workers"),
+            Command::Flames => write!(f, "flames"),
+            Command::Empty => write!(f, "empty"),
+            Command::Rotate => write!(f, "rotate"),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AppMode {
@@ -62,7 +101,7 @@ pub struct App {
     pub results_view_type: ResultsViewType,
     pub health_summary: Option<HealthSummary>,
 
-    pub commands: Vec<&'static str>,
+    pub commands: &'static [Command],
     pub selected_command_index: usize,
 
     pub input_buffer: String,
@@ -92,9 +131,7 @@ impl App {
             manager_rows: Vec::new(),
             results_view_type: ResultsViewType::default(),
             health_summary: None,
-            commands: vec![
-                "fetch", "lights", "switch", "workers", "flames", "empty", "rotate",
-            ],
+            commands: Command::ALL,
             selected_command_index: 0,
             input_buffer: String::new(),
             table_state: TableState::default(),
@@ -137,7 +174,7 @@ impl App {
         }
     }
 
-    pub async fn select_command(&mut self) {
+    pub fn select_command(&mut self) {
         self.mode = AppMode::FilterInput;
         self.input_buffer.clear();
     }
@@ -159,23 +196,26 @@ impl App {
         }
 
         let result = match command {
-            "fetch" | "lights" | "workers" => self.conductor.fetch_runners(filters).await,
-            "switch" => self.conductor.list_offline_runners(filters).await,
-            "flames" => self.conductor.list_uncontacted_runners(filters, 3600).await,
-            "empty" => self.conductor.list_runners_without_managers(filters).await,
-            "rotate" => self.conductor.detect_rotating_runners(filters).await,
-            _ => {
-                self.is_loading = false;
-                return;
+            Command::Fetch | Command::Lights | Command::Workers => {
+                self.conductor.fetch_runners(filters).await
             }
+            Command::Switch => self.conductor.list_offline_runners(filters).await,
+            Command::Flames => self.conductor.list_uncontacted_runners(filters, 3600).await,
+            Command::Empty => self.conductor.list_runners_without_managers(filters).await,
+            Command::Rotate => self.conductor.detect_rotating_runners(filters).await,
         };
 
         self.is_loading = false;
 
         match result {
             Ok(runners) => {
+                // Clear all previous results before populating new ones
+                self.runners.clear();
+                self.manager_rows.clear();
+                self.health_summary = None;
+
                 match command {
-                    "workers" => {
+                    Command::Workers => {
                         self.manager_rows = runners
                             .iter()
                             .flat_map(|r| {
@@ -188,15 +228,10 @@ impl App {
                             .collect();
                         self.results_view_type = ResultsViewType::Workers;
                     }
-                    "lights" => {
+                    Command::Lights => {
                         let online_count = runners
                             .iter()
-                            .filter(|r| {
-                                r.managers
-                                    .first()
-                                    .map(|m| m.status == "online")
-                                    .unwrap_or(false)
-                            })
+                            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
                             .count();
                         self.health_summary = Some(HealthSummary {
                             online_count,
@@ -205,7 +240,7 @@ impl App {
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::HealthCheck;
                     }
-                    "rotate" => {
+                    Command::Rotate => {
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Rotation;
                     }
@@ -309,18 +344,73 @@ impl App {
             .unwrap_or(false)
     }
 
-    pub async fn tick(&mut self) {
+    pub fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
         }
+    }
 
-        if self.should_poll_now() {
-            self.last_poll_at = Some(Instant::now());
-            self.execute_search().await;
+    pub async fn handle_key(&mut self, key: KeyEvent) {
+        // FilterInput mode: route all chars/backspace to input buffer first
+        if self.mode == AppMode::FilterInput {
+            match key.code {
+                KeyCode::Enter => self.execute_search().await,
+                KeyCode::Esc => {
+                    self.error_message = None;
+                    self.mode = AppMode::CommandSelection;
+                }
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.input_buffer.push(c);
+                }
+                _ => {}
+            }
+            return;
         }
 
-        if self.polling_active && self.poll_timed_out() {
-            self.polling_active = false;
+        // Help mode: any key closes help
+        if self.mode == AppMode::Help {
+            self.mode = AppMode::CommandSelection;
+            return;
+        }
+
+        // CommandSelection and ResultsView modes
+        match key.code {
+            KeyCode::Char('?') => {
+                self.mode = AppMode::Help;
+            }
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('p') if self.mode == AppMode::ResultsView => {
+                self.toggle_polling();
+            }
+            KeyCode::Up | KeyCode::Char('k') => match self.mode {
+                AppMode::CommandSelection => self.previous_command(),
+                AppMode::ResultsView => self.previous_result(),
+                _ => {}
+            },
+            KeyCode::Down | KeyCode::Char('j') => match self.mode {
+                AppMode::CommandSelection => self.next_command(),
+                AppMode::ResultsView => self.next_result(),
+                _ => {}
+            },
+            KeyCode::Enter => {
+                if self.mode == AppMode::CommandSelection {
+                    self.select_command();
+                }
+            }
+            KeyCode::Esc => match self.mode {
+                AppMode::CommandSelection => self.should_quit = true,
+                AppMode::ResultsView => {
+                    self.error_message = None;
+                    self.mode = AppMode::CommandSelection;
+                }
+                _ => self.mode = AppMode::CommandSelection,
+            },
+            _ => {}
         }
     }
 }
