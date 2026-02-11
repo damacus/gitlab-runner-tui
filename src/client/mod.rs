@@ -294,6 +294,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fetch_runner_managers_returns_error_on_500() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v4/runners/12345/managers")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(500)
+            .with_body(r#"{"message":"500 Internal Server Error"}"#)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+
+        let result = client.fetch_runner_managers(12345).await;
+
+        mock.assert_async().await;
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("500"),
+            "Error should mention 500, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
     async fn test_fetch_runners_empty_response() {
         let mut server = Server::new_async().await;
 
