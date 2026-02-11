@@ -10,6 +10,10 @@ pub struct RunnerManager {
     pub status: String,
     pub version: Option<String>,
     pub revision: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub architecture: Option<String>,
 }
 
 #[cfg(test)]
@@ -60,5 +64,66 @@ mod tests {
         assert!(manager.contacted_at.is_none());
         assert!(manager.ip_address.is_none());
         assert!(manager.version.is_none());
+    }
+
+    #[test]
+    fn test_manager_clone() {
+        let manager = RunnerManager {
+            id: 1,
+            system_id: "test".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            contacted_at: Some("2024-01-02T00:00:00Z".to_string()),
+            ip_address: Some("192.168.1.1".to_string()),
+            status: "online".to_string(),
+            version: Some("17.0.0".to_string()),
+            revision: Some("abc123".to_string()),
+            platform: Some("linux".to_string()),
+            architecture: Some("amd64".to_string()),
+        };
+
+        let cloned = manager.clone();
+        assert_eq!(manager, cloned);
+    }
+
+    #[test]
+    fn test_manager_with_platform_and_architecture() {
+        let json = r#"{
+            "id": 100,
+            "system_id": "runner-linux-01",
+            "created_at": "2024-06-09T11:12:02.507Z",
+            "contacted_at": "2024-06-09T06:30:09.355Z",
+            "ip_address": "127.0.0.1",
+            "status": "online",
+            "version": "16.11.1",
+            "revision": "535ced5f",
+            "platform": "linux",
+            "architecture": "amd64"
+        }"#;
+
+        let manager: RunnerManager =
+            serde_json::from_str(json).expect("Failed to deserialize manager with platform");
+
+        assert_eq!(manager.platform, Some("linux".to_string()));
+        assert_eq!(manager.architecture, Some("amd64".to_string()));
+    }
+
+    #[test]
+    fn test_manager_without_platform_fields_defaults_to_none() {
+        let json = r#"{
+            "id": 200,
+            "system_id": "runner-old",
+            "created_at": "2024-01-01T00:00:00Z",
+            "contacted_at": null,
+            "ip_address": null,
+            "status": "offline",
+            "version": null,
+            "revision": null
+        }"#;
+
+        let manager: RunnerManager =
+            serde_json::from_str(json).expect("Should deserialize without platform fields");
+
+        assert!(manager.platform.is_none());
+        assert!(manager.architecture.is_none());
     }
 }

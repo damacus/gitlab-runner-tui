@@ -187,6 +187,8 @@ mod tests {
                 status: s.to_string(),
                 version: Some("17.5.0".to_string()),
                 revision: None,
+                platform: None,
+                architecture: None,
             }],
             None => vec![],
         };
