@@ -3,6 +3,41 @@ use crate::models::manager::RunnerManager;
 use crate::models::runner::Runner;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
+use std::fmt;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Command {
+    Fetch,
+    Lights,
+    Switch,
+    Workers,
+    Flames,
+    Empty,
+}
+
+impl Command {
+    pub const ALL: &[Command] = &[
+        Command::Fetch,
+        Command::Lights,
+        Command::Switch,
+        Command::Workers,
+        Command::Flames,
+        Command::Empty,
+    ];
+}
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Fetch => write!(f, "fetch"),
+            Command::Lights => write!(f, "lights"),
+            Command::Switch => write!(f, "switch"),
+            Command::Workers => write!(f, "workers"),
+            Command::Flames => write!(f, "flames"),
+            Command::Empty => write!(f, "empty"),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AppMode {
@@ -59,7 +94,7 @@ pub struct App {
     pub results_view_type: ResultsViewType,
     pub health_summary: Option<HealthSummary>,
 
-    pub commands: Vec<&'static str>,
+    pub commands: &'static [Command],
     pub selected_command_index: usize,
 
     pub input_buffer: String,
@@ -83,7 +118,7 @@ impl App {
             manager_rows: Vec::new(),
             results_view_type: ResultsViewType::default(),
             health_summary: None,
-            commands: vec!["fetch", "lights", "switch", "workers", "flames", "empty"],
+            commands: Command::ALL,
             selected_command_index: 0,
             input_buffer: String::new(),
             table_state: TableState::default(),
@@ -144,18 +179,13 @@ impl App {
             );
         }
 
-        let is_workers = command == "workers";
-        let is_lights = command == "lights";
-
         let result = match command {
-            "fetch" | "lights" | "workers" => self.conductor.fetch_runners(filters).await,
-            "switch" => self.conductor.list_offline_runners(filters).await,
-            "flames" => self.conductor.list_uncontacted_runners(filters, 3600).await,
-            "empty" => self.conductor.list_runners_without_managers(filters).await,
-            _ => {
-                self.is_loading = false;
-                return;
+            Command::Fetch | Command::Lights | Command::Workers => {
+                self.conductor.fetch_runners(filters).await
             }
+            Command::Switch => self.conductor.list_offline_runners(filters).await,
+            Command::Flames => self.conductor.list_uncontacted_runners(filters, 3600).await,
+            Command::Empty => self.conductor.list_runners_without_managers(filters).await,
         };
 
         self.is_loading = false;
@@ -167,33 +197,36 @@ impl App {
                 self.manager_rows.clear();
                 self.health_summary = None;
 
-                if is_workers {
-                    // Flatten runners into manager rows
-                    self.manager_rows = runners
-                        .iter()
-                        .flat_map(|r| {
-                            r.managers.iter().map(move |m| ManagerRow {
-                                runner_id: r.id,
-                                runner_tags: r.tag_list.clone(),
-                                manager: m.clone(),
+                match command {
+                    Command::Workers => {
+                        self.manager_rows = runners
+                            .iter()
+                            .flat_map(|r| {
+                                r.managers.iter().map(move |m| ManagerRow {
+                                    runner_id: r.id,
+                                    runner_tags: r.tag_list.clone(),
+                                    manager: m.clone(),
+                                })
                             })
-                        })
-                        .collect();
-                    self.results_view_type = ResultsViewType::Workers;
-                } else if is_lights {
-                    let online_count = runners
-                        .iter()
-                        .filter(|r| r.managers.iter().any(|m| m.status == "online"))
-                        .count();
-                    self.health_summary = Some(HealthSummary {
-                        online_count,
-                        total_count: runners.len(),
-                    });
-                    self.runners = runners;
-                    self.results_view_type = ResultsViewType::HealthCheck;
-                } else {
-                    self.runners = runners;
-                    self.results_view_type = ResultsViewType::Runners;
+                            .collect();
+                        self.results_view_type = ResultsViewType::Workers;
+                    }
+                    Command::Lights => {
+                        let online_count = runners
+                            .iter()
+                            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
+                            .count();
+                        self.health_summary = Some(HealthSummary {
+                            online_count,
+                            total_count: runners.len(),
+                        });
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::HealthCheck;
+                    }
+                    _ => {
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::Runners;
+                    }
                 }
                 self.mode = AppMode::ResultsView;
                 if !self.runners.is_empty() || !self.manager_rows.is_empty() {
