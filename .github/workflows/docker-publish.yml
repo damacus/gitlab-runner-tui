@@ -3,8 +3,13 @@ name: build-and-push-container
 
 "on":
   push:
-    branches: [main]
     tags: ["v*", "gitlab-runner-tui-v*"]
+  workflow_call:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -20,6 +25,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -47,7 +54,6 @@ jobs:
             type=match,pattern=gitlab-runner-tui-v(\d+\.\d+\.\d+),group=1
             type=match,pattern=gitlab-runner-tui-v(\d+\.\d+),group=1
             type=sha,format=long
-            type=raw,value=beta,enable=${{ github.ref_type != 'tag' && github.ref_name == 'main' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build and push Docker image
