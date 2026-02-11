@@ -133,6 +133,15 @@ impl Conductor {
             .collect();
         Ok(empty)
     }
+
+    pub async fn detect_rotating_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
+        let runners = self.fetch_runners(filters).await?;
+        let rotating = runners
+            .into_iter()
+            .filter(|r| r.managers.len() > 1)
+            .collect();
+        Ok(rotating)
+    }
 }
 
 #[cfg(test)]
@@ -425,6 +434,127 @@ mod tests {
         // Only runner 2 has no managers
         assert_eq!(empty.len(), 1);
         assert_eq!(empty[0].id, 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_finds_multi_manager() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                // Runner 1: two managers (rotation in progress)
+                (1, "online", &["prod"], &[(10, "online"), (11, "offline")]),
+                // Runner 2: single manager (no rotation)
+                (2, "online", &["staging"], &[(20, "online")]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].id, 1);
+        assert_eq!(rotating[0].managers.len(), 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_empty_when_no_rotation() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                (1, "online", &["prod"], &[(10, "online")]),
+                (2, "online", &["staging"], &[(20, "online")]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert!(rotating.is_empty());
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_excludes_no_managers() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                (1, "online", &["prod"], &[]),
+                (
+                    2,
+                    "online",
+                    &["staging"],
+                    &[(20, "offline"), (21, "online")],
+                ),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].id, 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_rotating_runners_three_managers() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[(
+                1,
+                "online",
+                &["prod"],
+                &[(10, "offline"), (11, "stale"), (12, "online")],
+            )],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let rotating = conductor
+            .detect_rotating_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(rotating.len(), 1);
+        assert_eq!(rotating[0].managers.len(), 3);
 
         for mock in &mocks {
             mock.assert_async().await;

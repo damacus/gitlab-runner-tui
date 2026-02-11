@@ -1,9 +1,11 @@
 use crate::conductor::Conductor;
+use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::Runner;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::fmt;
+use std::time::Instant;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Command {
@@ -13,6 +15,7 @@ pub enum Command {
     Workers,
     Flames,
     Empty,
+    Rotate,
 }
 
 impl Command {
@@ -23,6 +26,7 @@ impl Command {
         Command::Workers,
         Command::Flames,
         Command::Empty,
+        Command::Rotate,
     ];
 }
 
@@ -35,6 +39,7 @@ impl fmt::Display for Command {
             Command::Workers => write!(f, "workers"),
             Command::Flames => write!(f, "flames"),
             Command::Empty => write!(f, "empty"),
+            Command::Rotate => write!(f, "rotate"),
         }
     }
 }
@@ -54,6 +59,7 @@ pub enum ResultsViewType {
     Runners,
     Workers,
     HealthCheck,
+    Rotation,
 }
 
 /// Flattened row for workers view: runner info + manager info
@@ -87,6 +93,7 @@ impl HealthSummary {
 
 pub struct App {
     pub conductor: Conductor,
+    pub config: AppConfig,
     pub mode: AppMode,
     pub should_quit: bool,
     pub runners: Vec<Runner>,
@@ -104,14 +111,20 @@ pub struct App {
     pub is_loading: bool,
     pub error_message: Option<String>,
     pub spinner_frame: usize,
+
+    // Polling state
+    pub polling_active: bool,
+    pub poll_started_at: Option<Instant>,
+    pub last_poll_at: Option<Instant>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl App {
-    pub fn new(conductor: Conductor) -> Self {
+    pub fn new(conductor: Conductor, config: AppConfig) -> Self {
         Self {
             conductor,
+            config,
             mode: AppMode::default(),
             should_quit: false,
             runners: Vec::new(),
@@ -125,6 +138,9 @@ impl App {
             is_loading: false,
             error_message: None,
             spinner_frame: 0,
+            polling_active: false,
+            poll_started_at: None,
+            last_poll_at: None,
         }
     }
 
@@ -186,6 +202,7 @@ impl App {
             Command::Switch => self.conductor.list_offline_runners(filters).await,
             Command::Flames => self.conductor.list_uncontacted_runners(filters, 3600).await,
             Command::Empty => self.conductor.list_runners_without_managers(filters).await,
+            Command::Rotate => self.conductor.detect_rotating_runners(filters).await,
         };
 
         self.is_loading = false;
@@ -223,6 +240,10 @@ impl App {
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::HealthCheck;
                     }
+                    Command::Rotate => {
+                        self.runners = runners;
+                        self.results_view_type = ResultsViewType::Rotation;
+                    }
                     _ => {
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Runners;
@@ -242,7 +263,9 @@ impl App {
 
     pub fn next_result(&mut self) {
         let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck => self.runners.len(),
+            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
+                self.runners.len()
+            }
             ResultsViewType::Workers => self.manager_rows.len(),
         };
         if len == 0 {
@@ -263,7 +286,9 @@ impl App {
 
     pub fn previous_result(&mut self) {
         let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck => self.runners.len(),
+            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
+                self.runners.len()
+            }
             ResultsViewType::Workers => self.manager_rows.len(),
         };
         if len == 0 {
@@ -282,9 +307,55 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub fn tick(&mut self) {
+    pub fn toggle_polling(&mut self) {
+        if self.polling_active {
+            self.polling_active = false;
+            self.poll_started_at = None;
+            self.last_poll_at = None;
+        } else {
+            self.polling_active = true;
+            self.poll_started_at = Some(Instant::now());
+            self.last_poll_at = Some(Instant::now());
+        }
+    }
+
+    pub fn poll_elapsed_secs(&self) -> u64 {
+        self.poll_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
+    pub fn poll_timed_out(&self) -> bool {
+        self.poll_elapsed_secs() >= self.config.poll_timeout_secs
+    }
+
+    fn should_poll_now(&self) -> bool {
+        if !self.polling_active || self.is_loading {
+            return false;
+        }
+        if self.mode != AppMode::ResultsView {
+            return false;
+        }
+        if self.poll_timed_out() {
+            return false;
+        }
+        self.last_poll_at
+            .map(|t| t.elapsed().as_secs() >= self.config.poll_interval_secs)
+            .unwrap_or(false)
+    }
+
+    pub async fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
+        }
+
+        if self.should_poll_now() {
+            self.last_poll_at = Some(Instant::now());
+            self.execute_search().await;
+        }
+
+        if self.polling_active && self.poll_timed_out() {
+            self.polling_active = false;
         }
     }
 
@@ -321,6 +392,9 @@ impl App {
             }
             KeyCode::Char('q') => {
                 self.should_quit = true;
+            }
+            KeyCode::Char('p') if self.mode == AppMode::ResultsView => {
+                self.toggle_polling();
             }
             KeyCode::Up | KeyCode::Char('k') => match self.mode {
                 AppMode::CommandSelection => self.previous_command(),
@@ -424,6 +498,8 @@ mod tests {
             status: "online".to_string(),
             version: Some("17.5.0".to_string()),
             revision: None,
+            platform: None,
+            architecture: None,
         };
 
         let row = ManagerRow {

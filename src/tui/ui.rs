@@ -32,6 +32,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // Header
     let title = if app.is_loading {
         format!("GitLab Runner TUI {} Loading...", app.spinner_char())
+    } else if app.polling_active {
+        let elapsed = app.poll_elapsed_secs();
+        let timeout = app.config.poll_timeout_secs;
+        format!(
+            "GitLab Runner TUI  ⟳ Polling ({:02}:{:02} / {:02}:{:02})",
+            elapsed / 60,
+            elapsed % 60,
+            timeout / 60,
+            timeout % 60
+        )
     } else {
         "GitLab Runner TUI".to_string()
     };
@@ -53,7 +63,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         match app.mode {
             AppMode::CommandSelection => "↑/↓: Navigate | Enter: Select | ?: Help | q: Quit",
             AppMode::FilterInput => "Enter: Search | Esc: Back | Type to filter by tags",
-            AppMode::ResultsView => "↑/↓: Scroll | Esc: Back | q: Quit",
+            AppMode::ResultsView => {
+                if app.polling_active {
+                    "↑/↓: Scroll | p: Stop polling | Esc: Back | q: Quit"
+                } else {
+                    "↑/↓: Scroll | p: Start polling | Esc: Back | q: Quit"
+                }
+            }
             AppMode::Help => "Press any key to close help",
         }
     };
@@ -110,6 +126,7 @@ fn render_results(app: &mut App, frame: &mut Frame, area: Rect) {
         ResultsViewType::Runners => render_runners_table(app, frame, area),
         ResultsViewType::Workers => render_workers_table(app, frame, area),
         ResultsViewType::HealthCheck => render_health_check(app, frame, area),
+        ResultsViewType::Rotation => render_rotation_table(app, frame, area),
     }
 }
 
@@ -304,6 +321,107 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
+fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
+    if app.runners.is_empty() {
+        let msg = Paragraph::new("  No rotation detected - all runners have a single manager")
+            .style(Style::default().fg(Color::Green))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Rotation Status"),
+            );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("Runner ID"),
+        Cell::from("Tags"),
+        Cell::from("Mgrs"),
+        Cell::from("Old System"),
+        Cell::from("Old Ver"),
+        Cell::from("Old Status"),
+        Cell::from("New System"),
+        Cell::from("New Ver"),
+        Cell::from("New Status"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows = app.runners.iter().map(|runner| {
+        let mgr_count = runner.managers.len();
+
+        let mut sorted_mgrs = runner.managers.clone();
+        sorted_mgrs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        let oldest = sorted_mgrs.first();
+        let newest = if sorted_mgrs.len() > 1 {
+            sorted_mgrs.last()
+        } else {
+            None
+        };
+
+        let old_system = oldest
+            .map(|m| m.system_id.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let old_ver = oldest
+            .and_then(|m| m.version.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let old_status = oldest
+            .map(|m| m.status.clone())
+            .unwrap_or_else(|| "-".to_string());
+
+        let new_system = newest
+            .map(|m| m.system_id.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let new_ver = newest
+            .and_then(|m| m.version.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let new_status = newest
+            .map(|m| m.status.clone())
+            .unwrap_or_else(|| "-".to_string());
+
+        Row::new(vec![
+            Cell::from(runner.id.to_string()),
+            Cell::from(runner.tag_list.join(", ")),
+            Cell::from(mgr_count.to_string()),
+            Cell::from(old_system),
+            Cell::from(old_ver),
+            Cell::from(old_status.clone()).style(status_style(&old_status)),
+            Cell::from(new_system),
+            Cell::from(new_ver),
+            Cell::from(new_status.clone()).style(status_style(&new_status)),
+        ])
+    });
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),     // Runner ID
+            Constraint::Percentage(15), // Tags
+            Constraint::Length(5),      // Mgrs
+            Constraint::Percentage(12), // Old System
+            Constraint::Length(10),     // Old Ver
+            Constraint::Length(10),     // Old Status
+            Constraint::Percentage(12), // New System
+            Constraint::Length(10),     // New Ver
+            Constraint::Length(10),     // New Status
+        ],
+    )
+    .header(header)
+    .highlight_style(Style::default().bg(Color::DarkGray))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Rotating Runners ({} detected)", app.runners.len())),
+    );
+
+    frame.render_stateful_widget(table, area, &mut app.table_state);
+}
+
 fn render_help_view(_app: &mut App, frame: &mut Frame, area: Rect) {
     let help_text = vec![
         "GitLab Runner TUI - Help",
@@ -323,6 +441,10 @@ fn render_help_view(_app: &mut App, frame: &mut Frame, area: Rect) {
         "  workers       Show runner managers (flattened view)",
         "  flames        List runners not contacted recently",
         "  empty         List runners with no managers",
+        "  rotate        Detect runners with multiple managers (rotation)",
+        "",
+        "Polling (in results view):",
+        "  p             Toggle auto-refresh polling",
         "",
         "Filter (in filter mode):",
         "  Tags          Comma-separated tags (e.g., alm,prod)",

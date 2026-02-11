@@ -1,6 +1,6 @@
 [package]
 name = "gitlab-runner-tui"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -27,6 +27,8 @@ anyhow = "1.0"
 # CLI & Config
 clap = { version = "4.5", features = ["derive", "env"] }
 dotenvy = "0.15"
+toml = "0.8"
+dirs = "5.0"
 
 # Utility
 chrono = { version = "0.4", features = ["serde"] }
