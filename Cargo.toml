@@ -2,6 +2,12 @@
 name = "gitlab-runner-tui"
 version = "0.1.4"
 edition = "2021"
+description = "A terminal UI for monitoring GitLab CI runners"
+license = "MIT"
+repository = "https://github.com/damacus/gitlab-runner-tui"
+homepage = "https://github.com/damacus/gitlab-runner-tui"
+keywords = ["gitlab", "ci", "tui", "runner", "terminal"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 # TUI
