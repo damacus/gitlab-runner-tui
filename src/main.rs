@@ -139,6 +139,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Stop event handler task
+    event_handler.stop();
+
     // Restore Terminal
     disable_raw_mode()?;
     execute!(
