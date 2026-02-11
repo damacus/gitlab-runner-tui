@@ -161,6 +161,11 @@ impl App {
 
         match result {
             Ok(runners) => {
+                // Clear all previous results before populating new ones
+                self.runners.clear();
+                self.manager_rows.clear();
+                self.health_summary = None;
+
                 if is_workers {
                     // Flatten runners into manager rows
                     self.manager_rows = runners
@@ -175,7 +180,6 @@ impl App {
                         .collect();
                     self.results_view_type = ResultsViewType::Workers;
                 } else if is_lights {
-                    // Calculate health summary for lights command
                     let online_count = runners
                         .iter()
                         .filter(|r| {
