@@ -3,7 +3,7 @@ name: release
 
 "on":
   push:
-    tags: ["v*"]
+    tags: ["v*", "gitlab-runner-tui-v*"]
   workflow_dispatch:
 
 permissions:

@@ -4,7 +4,7 @@ name: build-and-push-container
 "on":
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*", "gitlab-runner-tui-v*"]
 
 env:
   REGISTRY: ghcr.io
@@ -44,6 +44,8 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=match,pattern=gitlab-runner-tui-v(\d+\.\d+\.\d+),group=1
+            type=match,pattern=gitlab-runner-tui-v(\d+\.\d+),group=1
             type=sha,format=long
             type=raw,value=beta,enable=${{ github.ref_type != 'tag' && github.ref_name == 'main' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
