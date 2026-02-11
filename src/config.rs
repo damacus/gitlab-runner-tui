@@ -38,6 +38,7 @@ impl AppConfig {
         Ok(AppConfig::default())
     }
 
+    #[cfg(test)]
     pub fn load_from_str(toml_str: &str) -> Result<Self> {
         let config: AppConfig = toml::from_str(toml_str)?;
         Ok(config)
@@ -89,10 +90,7 @@ mod tests {
             config.gitlab_host,
             Some("https://gitlab.example.com".to_string())
         );
-        assert_eq!(
-            config.gitlab_token,
-            Some("glpat-test-token".to_string())
-        );
+        assert_eq!(config.gitlab_token, Some("glpat-test-token".to_string()));
     }
 
     #[test]
@@ -129,10 +127,7 @@ mod tests {
         "#;
 
         let config = AppConfig::load_from_str(toml_str).unwrap();
-        assert_eq!(
-            config.gitlab_host,
-            Some("https://gitlab.com".to_string())
-        );
+        assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
     }
 

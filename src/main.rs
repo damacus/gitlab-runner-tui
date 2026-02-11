@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         if let Some(event) = event_handler.next().await {
             match event {
                 Event::Key(key) => app.handle_key(key).await,
-                Event::Tick => app.tick(),
+                Event::Tick => app.tick().await,
             }
         }
 

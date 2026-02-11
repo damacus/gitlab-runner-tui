@@ -344,9 +344,18 @@ impl App {
             .unwrap_or(false)
     }
 
-    pub fn tick(&mut self) {
+    pub async fn tick(&mut self) {
         if self.is_loading {
             self.advance_spinner();
+        }
+
+        if self.should_poll_now() {
+            self.last_poll_at = Some(Instant::now());
+            self.execute_search().await;
+        }
+
+        if self.polling_active && self.poll_timed_out() {
+            self.polling_active = false;
         }
     }
 
