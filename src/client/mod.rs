@@ -105,6 +105,10 @@ impl GitLabClient {
             return Ok(Vec::new());
         }
 
+        let response = response
+            .error_for_status()
+            .context("GitLab API request failed for runner managers")?;
+
         let managers = response
             .json::<Vec<RunnerManager>>()
             .await

@@ -1,4 +1,5 @@
 use crossterm::event::{Event as CrosstermEvent, KeyEvent};
+use futures::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +23,6 @@ impl EventHandler {
 
         tokio::spawn(async move {
             let mut reader = crossterm::event::EventStream::new();
-            use futures::StreamExt;
 
             loop {
                 tokio::select! {
