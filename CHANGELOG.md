@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.5...v0.1.6) (2026-03-03)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate crossterm to 0.29 ([#22](https://github.com/damacus/gitlab-runner-tui/issues/22)) ([561b653](https://github.com/damacus/gitlab-runner-tui/commit/561b653a6356a13832d063f1fc25cd97d43fabeb))
+* **deps:** update rust crate toml to v1 ([#31](https://github.com/damacus/gitlab-runner-tui/issues/31)) ([22b4ed9](https://github.com/damacus/gitlab-runner-tui/commit/22b4ed93887ca1372317b20f5ec0076d3555e2f8))
+
 ## [0.1.5](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.4...v0.1.5) (2026-02-11)
 
 
