@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.6...v0.1.7) (2026-03-03)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate dirs to v6 ([#30](https://github.com/damacus/gitlab-runner-tui/issues/30)) ([aebde2f](https://github.com/damacus/gitlab-runner-tui/commit/aebde2f81443a1de47b326d190c63fcaf3f0b631))
+
 ## [0.1.6](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.5...v0.1.6) (2026-03-03)
 
 
