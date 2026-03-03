@@ -2,13 +2,27 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("poll_timeout_secs", &self.poll_timeout_secs)
+            .field("gitlab_host", &self.gitlab_host)
+            .field(
+                "gitlab_token",
+                &self.gitlab_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for AppConfig {
@@ -138,5 +152,26 @@ mod tests {
         // First path should be CWD/config.toml
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(paths[0], cwd.join("config.toml"));
+    }
+
+    #[test]
+    fn test_debug_redacts_token() {
+        let config = AppConfig {
+            poll_interval_secs: 30,
+            poll_timeout_secs: 1800,
+            gitlab_host: Some("https://gitlab.com".to_string()),
+            gitlab_token: Some("glpat-secret-token".to_string()),
+        };
+
+        let debug_output = format!("{:?}", config);
+
+        // Ensure sensitive token is not present
+        assert!(!debug_output.contains("glpat-secret-token"));
+
+        // Ensure redacted string is present
+        assert!(debug_output.contains("[REDACTED]"));
+
+        // Ensure other non-sensitive fields are still visible
+        assert!(debug_output.contains("https://gitlab.com"));
     }
 }
