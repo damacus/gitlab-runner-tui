@@ -30,20 +30,32 @@ impl Conductor {
             // Use buffer_unordered to limit concurrent API requests
             let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
                 let client = self.client.clone();
+                let runner_id = r.id;
                 async move {
-                    let mut detail = match client.fetch_runner_detail(r.id).await {
+                    // ⚡ Bolt Optimization:
+                    // Fetch runner details and managers concurrently rather than sequentially.
+                    // This halves the I/O wait time for enriching each runner, while still
+                    // obeying the overall buffer_unordered concurrency limit.
+                    let (detail_res, managers_res) = tokio::join!(
+                        client.fetch_runner_detail(runner_id),
+                        client.fetch_runner_managers(runner_id)
+                    );
+
+                    let mut detail = match detail_res {
                         Ok(d) => d,
                         Err(e) => {
-                            tracing::warn!(runner_id = r.id, error = %e, "Failed to fetch runner detail, using list data");
+                            tracing::warn!(runner_id = runner_id, error = %e, "Failed to fetch runner detail, using list data");
                             r
                         }
                     };
-                    match client.fetch_runner_managers(detail.id).await {
+
+                    match managers_res {
                         Ok(managers) => detail.managers = managers,
                         Err(e) => {
-                            tracing::warn!(runner_id = detail.id, error = %e, "Failed to fetch runner managers");
+                            tracing::warn!(runner_id = runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
+
                     detail
                 }
             }))
