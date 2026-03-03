@@ -33,7 +33,7 @@ anyhow = "1.0"
 # CLI & Config
 clap = { version = "4.5", features = ["derive", "env"] }
 dotenvy = "0.15"
-toml = "0.8"
+toml = "1.0"
 dirs = "5.0"
 
 # Utility
