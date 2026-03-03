@@ -7,14 +7,13 @@ use reqwest::{Client, Method, RequestBuilder};
 pub struct GitLabClient {
     client: Client,
     host: String,
-
 }
 
 impl GitLabClient {
     pub fn new(host: String, token: String) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::new();
-        let mut auth_value = reqwest::header::HeaderValue::from_str(&token)
-            .context("Invalid token format")?;
+        let mut auth_value =
+            reqwest::header::HeaderValue::from_str(&token).context("Invalid token format")?;
         auth_value.set_sensitive(true);
         headers.insert("private-token", auth_value);
 
@@ -24,10 +23,7 @@ impl GitLabClient {
             .build()
             .context("Failed to build reqwest client")?;
 
-        Ok(Self {
-            client,
-            host,
-        })
+        Ok(Self { client, host })
     }
 
     fn request(&self, method: Method, endpoint: &str) -> RequestBuilder {
