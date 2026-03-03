@@ -113,13 +113,6 @@ fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
                 .title("Filter Input (Press Enter to search)"),
         );
     frame.render_widget(input, area);
-
-    // Place the cursor after the current input text
-    let cursor_x = std::cmp::min(
-        area.x + app.input_buffer.chars().count() as u16 + 1,
-        area.x + area.width.saturating_sub(2),
-    );
-    frame.set_cursor(cursor_x, area.y + 1);
 }
 
 fn render_results(app: &mut App, frame: &mut Frame, area: Rect) {
