@@ -7,20 +7,26 @@ use reqwest::{Client, Method, RequestBuilder};
 pub struct GitLabClient {
     client: Client,
     host: String,
-    token: String,
+
 }
 
 impl GitLabClient {
     pub fn new(host: String, token: String) -> Result<Self> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut auth_value = reqwest::header::HeaderValue::from_str(&token)
+            .context("Invalid token format")?;
+        auth_value.set_sensitive(true);
+        headers.insert("private-token", auth_value);
+
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .default_headers(headers)
             .build()
             .context("Failed to build reqwest client")?;
 
         Ok(Self {
             client,
             host,
-            token,
         })
     }
 
@@ -30,9 +36,7 @@ impl GitLabClient {
             self.host.trim_end_matches('/'),
             endpoint.trim_start_matches('/')
         );
-        self.client
-            .request(method, &url)
-            .header("PRIVATE-TOKEN", &self.token)
+        self.client.request(method, &url)
     }
 
     pub async fn fetch_runners(
