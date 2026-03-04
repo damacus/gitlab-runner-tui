@@ -268,7 +268,8 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let client = GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
+        let client =
+            GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
         let _conductor = Conductor::new(client);
     }
 
@@ -281,7 +282,12 @@ mod tests {
                 // Runner 1: one online manager -> online
                 (1, "online", &["prod"], &[(10, "online")]),
                 // Runner 2: only offline managers -> offline
-                (2, "offline", &["staging"], &[(20, "offline"), (21, "offline")]),
+                (
+                    2,
+                    "offline",
+                    &["staging"],
+                    &[(20, "offline"), (21, "offline")],
+                ),
                 // Runner 3: multiple managers, one online -> online
                 (3, "online", &["dev"], &[(30, "offline"), (31, "online")]),
                 // Runner 4: no managers -> offline (no online manager)
