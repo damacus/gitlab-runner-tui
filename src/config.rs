@@ -2,13 +2,27 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
+}
+
+impl std::fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("poll_timeout_secs", &self.poll_timeout_secs)
+            .field("gitlab_host", &self.gitlab_host)
+            .field(
+                "gitlab_token",
+                &self.gitlab_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for AppConfig {
