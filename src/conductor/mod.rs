@@ -31,17 +31,27 @@ impl Conductor {
             let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
                 let client = self.client.clone();
                 async move {
-                    let mut detail = match client.fetch_runner_detail(r.id).await {
+                    let runner_id = r.id;
+
+                    // OPTIMIZATION: Fetch runner detail and managers concurrently using tokio::join!
+                    // This reduces enrichment latency per runner to the max of either API call
+                    // rather than the sum of both, making the application measurably faster.
+                    let (detail_res, managers_res) = tokio::join!(
+                        client.fetch_runner_detail(runner_id),
+                        client.fetch_runner_managers(runner_id)
+                    );
+
+                    let mut detail = match detail_res {
                         Ok(d) => d,
                         Err(e) => {
-                            tracing::warn!(runner_id = r.id, error = %e, "Failed to fetch runner detail, using list data");
+                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner detail, using list data");
                             r
                         }
                     };
-                    match client.fetch_runner_managers(detail.id).await {
+                    match managers_res {
                         Ok(managers) => detail.managers = managers,
                         Err(e) => {
-                            tracing::warn!(runner_id = detail.id, error = %e, "Failed to fetch runner managers");
+                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
                     detail
