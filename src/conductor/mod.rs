@@ -266,6 +266,48 @@ mod tests {
         mocks
     }
 
+    #[test]
+    fn test_new() {
+        let client = GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
+        let _conductor = Conductor::new(client);
+    }
+
+    #[tokio::test]
+    async fn test_check_runner_statuses() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                // Runner 1: one online manager -> online
+                (1, "online", &["prod"], &[(10, "online")]),
+                // Runner 2: only offline managers -> offline
+                (2, "offline", &["staging"], &[(20, "offline"), (21, "offline")]),
+                // Runner 3: multiple managers, one online -> online
+                (3, "online", &["dev"], &[(30, "offline"), (31, "online")]),
+                // Runner 4: no managers -> offline (no online manager)
+                (4, "online", &["test"], &[]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let (online, total) = conductor
+            .check_runner_statuses(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        // Total 4 runners
+        assert_eq!(total, 4);
+        // Runners 1 and 3 are online, so 2 online runners
+        assert_eq!(online, 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
+    }
+
     #[tokio::test]
     async fn test_enrichment_adds_tags_from_detail() {
         let mut server = Server::new_async().await;
