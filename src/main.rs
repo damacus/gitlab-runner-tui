@@ -70,7 +70,9 @@ async fn main() -> Result<()> {
         .token
         .or_else(|| env::var("GITLAB_TOKEN").ok())
         .or_else(|| config.gitlab_token.clone())
-        .context("GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml")?;
+        .context(
+            "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
+        )?;
 
     let client = GitLabClient::new(host, token)?;
     let conductor = Conductor::new(client);
