@@ -4,7 +4,7 @@ mod config;
 mod models;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         .token
         .or_else(|| env::var("GITLAB_TOKEN").ok())
         .or_else(|| config.gitlab_token.clone())
-        .expect("GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml");
+        .context("GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml")?;
 
     let client = GitLabClient::new(host, token)?;
     let conductor = Conductor::new(client);
