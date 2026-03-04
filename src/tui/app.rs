@@ -512,4 +512,33 @@ mod tests {
         assert_eq!(row.runner_tags.len(), 2);
         assert_eq!(row.manager.system_id, "test-host");
     }
+
+    #[tokio::test]
+    async fn test_execute_search_handles_error() {
+        use crate::client::GitLabClient;
+        use crate::conductor::Conductor;
+        use crate::config::AppConfig;
+
+        let mut server = mockito::Server::new_async().await;
+        let _m = server.mock("GET", "/api/v4/runners/all")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "dummy_token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+        let config = AppConfig::default();
+
+        let mut app = App::new(conductor, config);
+
+        assert_eq!(app.mode, AppMode::CommandSelection);
+        assert!(app.error_message.is_none());
+
+        app.execute_search().await;
+
+        assert_eq!(app.mode, AppMode::ResultsView);
+        assert!(app.error_message.is_some());
+    }
 }
