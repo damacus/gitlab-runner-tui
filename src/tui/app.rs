@@ -520,7 +520,8 @@ mod tests {
         use crate::config::AppConfig;
 
         let mut server = mockito::Server::new_async().await;
-        let _m = server.mock("GET", "/api/v4/runners/all")
+        let _m = server
+            .mock("GET", "/api/v4/runners/all")
             .match_query(mockito::Matcher::Any)
             .with_status(500)
             .with_body("Internal Server Error")
