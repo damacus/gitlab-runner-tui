@@ -6,12 +6,17 @@ use ratatui::{
     Frame,
 };
 
+const ONLINE_STYLE: Style = Style::new().fg(Color::Green);
+const OFFLINE_STYLE: Style = Style::new().fg(Color::Red);
+const STALE_STYLE: Style = Style::new().fg(Color::Yellow);
+const DEFAULT_STYLE: Style = Style::new().fg(Color::Gray);
+
 fn status_style(status: &str) -> Style {
     match status {
-        "online" => Style::default().fg(Color::Green),
-        "offline" => Style::default().fg(Color::Red),
-        "stale" => Style::default().fg(Color::Yellow),
-        _ => Style::default().fg(Color::Gray),
+        "online" => ONLINE_STYLE,
+        "offline" => OFFLINE_STYLE,
+        "stale" => STALE_STYLE,
+        _ => DEFAULT_STYLE,
     }
 }
 
