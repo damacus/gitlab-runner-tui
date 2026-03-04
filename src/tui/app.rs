@@ -512,4 +512,125 @@ mod tests {
         assert_eq!(row.runner_tags.len(), 2);
         assert_eq!(row.manager.system_id, "test-host");
     }
+    use crossterm::event::KeyModifiers;
+    use crate::client::GitLabClient;
+    use crate::conductor::Conductor;
+    use crate::config::AppConfig;
+
+    fn setup_app() -> App {
+        let client = GitLabClient::new("http://localhost".to_string(), "token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+        let config = AppConfig::default();
+        App::new(conductor, config)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_filter_input_mode() {
+        let mut app = setup_app();
+        app.mode = AppMode::FilterInput;
+
+        // Backspace
+        app.input_buffer = "test".to_string();
+        app.handle_key(key(KeyCode::Backspace)).await;
+        assert_eq!(app.input_buffer, "tes");
+
+        // Char
+        app.handle_key(key(KeyCode::Char('t'))).await;
+        assert_eq!(app.input_buffer, "test");
+
+        // Esc
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert_eq!(app.mode, AppMode::CommandSelection);
+        assert!(app.error_message.is_none());
+
+        // Note: Enter invokes execute_search which does an async network call and changes state, it has a side effect:
+        app.mode = AppMode::FilterInput;
+        // Don't test enter here because it triggers network request.
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_help_mode() {
+        let mut app = setup_app();
+        app.mode = AppMode::Help;
+
+        app.handle_key(key(KeyCode::Char('q'))).await;
+        assert_eq!(app.mode, AppMode::CommandSelection);
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_command_selection_mode() {
+        let mut app = setup_app();
+        app.mode = AppMode::CommandSelection;
+
+        // Help (?)
+        app.handle_key(key(KeyCode::Char('?'))).await;
+        assert_eq!(app.mode, AppMode::Help);
+        app.mode = AppMode::CommandSelection;
+
+        // Quit (q)
+        app.handle_key(key(KeyCode::Char('q'))).await;
+        assert!(app.should_quit);
+        app.should_quit = false;
+
+        // Esc
+        app.handle_key(key(KeyCode::Esc)).await;
+        assert!(app.should_quit);
+        app.should_quit = false;
+
+        // Move Down (j)
+        let initial_index = app.selected_command_index;
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert_eq!(app.selected_command_index, initial_index + 1);
+
+        // Move Up (k)
+        app.handle_key(key(KeyCode::Char('k'))).await;
+        assert_eq!(app.selected_command_index, initial_index);
+
+        // Enter
+        app.handle_key(key(KeyCode::Enter)).await;
+        assert_eq!(app.mode, AppMode::FilterInput);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_key_results_view_mode() {
+        let mut app = setup_app();
+        app.mode = AppMode::ResultsView;
+        // Populate dummy results so navigation does something
+        app.runners.push(crate::models::runner::Runner {
+            id: 1,
+            runner_type: "project_type".to_string(),
+            active: true,
+            paused: false,
+            description: None,
+            created_at: None,
+            ip_address: None,
+            is_shared: false,
+            status: "online".to_string(),
+            version: None,
+            revision: None,
+            tag_list: vec![],
+            managers: vec![],
+        });
+        app.runners.push(app.runners[0].clone()); // add a second
+        app.results_view_type = ResultsViewType::Runners;
+        app.table_state.select(Some(0));
+
+        // Move Down (j)
+        app.handle_key(key(KeyCode::Char('j'))).await;
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        // Move Up (k)
+        app.handle_key(key(KeyCode::Char('k'))).await;
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        // Toggle Polling (p)
+        assert!(!app.polling_active);
+        app.handle_key(key(KeyCode::Char('p'))).await;
+        assert!(app.polling_active);
+    }
 }
