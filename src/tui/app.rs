@@ -512,13 +512,14 @@ mod tests {
         assert_eq!(row.runner_tags.len(), 2);
         assert_eq!(row.manager.system_id, "test-host");
     }
-    use crossterm::event::KeyModifiers;
     use crate::client::GitLabClient;
     use crate::conductor::Conductor;
     use crate::config::AppConfig;
+    use crossterm::event::KeyModifiers;
 
     fn setup_app() -> App {
-        let client = GitLabClient::new("http://localhost".to_string(), "token".to_string()).unwrap();
+        let client =
+            GitLabClient::new("http://localhost".to_string(), "token".to_string()).unwrap();
         let conductor = Conductor::new(client);
         let config = AppConfig::default();
         App::new(conductor, config)
