@@ -6,12 +6,17 @@ use ratatui::{
     Frame,
 };
 
+const ONLINE_STYLE: Style = Style::new().fg(Color::Green);
+const OFFLINE_STYLE: Style = Style::new().fg(Color::Red);
+const STALE_STYLE: Style = Style::new().fg(Color::Yellow);
+const DEFAULT_STYLE: Style = Style::new().fg(Color::Gray);
+
 fn status_style(status: &str) -> Style {
     match status {
-        "online" => Style::default().fg(Color::Green),
-        "offline" => Style::default().fg(Color::Red),
-        "stale" => Style::default().fg(Color::Yellow),
-        _ => Style::default().fg(Color::Gray),
+        "online" => ONLINE_STYLE,
+        "offline" => OFFLINE_STYLE,
+        "stale" => STALE_STYLE,
+        _ => DEFAULT_STYLE,
     }
 }
 
@@ -170,6 +175,20 @@ fn render_runners_table(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
+    if app.manager_rows.is_empty() {
+        let msg = Paragraph::new(
+            "\n  No workers found.\n\n  Press 'Esc' to go back or adjust your filter tags.",
+        )
+        .style(Style::default().fg(Color::Gray))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Workers (0 managers)"),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
     let header = Row::new(vec![
         Cell::from("Runner ID"),
         Cell::from("Tags"),
@@ -275,6 +294,16 @@ fn render_health_check(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title: String) {
+    if app.runners.is_empty() {
+        let msg = Paragraph::new(
+            "\n  No runners found.\n\n  Press 'Esc' to go back or adjust your filter tags.",
+        )
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default().borders(Borders::ALL).title(title));
+        frame.render_widget(msg, area);
+        return;
+    }
+
     let header = Row::new(vec![
         Cell::from("ID"),
         Cell::from("Type"),

@@ -217,12 +217,13 @@ impl App {
                 match command {
                     Command::Workers => {
                         self.manager_rows = runners
-                            .iter()
-                            .flat_map(|r| {
-                                r.managers.iter().map(move |m| ManagerRow {
+                            .into_iter()
+                            .flat_map(|mut r| {
+                                let tags = std::mem::take(&mut r.tag_list);
+                                r.managers.into_iter().map(move |m| ManagerRow {
                                     runner_id: r.id,
-                                    runner_tags: r.tag_list.clone(),
-                                    manager: m.clone(),
+                                    runner_tags: tags.clone(),
+                                    manager: m,
                                 })
                             })
                             .collect();
@@ -633,5 +634,35 @@ mod tests {
         assert!(!app.polling_active);
         app.handle_key(key(KeyCode::Char('p'))).await;
         assert!(app.polling_active);
+    }
+
+    #[tokio::test]
+    async fn test_execute_search_handles_error() {
+        use crate::client::GitLabClient;
+        use crate::conductor::Conductor;
+        use crate::config::AppConfig;
+
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .with_body("Internal Server Error")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "dummy_token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+        let config = AppConfig::default();
+
+        let mut app = App::new(conductor, config);
+
+        assert_eq!(app.mode, AppMode::CommandSelection);
+        assert!(app.error_message.is_none());
+
+        app.execute_search().await;
+
+        assert_eq!(app.mode, AppMode::ResultsView);
+        assert!(app.error_message.is_some());
     }
 }

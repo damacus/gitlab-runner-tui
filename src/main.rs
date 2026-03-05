@@ -4,7 +4,7 @@ mod config;
 mod models;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
@@ -23,7 +23,7 @@ use tui::{
     ui,
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(long, env("GITLAB_HOST"))]
@@ -43,6 +43,18 @@ struct Args {
     /// Comma-separated tags to filter runners
     #[arg(long)]
     tags: Option<String>,
+}
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("host", &self.host)
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("watch", &self.watch)
+            .field("command", &self.command)
+            .field("tags", &self.tags)
+            .finish()
+    }
 }
 
 #[tokio::main]
@@ -70,7 +82,9 @@ async fn main() -> Result<()> {
         .token
         .or_else(|| env::var("GITLAB_TOKEN").ok())
         .or_else(|| config.gitlab_token.clone())
-        .expect("GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml");
+        .context(
+            "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
+        )?;
 
     let client = GitLabClient::new(host, token)?;
     let conductor = Conductor::new(client);
