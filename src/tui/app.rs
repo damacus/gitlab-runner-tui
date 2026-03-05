@@ -217,12 +217,13 @@ impl App {
                 match command {
                     Command::Workers => {
                         self.manager_rows = runners
-                            .iter()
-                            .flat_map(|r| {
-                                r.managers.iter().map(move |m| ManagerRow {
+                            .into_iter()
+                            .flat_map(|mut r| {
+                                let tags = std::mem::take(&mut r.tag_list);
+                                r.managers.into_iter().map(move |m| ManagerRow {
                                     runner_id: r.id,
-                                    runner_tags: r.tag_list.clone(),
-                                    manager: m.clone(),
+                                    runner_tags: tags.clone(),
+                                    manager: m,
                                 })
                             })
                             .collect();
