@@ -31,17 +31,27 @@ impl Conductor {
             let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
                 let client = self.client.clone();
                 async move {
-                    let mut detail = match client.fetch_runner_detail(r.id).await {
+                    let runner_id = r.id;
+
+                    // OPTIMIZATION: Fetch runner detail and managers concurrently using tokio::join!
+                    // This reduces enrichment latency per runner to the max of either API call
+                    // rather than the sum of both, making the application measurably faster.
+                    let (detail_res, managers_res) = tokio::join!(
+                        client.fetch_runner_detail(runner_id),
+                        client.fetch_runner_managers(runner_id)
+                    );
+
+                    let mut detail = match detail_res {
                         Ok(d) => d,
                         Err(e) => {
-                            tracing::warn!(runner_id = r.id, error = %e, "Failed to fetch runner detail, using list data");
+                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner detail, using list data");
                             r
                         }
                     };
-                    match client.fetch_runner_managers(detail.id).await {
+                    match managers_res {
                         Ok(managers) => detail.managers = managers,
                         Err(e) => {
-                            tracing::warn!(runner_id = detail.id, error = %e, "Failed to fetch runner managers");
+                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
                     detail
@@ -264,6 +274,54 @@ mod tests {
         }
 
         mocks
+    }
+
+    #[test]
+    fn test_new() {
+        let client =
+            GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
+        let _conductor = Conductor::new(client);
+    }
+
+    #[tokio::test]
+    async fn test_check_runner_statuses() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_runner_mocks(
+            &mut server,
+            &[
+                // Runner 1: one online manager -> online
+                (1, "online", &["prod"], &[(10, "online")]),
+                // Runner 2: only offline managers -> offline
+                (
+                    2,
+                    "offline",
+                    &["staging"],
+                    &[(20, "offline"), (21, "offline")],
+                ),
+                // Runner 3: multiple managers, one online -> online
+                (3, "online", &["dev"], &[(30, "offline"), (31, "online")]),
+                // Runner 4: no managers -> offline (no online manager)
+                (4, "online", &["test"], &[]),
+            ],
+        )
+        .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let (online, total) = conductor
+            .check_runner_statuses(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        // Total 4 runners
+        assert_eq!(total, 4);
+        // Runners 1 and 3 are online, so 2 online runners
+        assert_eq!(online, 2);
+
+        for mock in &mocks {
+            mock.assert_async().await;
+        }
     }
 
     #[tokio::test]
