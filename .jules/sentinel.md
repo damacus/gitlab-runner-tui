@@ -2,3 +2,19 @@
 **Vulnerability:** The `AppConfig` struct derived the `Debug` trait automatically, which would print the plaintext `gitlab_token` (a sensitive personal access token) if the configuration was ever logged or formatted with `{:?}`.
 **Learning:** In Rust applications, automatically deriving `Debug` for structs containing secrets is a common anti-pattern that can lead to credential leakage in logs or console output.
 **Prevention:** Manually implement `std::fmt::Debug` for structs containing sensitive data and explicitly redact those fields (e.g., using `[REDACTED]`). Include unit tests to verify the redaction logic.
+
+## 2024-03-03 - Secure Request Headers
+**Vulnerability:** GitLab API token (`PRIVATE-TOKEN`) was stored as a raw String in the client struct and manually added to each request. If HTTP tracing/logging was enabled, this token would be logged in plain text.
+**Learning:** `reqwest` does not automatically redact custom authentication headers like `PRIVATE-TOKEN`.
+**Prevention:** Always add authentication tokens as default headers to the `reqwest::Client` builder, and explicitly mark the `HeaderValue` as sensitive using `.set_sensitive(true)` to prevent it from leaking into debug logs or error traces.
+
+## 2024-05-24 - Exposing Sensitive Data via `Debug` traits
+
+**Vulnerability:**
+Sensitive fields, such as GitLab tokens, were exposed via the `Debug` trait when structs holding those values (like `Args` and `AppConfig`) used `#[derive(Debug)]`. This can lead to tokens being unintentionally leaked in logs or console output if the application ever prints or logs debug information about these structs.
+
+**Learning:**
+Using `#[derive(Debug)]` on structs containing sensitive credentials is an easy way to inadvertently introduce a security vulnerability. The auto-generated `fmt` implementation will print out all fields, including secrets.
+
+**Prevention:**
+Remove the `Debug` trait from the `#[derive(...)]` attribute of any structs containing sensitive fields. Instead, provide a manual implementation of `std::fmt::Debug` where sensitive fields are explicitly redacted (e.g., `.field("gitlab_token", &self.gitlab_token.as_ref().map(|_| "[REDACTED]"))`).
