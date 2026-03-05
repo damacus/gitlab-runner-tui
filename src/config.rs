@@ -145,7 +145,10 @@ mod tests {
         let paths = config_paths();
         if let Some(config_dir) = dirs::config_dir() {
             assert_eq!(paths.len(), 1);
-            assert_eq!(paths[0], config_dir.join("gitlab-runner-tui").join("config.toml"));
+            assert_eq!(
+                paths[0],
+                config_dir.join("gitlab-runner-tui").join("config.toml")
+            );
         } else {
             assert!(paths.is_empty());
         }
