@@ -140,6 +140,51 @@ mod tests {
         assert!(client.is_ok());
     }
 
+    #[test]
+    fn test_request_url_construction() {
+        let client = GitLabClient::new(
+            "https://gitlab.example.com".to_string(),
+            "token".to_string(),
+        )
+        .unwrap();
+
+        let req = client.request(Method::GET, "runners").build().unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://gitlab.example.com/api/v4/runners"
+        );
+
+        let req = client.request(Method::GET, "/runners").build().unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://gitlab.example.com/api/v4/runners"
+        );
+
+        let client_with_slash = GitLabClient::new(
+            "https://gitlab.example.com/".to_string(),
+            "token".to_string(),
+        )
+        .unwrap();
+
+        let req = client_with_slash
+            .request(Method::GET, "runners")
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://gitlab.example.com/api/v4/runners"
+        );
+
+        let req = client_with_slash
+            .request(Method::GET, "/runners")
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://gitlab.example.com/api/v4/runners"
+        );
+    }
+
     #[tokio::test]
     async fn test_fetch_runners_success() {
         let mut server = Server::new_async().await;
