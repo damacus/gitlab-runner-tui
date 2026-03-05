@@ -391,12 +391,10 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let rows = app.runners.iter().map(|runner| {
         let mgr_count = runner.managers.len();
 
-        let mut sorted_mgrs = runner.managers.clone();
-        sorted_mgrs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-
-        let oldest = sorted_mgrs.first();
-        let newest = if sorted_mgrs.len() > 1 {
-            sorted_mgrs.last()
+        // ⚡ Bolt: find min and max without cloning or sorting, O(N) instead of O(N log N) with allocs
+        let oldest = runner.managers.iter().min_by_key(|m| &m.created_at);
+        let newest = if runner.managers.len() > 1 {
+            runner.managers.iter().max_by_key(|m| &m.created_at)
         } else {
             None
         };
