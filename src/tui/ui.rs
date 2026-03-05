@@ -118,6 +118,14 @@ fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
                 .title("Filter Input (Press Enter to search)"),
         );
     frame.render_widget(input, area);
+
+    // Make the cursor visible and set its position
+    frame.set_cursor(
+        // Put cursor past the end of the input text
+        area.x + app.input_buffer.chars().count() as u16 + 1,
+        // Move one line down, from the border to the input line
+        area.y + 1,
+    );
 }
 
 fn render_results(app: &mut App, frame: &mut Frame, area: Rect) {
