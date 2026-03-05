@@ -23,3 +23,8 @@ Using `#[derive(Debug)]` on structs containing sensitive credentials is an easy 
 
 **Prevention:**
 Remove the `Debug` trait from the `#[derive(...)]` attribute of any structs containing sensitive fields. Instead, provide a manual implementation of `std::fmt::Debug` where sensitive fields are explicitly redacted (e.g., `.field("gitlab_token", &self.gitlab_token.as_ref().map(|_| "[REDACTED]"))`).
+
+## 2025-03-04 - Prevent Malicious Config/Env Override
+**Vulnerability:** The application was loading `.env` and `config.toml` from the current working directory. Since this is a global CLI tool, executing it in an arbitrary directory could cause it to load an attacker-controlled configuration, potentially hijacking `GITLAB_HOST` to steal the global `GITLAB_TOKEN`.
+**Learning:** Global CLI tools should never load untrusted configuration files from the current working directory unless explicitly specified by the user (e.g., via a `--config` flag), as it exposes credentials to theft.
+**Prevention:** Only load configuration from secure, user-specific locations like `~/.config/app_name/config.toml` and avoid using `dotenv` for global CLI binaries.
