@@ -153,4 +153,25 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(paths[0], cwd.join("config.toml"));
     }
+
+    #[test]
+    fn test_debug_redacts_token() {
+        let config = AppConfig {
+            poll_interval_secs: 30,
+            poll_timeout_secs: 1800,
+            gitlab_host: Some("https://gitlab.com".to_string()),
+            gitlab_token: Some("glpat-secret-token".to_string()),
+        };
+
+        let debug_output = format!("{:?}", config);
+
+        // Ensure sensitive token is not present
+        assert!(!debug_output.contains("glpat-secret-token"));
+
+        // Ensure redacted string is present
+        assert!(debug_output.contains("[REDACTED]"));
+
+        // Ensure other non-sensitive fields are still visible
+        assert!(debug_output.contains("https://gitlab.com"));
+    }
 }
