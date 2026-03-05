@@ -23,7 +23,7 @@ use tui::{
     ui,
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(long, env("GITLAB_HOST"))]
@@ -43,6 +43,18 @@ struct Args {
     /// Comma-separated tags to filter runners
     #[arg(long)]
     tags: Option<String>,
+}
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("host", &self.host)
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("watch", &self.watch)
+            .field("command", &self.command)
+            .field("tags", &self.tags)
+            .finish()
+    }
 }
 
 #[tokio::main]
