@@ -228,8 +228,8 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Cell::from(row.runner_id.to_string()),
             Cell::from(row.runner_tags.join(", ")),
             Cell::from(row.manager.id.to_string()),
-            Cell::from(row.manager.system_id.clone()),
-            Cell::from(row.manager.status.clone()).style(status_style(&row.manager.status)),
+            Cell::from(row.manager.system_id.as_str()),
+            Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
             Cell::from(dash_or(&row.manager.version)),
             Cell::from(
                 row.manager
@@ -340,8 +340,8 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
     let rows = app.runners.iter().map(|runner| {
         Row::new(vec![
             Cell::from(runner.id.to_string()),
-            Cell::from(runner.runner_type.clone()),
-            Cell::from(runner.status.clone()).style(status_style(&runner.status)),
+            Cell::from(runner.runner_type.as_str()),
+            Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
             Cell::from(dash_or(&runner.version)),
             Cell::from(runner.tag_list.join(", ")),
             Cell::from(runner.managers.len().to_string()),
@@ -411,25 +411,13 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
             None
         };
 
-        let old_system = oldest
-            .map(|m| m.system_id.clone())
-            .unwrap_or_else(|| "-".to_string());
-        let old_ver = oldest
-            .and_then(|m| m.version.clone())
-            .unwrap_or_else(|| "-".to_string());
-        let old_status = oldest
-            .map(|m| m.status.clone())
-            .unwrap_or_else(|| "-".to_string());
+        let old_system = oldest.map(|m| m.system_id.as_str()).unwrap_or("-");
+        let old_ver = oldest.and_then(|m| m.version.as_deref()).unwrap_or("-");
+        let old_status = oldest.map(|m| m.status.as_str()).unwrap_or("-");
 
-        let new_system = newest
-            .map(|m| m.system_id.clone())
-            .unwrap_or_else(|| "-".to_string());
-        let new_ver = newest
-            .and_then(|m| m.version.clone())
-            .unwrap_or_else(|| "-".to_string());
-        let new_status = newest
-            .map(|m| m.status.clone())
-            .unwrap_or_else(|| "-".to_string());
+        let new_system = newest.map(|m| m.system_id.as_str()).unwrap_or("-");
+        let new_ver = newest.and_then(|m| m.version.as_deref()).unwrap_or("-");
+        let new_status = newest.map(|m| m.status.as_str()).unwrap_or("-");
 
         Row::new(vec![
             Cell::from(runner.id.to_string()),
@@ -437,10 +425,10 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Cell::from(mgr_count.to_string()),
             Cell::from(old_system),
             Cell::from(old_ver),
-            Cell::from(old_status.clone()).style(status_style(&old_status)),
+            Cell::from(old_status).style(status_style(old_status)),
             Cell::from(new_system),
             Cell::from(new_ver),
-            Cell::from(new_status.clone()).style(status_style(&new_status)),
+            Cell::from(new_status).style(status_style(new_status)),
         ])
     });
 
