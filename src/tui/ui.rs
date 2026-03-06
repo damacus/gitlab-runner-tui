@@ -110,13 +110,23 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
-    let input = Paragraph::new(app.input_buffer.as_str())
-        .style(Style::default().fg(Color::Yellow))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Filter Input (Press Enter to search)"),
-        );
+    let (text, style) = if app.input_buffer.is_empty() {
+        (
+            "Enter comma-separated tags (e.g., prod, linux)...",
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        (
+            app.input_buffer.as_str(),
+            Style::default().fg(Color::Yellow),
+        )
+    };
+
+    let input = Paragraph::new(text).style(style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Filter Input (Press Enter to search)"),
+    );
     frame.render_widget(input, area);
 
     // Make the cursor visible and set its position
@@ -360,13 +370,15 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
 
 fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
     if app.runners.is_empty() {
-        let msg = Paragraph::new("  No rotation detected - all runners have a single manager")
-            .style(Style::default().fg(Color::Green))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Rotation Status"),
-            );
+        let msg = Paragraph::new(
+            "\n  No rotation detected - all runners have a single manager.\n\n  Press 'Esc' to go back or adjust your filter tags.",
+        )
+        .style(Style::default().fg(Color::Gray))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Rotation Status"),
+        );
         frame.render_widget(msg, area);
         return;
     }
