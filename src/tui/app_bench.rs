@@ -49,7 +49,7 @@ mod tests {
             .flat_map(|r| {
                 r.managers.iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: r.tag_list.clone(),
+                    runner_tags_str: r.tag_list.join(", "),
                     manager: m.clone(),
                 })
             })
@@ -63,9 +63,10 @@ mod tests {
             .into_iter()
             .flat_map(|mut r| {
                 let tags = std::mem::take(&mut r.tag_list);
+                let tags_str = tags.join(", ");
                 r.managers.into_iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: tags.clone(),
+                    runner_tags_str: tags_str.clone(),
                     manager: m,
                 })
             })

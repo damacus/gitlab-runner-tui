@@ -66,7 +66,7 @@ pub enum ResultsViewType {
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
     pub runner_id: u64,
-    pub runner_tags: Vec<String>,
+    pub runner_tags_str: String,
     pub manager: RunnerManager,
 }
 
@@ -97,6 +97,7 @@ pub struct App {
     pub mode: AppMode,
     pub should_quit: bool,
     pub runners: Vec<Runner>,
+    pub runners_tags_str: Vec<String>,
     pub manager_rows: Vec<ManagerRow>,
     pub results_view_type: ResultsViewType,
     pub health_summary: Option<HealthSummary>,
@@ -128,6 +129,7 @@ impl App {
             mode: AppMode::default(),
             should_quit: false,
             runners: Vec::new(),
+            runners_tags_str: Vec::new(),
             manager_rows: Vec::new(),
             results_view_type: ResultsViewType::default(),
             health_summary: None,
@@ -211,6 +213,7 @@ impl App {
             Ok(runners) => {
                 // Clear all previous results before populating new ones
                 self.runners.clear();
+                self.runners_tags_str.clear();
                 self.manager_rows.clear();
                 self.health_summary = None;
 
@@ -220,9 +223,12 @@ impl App {
                             .into_iter()
                             .flat_map(|mut r| {
                                 let tags = std::mem::take(&mut r.tag_list);
+                                // ⚡ Bolt: Pre-computing the string here avoids allocating a new String for every row
+                                // on every frame in the TUI render loop.
+                                let tags_str = tags.join(", ");
                                 r.managers.into_iter().map(move |m| ManagerRow {
                                     runner_id: r.id,
-                                    runner_tags: tags.clone(),
+                                    runner_tags_str: tags_str.clone(),
                                     manager: m,
                                 })
                             })
@@ -238,14 +244,20 @@ impl App {
                             online_count,
                             total_count: runners.len(),
                         });
+                        // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
+                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::HealthCheck;
                     }
                     Command::Rotate => {
+                        // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
+                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Rotation;
                     }
                     _ => {
+                        // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
+                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Runners;
                     }
@@ -505,12 +517,12 @@ mod tests {
 
         let row = ManagerRow {
             runner_id: 12345,
-            runner_tags: vec!["alm".to_string(), "prod".to_string()],
+            runner_tags_str: "alm, prod".to_string(),
             manager: manager.clone(),
         };
 
         assert_eq!(row.runner_id, 12345);
-        assert_eq!(row.runner_tags.len(), 2);
+        assert_eq!(row.runner_tags_str, "alm, prod");
         assert_eq!(row.manager.system_id, "test-host");
     }
 

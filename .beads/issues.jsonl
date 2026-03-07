@@ -1,0 +1,1 @@
+{"id": "1", "title": "Performance optimization for string allocations in TUI render loop", "status": "in_progress", "description": "Pre-computing strings to avoid multiple allocations per frame."}

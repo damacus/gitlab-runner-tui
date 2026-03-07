@@ -20,8 +20,9 @@ fn status_style(status: &str) -> Style {
     }
 }
 
-fn dash_or(value: &Option<String>) -> String {
-    value.as_deref().unwrap_or("-").to_string()
+// ⚡ Bolt: Returning a &str instead of an allocated String prevents unnecessary allocations in the render loop.
+fn dash_or(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("-")
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -226,7 +227,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let rows = app.manager_rows.iter().map(|row| {
         Row::new(vec![
             Cell::from(row.runner_id.to_string()),
-            Cell::from(row.runner_tags.join(", ")),
+            Cell::from(row.runner_tags_str.as_str()),
             Cell::from(row.manager.id.to_string()),
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
@@ -236,7 +237,6 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
                     .contacted_at
                     .as_deref()
                     .unwrap_or("Never")
-                    .to_string(),
             ),
             Cell::from(dash_or(&row.manager.ip_address)),
         ])
@@ -337,13 +337,13 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().map(|runner| {
+    let rows = app.runners.iter().zip(app.runners_tags_str.iter()).map(|(runner, tags)| {
         Row::new(vec![
             Cell::from(runner.id.to_string()),
             Cell::from(runner.runner_type.as_str()),
             Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
             Cell::from(dash_or(&runner.version)),
-            Cell::from(runner.tag_list.join(", ")),
+            Cell::from(tags.as_str()),
             Cell::from(runner.managers.len().to_string()),
             Cell::from(dash_or(&runner.ip_address)),
         ])
@@ -400,7 +400,7 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().map(|runner| {
+    let rows = app.runners.iter().zip(app.runners_tags_str.iter()).map(|(runner, tags)| {
         let mgr_count = runner.managers.len();
 
         // ⚡ Bolt: find min and max without cloning or sorting, O(N) instead of O(N log N) with allocs
@@ -421,7 +421,7 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
 
         Row::new(vec![
             Cell::from(runner.id.to_string()),
-            Cell::from(runner.tag_list.join(", ")),
+            Cell::from(tags.as_str()),
             Cell::from(mgr_count.to_string()),
             Cell::from(old_system),
             Cell::from(old_ver),
