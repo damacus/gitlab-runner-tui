@@ -23,3 +23,7 @@ Using `#[derive(Debug)]` on structs containing sensitive credentials is an easy 
 
 **Prevention:**
 Remove the `Debug` trait from the `#[derive(...)]` attribute of any structs containing sensitive fields. Instead, provide a manual implementation of `std::fmt::Debug` where sensitive fields are explicitly redacted (e.g., `.field("gitlab_token", &self.gitlab_token.as_ref().map(|_| "[REDACTED]"))`).
+## 2026-03-07 - Remove `.env` and `config.toml` loading from CWD
+**Vulnerability:** The application was loading `dotenvy::dotenv().ok()` and `config.toml` from the current working directory (`CWD`), which could allow a malicious actor to place a compromised configuration file containing rogue credentials (credential hijacking) if a user executed the binary from an untrusted directory.
+**Learning:** Loading environment variables or configurations from the current working directory introduces unexpected and insecure behaviors, leading to potential hijacking or execution of unauthorized commands if secrets or critical endpoints are overridden.
+**Prevention:** Do not load configuration files or environment variables (such as via `dotenvy`) from the current working directory. Always load user-specific configuration securely from dedicated home directories (e.g., `~/.config/igor/config.toml`).
