@@ -30,6 +30,20 @@ impl Command {
     ];
 }
 
+impl Command {
+    pub fn description(&self) -> &'static str {
+        match self {
+            Command::Fetch => "Fetch all GitLab Runner details",
+            Command::Lights => "Health check - verify runners are online",
+            Command::Switch => "List runners with offline managers",
+            Command::Workers => "Show detailed list of Runner Managers",
+            Command::Flames => "Find runners not contacted recently",
+            Command::Empty => "List runners with no managers",
+            Command::Rotate => "Detect runners with multiple managers",
+        }
+    }
+}
+
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
