@@ -232,12 +232,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
             Cell::from(dash_or(&row.manager.version)),
-            Cell::from(
-                row.manager
-                    .contacted_at
-                    .as_deref()
-                    .unwrap_or("Never")
-            ),
+            Cell::from(row.manager.contacted_at.as_deref().unwrap_or("Never")),
             Cell::from(dash_or(&row.manager.ip_address)),
         ])
     });
@@ -337,17 +332,21 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().zip(app.runners_tags_str.iter()).map(|(runner, tags)| {
-        Row::new(vec![
-            Cell::from(runner.id.to_string()),
-            Cell::from(runner.runner_type.as_str()),
-            Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
-            Cell::from(dash_or(&runner.version)),
-            Cell::from(tags.as_str()),
-            Cell::from(runner.managers.len().to_string()),
-            Cell::from(dash_or(&runner.ip_address)),
-        ])
-    });
+    let rows = app
+        .runners
+        .iter()
+        .zip(app.runners_tags_str.iter())
+        .map(|(runner, tags)| {
+            Row::new(vec![
+                Cell::from(runner.id.to_string()),
+                Cell::from(runner.runner_type.as_str()),
+                Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
+                Cell::from(dash_or(&runner.version)),
+                Cell::from(tags.as_str()),
+                Cell::from(runner.managers.len().to_string()),
+                Cell::from(dash_or(&runner.ip_address)),
+            ])
+        });
 
     let table = Table::new(
         rows,
@@ -400,37 +399,41 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().zip(app.runners_tags_str.iter()).map(|(runner, tags)| {
-        let mgr_count = runner.managers.len();
+    let rows = app
+        .runners
+        .iter()
+        .zip(app.runners_tags_str.iter())
+        .map(|(runner, tags)| {
+            let mgr_count = runner.managers.len();
 
-        // ⚡ Bolt: find min and max without cloning or sorting, O(N) instead of O(N log N) with allocs
-        let oldest = runner.managers.iter().min_by_key(|m| &m.created_at);
-        let newest = if runner.managers.len() > 1 {
-            runner.managers.iter().max_by_key(|m| &m.created_at)
-        } else {
-            None
-        };
+            // ⚡ Bolt: find min and max without cloning or sorting, O(N) instead of O(N log N) with allocs
+            let oldest = runner.managers.iter().min_by_key(|m| &m.created_at);
+            let newest = if runner.managers.len() > 1 {
+                runner.managers.iter().max_by_key(|m| &m.created_at)
+            } else {
+                None
+            };
 
-        let old_system = oldest.map(|m| m.system_id.as_str()).unwrap_or("-");
-        let old_ver = oldest.and_then(|m| m.version.as_deref()).unwrap_or("-");
-        let old_status = oldest.map(|m| m.status.as_str()).unwrap_or("-");
+            let old_system = oldest.map(|m| m.system_id.as_str()).unwrap_or("-");
+            let old_ver = oldest.and_then(|m| m.version.as_deref()).unwrap_or("-");
+            let old_status = oldest.map(|m| m.status.as_str()).unwrap_or("-");
 
-        let new_system = newest.map(|m| m.system_id.as_str()).unwrap_or("-");
-        let new_ver = newest.and_then(|m| m.version.as_deref()).unwrap_or("-");
-        let new_status = newest.map(|m| m.status.as_str()).unwrap_or("-");
+            let new_system = newest.map(|m| m.system_id.as_str()).unwrap_or("-");
+            let new_ver = newest.and_then(|m| m.version.as_deref()).unwrap_or("-");
+            let new_status = newest.map(|m| m.status.as_str()).unwrap_or("-");
 
-        Row::new(vec![
-            Cell::from(runner.id.to_string()),
-            Cell::from(tags.as_str()),
-            Cell::from(mgr_count.to_string()),
-            Cell::from(old_system),
-            Cell::from(old_ver),
-            Cell::from(old_status).style(status_style(old_status)),
-            Cell::from(new_system),
-            Cell::from(new_ver),
-            Cell::from(new_status).style(status_style(new_status)),
-        ])
-    });
+            Row::new(vec![
+                Cell::from(runner.id.to_string()),
+                Cell::from(tags.as_str()),
+                Cell::from(mgr_count.to_string()),
+                Cell::from(old_system),
+                Cell::from(old_ver),
+                Cell::from(old_status).style(status_style(old_status)),
+                Cell::from(new_system),
+                Cell::from(new_ver),
+                Cell::from(new_status).style(status_style(new_status)),
+            ])
+        });
 
     let table = Table::new(
         rows,

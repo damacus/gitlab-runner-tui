@@ -245,19 +245,22 @@ impl App {
                             total_count: runners.len(),
                         });
                         // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
-                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
+                        self.runners_tags_str =
+                            runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::HealthCheck;
                     }
                     Command::Rotate => {
                         // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
-                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
+                        self.runners_tags_str =
+                            runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Rotation;
                     }
                     _ => {
                         // ⚡ Bolt: Pre-compute tags strings here to prevent allocating new Strings in the render loop.
-                        self.runners_tags_str = runners.iter().map(|r| r.tag_list.join(", ")).collect();
+                        self.runners_tags_str =
+                            runners.iter().map(|r| r.tag_list.join(", ")).collect();
                         self.runners = runners;
                         self.results_view_type = ResultsViewType::Runners;
                     }
