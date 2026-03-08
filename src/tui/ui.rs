@@ -2,6 +2,7 @@ use crate::tui::app::{App, AppMode, ResultsViewType};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
@@ -86,7 +87,16 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .commands
         .iter()
-        .map(|cmd| ListItem::new(cmd.to_string()))
+        .map(|cmd| {
+            let line = Line::from(vec![
+                Span::raw(format!("{:<15}", cmd.to_string())),
+                Span::styled(
+                    cmd.description(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            ListItem::new(line)
+        })
         .collect();
 
     let list = List::new(items)
