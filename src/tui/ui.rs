@@ -20,8 +20,8 @@ fn status_style(status: &str) -> Style {
     }
 }
 
-fn dash_or(value: &Option<String>) -> String {
-    value.as_deref().unwrap_or("-").to_string()
+fn dash_or(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("-")
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -225,9 +225,9 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
 
     let rows = app.manager_rows.iter().map(|row| {
         Row::new(vec![
-            Cell::from(row.runner_id.to_string()),
-            Cell::from(row.runner_tags.join(", ")),
-            Cell::from(row.manager.id.to_string()),
+            Cell::from(row.runner_id_str.as_str()),
+            Cell::from(row.runner_tags_str.as_str()),
+            Cell::from(row.manager_id_str.as_str()),
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
             Cell::from(dash_or(&row.manager.version)),
@@ -236,7 +236,6 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
                     .contacted_at
                     .as_deref()
                     .unwrap_or("Never")
-                    .to_string(),
             ),
             Cell::from(dash_or(&row.manager.ip_address)),
         ])
@@ -337,15 +336,15 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().map(|runner| {
+    let rows = app.runners.iter().map(|view| {
         Row::new(vec![
-            Cell::from(runner.id.to_string()),
-            Cell::from(runner.runner_type.as_str()),
-            Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
-            Cell::from(dash_or(&runner.version)),
-            Cell::from(runner.tag_list.join(", ")),
-            Cell::from(runner.managers.len().to_string()),
-            Cell::from(dash_or(&runner.ip_address)),
+            Cell::from(view.id_str.as_str()),
+            Cell::from(view.runner.runner_type.as_str()),
+            Cell::from(view.runner.status.as_str()).style(status_style(&view.runner.status)),
+            Cell::from(dash_or(&view.runner.version)),
+            Cell::from(view.tags_str.as_str()),
+            Cell::from(view.managers_len_str.as_str()),
+            Cell::from(dash_or(&view.runner.ip_address)),
         ])
     });
 
@@ -400,13 +399,11 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = app.runners.iter().map(|runner| {
-        let mgr_count = runner.managers.len();
-
+    let rows = app.runners.iter().map(|view| {
         // ⚡ Bolt: find min and max without cloning or sorting, O(N) instead of O(N log N) with allocs
-        let oldest = runner.managers.iter().min_by_key(|m| &m.created_at);
-        let newest = if runner.managers.len() > 1 {
-            runner.managers.iter().max_by_key(|m| &m.created_at)
+        let oldest = view.runner.managers.iter().min_by_key(|m| &m.created_at);
+        let newest = if view.runner.managers.len() > 1 {
+            view.runner.managers.iter().max_by_key(|m| &m.created_at)
         } else {
             None
         };
@@ -420,9 +417,9 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
         let new_status = newest.map(|m| m.status.as_str()).unwrap_or("-");
 
         Row::new(vec![
-            Cell::from(runner.id.to_string()),
-            Cell::from(runner.tag_list.join(", ")),
-            Cell::from(mgr_count.to_string()),
+            Cell::from(view.id_str.as_str()),
+            Cell::from(view.tags_str.as_str()),
+            Cell::from(view.managers_len_str.as_str()),
             Cell::from(old_system),
             Cell::from(old_ver),
             Cell::from(old_status).style(status_style(old_status)),

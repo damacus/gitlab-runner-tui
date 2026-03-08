@@ -48,9 +48,10 @@ mod tests {
             .iter()
             .flat_map(|r| {
                 r.managers.iter().map(move |m| ManagerRow {
-                    runner_id: r.id,
-                    runner_tags: r.tag_list.clone(),
+                    runner_id_str: r.id.to_string(),
+                    runner_tags_str: r.tag_list.join(", "),
                     manager: m.clone(),
+                    manager_id_str: m.id.to_string(),
                 })
             })
             .collect();
@@ -61,16 +62,18 @@ mod tests {
         let start2 = std::time::Instant::now();
         let _manager_rows2: Vec<ManagerRow> = runners
             .into_iter()
-            .flat_map(|mut r| {
-                let tags = std::mem::take(&mut r.tag_list);
+            .flat_map(|r| {
+                let id_str = r.id.to_string();
+                let tags_str = r.tag_list.join(", ");
                 r.managers.into_iter().map(move |m| ManagerRow {
-                    runner_id: r.id,
-                    runner_tags: tags.clone(),
+                    runner_id_str: id_str.clone(),
+                    runner_tags_str: tags_str.clone(),
+                    manager_id_str: m.id.to_string(),
                     manager: m,
                 })
             })
             .collect();
         let duration2 = start2.elapsed();
-        println!("Benchmark improved (into_iter): {:?}", duration2);
+        println!("Benchmark improved (into_iter/pre-compute strings): {:?}", duration2);
     }
 }
