@@ -74,6 +74,9 @@ mod tests {
             })
             .collect();
         let duration2 = start2.elapsed();
-        println!("Benchmark improved (into_iter/pre-compute strings): {:?}", duration2);
+        println!(
+            "Benchmark improved (into_iter/pre-compute strings): {:?}",
+            duration2
+        );
     }
 }

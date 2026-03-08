@@ -231,12 +231,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
             Cell::from(dash_or(&row.manager.version)),
-            Cell::from(
-                row.manager
-                    .contacted_at
-                    .as_deref()
-                    .unwrap_or("Never")
-            ),
+            Cell::from(row.manager.contacted_at.as_deref().unwrap_or("Never")),
             Cell::from(dash_or(&row.manager.ip_address)),
         ])
     });
