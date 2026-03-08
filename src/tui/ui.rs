@@ -90,10 +90,7 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
         .map(|cmd| {
             let line = Line::from(vec![
                 Span::raw(format!("{:<15}", cmd.to_string())),
-                Span::styled(
-                    cmd.description(),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(cmd.description(), Style::default().fg(Color::DarkGray)),
             ]);
             ListItem::new(line)
         })
