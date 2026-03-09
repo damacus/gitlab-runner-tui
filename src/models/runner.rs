@@ -16,6 +16,8 @@ pub struct Runner {
     pub revision: Option<String>,
     #[serde(default)]
     pub tag_list: Vec<String>,
+    #[serde(default, skip_serializing)]
+    pub tags_str: String,
     #[serde(default)]
     pub managers: Vec<RunnerManager>,
 }
@@ -206,6 +208,7 @@ mod tests {
             version: Some("17.5.0".to_string()),
             revision: None,
             tag_list: vec!["alm".to_string()],
+            tags_str: "alm".to_string(),
             managers,
         }
     }
