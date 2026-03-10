@@ -44,6 +44,20 @@ impl fmt::Display for Command {
     }
 }
 
+impl Command {
+    pub fn display_with_description(&self) -> String {
+        match self {
+            Command::Fetch => format!("{:<8} - Fetch GitLab Runner details", self),
+            Command::Lights => format!("{:<8} - Health check: Verify runners are online", self),
+            Command::Switch => format!("{:<8} - List runners with offline managers", self),
+            Command::Workers => format!("{:<8} - Show runner managers (flattened view)", self),
+            Command::Flames => format!("{:<8} - Find runners not contacted recently", self),
+            Command::Empty => format!("{:<8} - List runners with no managers", self),
+            Command::Rotate => format!("{:<8} - Detect runners with multiple managers", self),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AppMode {
     #[default]
