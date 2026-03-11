@@ -83,10 +83,23 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
+    use crate::tui::app::Command;
+
     let items: Vec<ListItem> = app
         .commands
         .iter()
-        .map(|cmd| ListItem::new(cmd.to_string()))
+        .map(|cmd| {
+            let desc = match cmd {
+                Command::Fetch => "Fetch GitLab Runner details",
+                Command::Lights => "Check if runners are online (health check)",
+                Command::Switch => "List runners with offline managers",
+                Command::Workers => "Show runner managers (flattened view)",
+                Command::Flames => "List runners not contacted recently",
+                Command::Empty => "List runners with no managers",
+                Command::Rotate => "Detect runners with multiple managers (rotation)",
+            };
+            ListItem::new(format!("{:<10} - {}", cmd.to_string(), desc))
+        })
         .collect();
 
     let list = List::new(items)
