@@ -54,6 +54,12 @@ impl Conductor {
                             tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
+
+                    // ⚡ Bolt: Pre-compute joined strings here during async data fetch instead of
+                    // dynamically inside the hot ratatui TUI render loop. This avoids costly memory
+                    // allocations and string copies on every single frame rendering for every row.
+                    detail.tags_str = detail.tag_list.join(", ");
+
                     detail
                 }
             }))
