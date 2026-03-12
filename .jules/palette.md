@@ -4,3 +4,6 @@
 ## 2024-05-14 - TUI Input Cursor Placement
 **Learning:** In Rust TUI applications, when using `frame.set_cursor()` to manually position the hardware cursor after input text, using `String::len()` will cause the cursor to jump ahead incorrectly if the user types multi-byte non-ASCII characters (e.g., emojis or accents). `String::len()` returns the byte length, not the character count.
 **Action:** Always use `.chars().count()` (or a visual width crate like `unicode-width` if full width calculation is required) when calculating cursor coordinates based on string lengths to ensure correct alignment for all inputs.
+## 2024-05-27 - Inline Command Descriptions in TUI
+**Learning:** In TUI applications, presenting isolated bespoke commands (like 'flames', 'switch') in a selection menu without context creates a high cognitive load for users who have to memorize mappings or frequently reference the help menu. Providing inline descriptions directly in the selection list substantially improves discoverability and user confidence.
+**Action:** In terminal applications with custom command sets, always provide brief, inline descriptions alongside the command names in selection menus to reduce cognitive load, rather than relying solely on separate help views.

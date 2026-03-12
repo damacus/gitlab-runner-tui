@@ -86,7 +86,10 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .commands
         .iter()
-        .map(|cmd| ListItem::new(cmd.to_string()))
+        .map(|cmd| {
+            let text = format!("{:<10} - {}", cmd.to_string(), cmd.description());
+            ListItem::new(text)
+        })
         .collect();
 
     let list = List::new(items)
