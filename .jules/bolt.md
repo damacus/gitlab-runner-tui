@@ -10,3 +10,7 @@
 ## 2024-05-25 - Avoid cloning and sorting in TUI render loop
 **Learning:** When computing values within a hot render loop (like TUI rendering), avoid performing allocations or complex calculations (like `clone()`, `sort_by()` etc.).
 **Action:** We can find min and max values by scanning the slice without cloning in O(N) using `Iterator::min_by_key` and `Iterator::max_by_key`. Pre-compute these where possible or avoid allocations to ensure a smooth framerate.
+
+## 2024-05-26 - Pre-compute expensive strings to avoid heap allocations in render loops
+**Learning:** Calling `.join(", ")` on vectors of strings within a TUI render loop causes unnecessary heap allocations on every single frame, causing significant CPU spikes and lag. Pre-computing such strings directly when the data is fetched (or updated) and caching them in the struct using `#[serde(default, skip)]` dramatically reduces overhead per frame.
+**Action:** When working with ratatui or any high-frequency render loops, pre-compute expensive string concatenations and data transformations outside the render pipeline, storing the results in application state.

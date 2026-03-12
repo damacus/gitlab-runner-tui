@@ -33,6 +33,7 @@ mod tests {
                 runner_type: "project_type".to_string(),
                 status: "online".to_string(),
                 tag_list: vec!["alm".to_string(), "prod".to_string()],
+                tag_list_str: "alm, prod".to_string(),
                 version: Some("17.5.0".to_string()),
                 revision: None,
                 created_at: Some("2024-01-20T14:22:00.000Z".to_string()),
@@ -49,7 +50,7 @@ mod tests {
             .flat_map(|r| {
                 r.managers.iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: r.tag_list.clone(),
+                    runner_tags_str: r.tag_list_str.clone(),
                     manager: m.clone(),
                 })
             })
@@ -62,10 +63,10 @@ mod tests {
         let _manager_rows2: Vec<ManagerRow> = runners
             .into_iter()
             .flat_map(|mut r| {
-                let tags = std::mem::take(&mut r.tag_list);
+                let tags_str = std::mem::take(&mut r.tag_list_str);
                 r.managers.into_iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: tags.clone(),
+                    runner_tags_str: tags_str.clone(),
                     manager: m,
                 })
             })

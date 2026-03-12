@@ -16,8 +16,16 @@ pub struct Runner {
     pub revision: Option<String>,
     #[serde(default)]
     pub tag_list: Vec<String>,
+    #[serde(default, skip)]
+    pub tag_list_str: String,
     #[serde(default)]
     pub managers: Vec<RunnerManager>,
+}
+
+impl Runner {
+    pub fn precompute_strings(&mut self) {
+        self.tag_list_str = self.tag_list.join(", ");
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -206,6 +214,7 @@ mod tests {
             version: Some("17.5.0".to_string()),
             revision: None,
             tag_list: vec!["alm".to_string()],
+            tag_list_str: "alm".to_string(),
             managers,
         }
     }
