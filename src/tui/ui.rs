@@ -86,7 +86,19 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .commands
         .iter()
-        .map(|cmd| ListItem::new(cmd.to_string()))
+        .map(|cmd| {
+            let content = ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(
+                    format!("{:<10}", cmd.to_string()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                ratatui::text::Span::styled(
+                    format!("- {}", cmd.description()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            ListItem::new(content)
+        })
         .collect();
 
     let list = List::new(items)
