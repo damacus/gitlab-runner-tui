@@ -16,6 +16,9 @@ pub struct Runner {
     pub revision: Option<String>,
     #[serde(default)]
     pub tag_list: Vec<String>,
+    // ⚡ Bolt: Pre-computed joined tags to avoid allocations in TUI render loop
+    #[serde(default, skip)]
+    pub ui_tags_joined: String,
     #[serde(default)]
     pub managers: Vec<RunnerManager>,
 }
@@ -206,6 +209,7 @@ mod tests {
             version: Some("17.5.0".to_string()),
             revision: None,
             tag_list: vec!["alm".to_string()],
+            ui_tags_joined: "alm".to_string(),
             managers,
         }
     }

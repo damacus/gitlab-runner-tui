@@ -226,7 +226,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let rows = app.manager_rows.iter().map(|row| {
         Row::new(vec![
             Cell::from(row.runner_id.to_string()),
-            Cell::from(row.runner_tags.join(", ")),
+            Cell::from(row.runner_tags_joined.as_str()),
             Cell::from(row.manager.id.to_string()),
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str()).style(status_style(&row.manager.status)),
@@ -343,7 +343,7 @@ fn render_runners_table_impl(app: &mut App, frame: &mut Frame, area: Rect, title
             Cell::from(runner.runner_type.as_str()),
             Cell::from(runner.status.as_str()).style(status_style(&runner.status)),
             Cell::from(dash_or(&runner.version)),
-            Cell::from(runner.tag_list.join(", ")),
+            Cell::from(runner.ui_tags_joined.as_str()),
             Cell::from(runner.managers.len().to_string()),
             Cell::from(dash_or(&runner.ip_address)),
         ])
@@ -421,7 +421,7 @@ fn render_rotation_table(app: &mut App, frame: &mut Frame, area: Rect) {
 
         Row::new(vec![
             Cell::from(runner.id.to_string()),
-            Cell::from(runner.tag_list.join(", ")),
+            Cell::from(runner.ui_tags_joined.as_str()),
             Cell::from(mgr_count.to_string()),
             Cell::from(old_system),
             Cell::from(old_ver),

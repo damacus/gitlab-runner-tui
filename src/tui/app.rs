@@ -66,7 +66,7 @@ pub enum ResultsViewType {
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
     pub runner_id: u64,
-    pub runner_tags: Vec<String>,
+    pub runner_tags_joined: String,
     pub manager: RunnerManager,
 }
 
@@ -208,7 +208,12 @@ impl App {
         self.is_loading = false;
 
         match result {
-            Ok(runners) => {
+            Ok(mut runners) => {
+                // ⚡ Bolt: Pre-compute joined tags during data fetch to avoid allocations in TUI render loop
+                for runner in &mut runners {
+                    runner.ui_tags_joined = runner.tag_list.join(", ");
+                }
+
                 // Clear all previous results before populating new ones
                 self.runners.clear();
                 self.manager_rows.clear();
@@ -219,10 +224,10 @@ impl App {
                         self.manager_rows = runners
                             .into_iter()
                             .flat_map(|mut r| {
-                                let tags = std::mem::take(&mut r.tag_list);
+                                let tags_joined = std::mem::take(&mut r.ui_tags_joined);
                                 r.managers.into_iter().map(move |m| ManagerRow {
                                     runner_id: r.id,
-                                    runner_tags: tags.clone(),
+                                    runner_tags_joined: tags_joined.clone(),
                                     manager: m,
                                 })
                             })
@@ -505,12 +510,12 @@ mod tests {
 
         let row = ManagerRow {
             runner_id: 12345,
-            runner_tags: vec!["alm".to_string(), "prod".to_string()],
+            runner_tags_joined: "alm, prod".to_string(),
             manager: manager.clone(),
         };
 
         assert_eq!(row.runner_id, 12345);
-        assert_eq!(row.runner_tags.len(), 2);
+        assert_eq!(row.runner_tags_joined, "alm, prod");
         assert_eq!(row.manager.system_id, "test-host");
     }
 

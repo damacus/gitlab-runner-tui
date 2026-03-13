@@ -10,3 +10,7 @@
 ## 2024-05-25 - Avoid cloning and sorting in TUI render loop
 **Learning:** When computing values within a hot render loop (like TUI rendering), avoid performing allocations or complex calculations (like `clone()`, `sort_by()` etc.).
 **Action:** We can find min and max values by scanning the slice without cloning in O(N) using `Iterator::min_by_key` and `Iterator::max_by_key`. Pre-compute these where possible or avoid allocations to ensure a smooth framerate.
+
+## 2024-05-26 - TUI Render Loop Allocations
+**Learning:** Pre-computing values outside of the TUI render loop (e.g. `tag_list.join(", ")`) avoids repeated allocations on every frame.
+**Action:** Always pre-compute string concatenations, joining, or other allocating formatting for values that don't change frequently during the data fetch phase or state update phase instead of performing them dynamically inside `tui/ui.rs`.
