@@ -54,6 +54,8 @@ impl Conductor {
                             tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
+                    // OPTIMIZATION: pre-compute tags string to avoid allocations in TUI render loop
+                    detail.tags_string = detail.tag_list.join(", ");
                     detail
                 }
             }))
