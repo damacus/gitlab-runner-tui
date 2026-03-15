@@ -59,7 +59,7 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    // 🛡️ Sentinel: Do not load .env from CWD to prevent credential hijacking
     let args = Args::parse();
     let config = AppConfig::load().unwrap_or_default();
 
