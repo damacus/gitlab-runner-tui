@@ -54,6 +54,8 @@ impl Conductor {
                             tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
                         }
                     }
+
+                    detail.tag_list_joined = detail.tag_list.join(", ");
                     detail
                 }
             }))

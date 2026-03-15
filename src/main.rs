@@ -194,7 +194,7 @@ async fn run_headless(
                     println!(
                         "  Runner {} [{}] managers=[{}]",
                         runner.id,
-                        runner.tag_list.join(","),
+                        runner.tag_list_joined,
                         mgr_info.join(", ")
                     );
                 }
