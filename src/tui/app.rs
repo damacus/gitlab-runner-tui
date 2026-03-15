@@ -28,6 +28,18 @@ impl Command {
         Command::Empty,
         Command::Rotate,
     ];
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Command::Fetch => "fetch   - Fetch GitLab Runner details",
+            Command::Lights => "lights  - Check if runners are online (health check)",
+            Command::Switch => "switch  - List runners with offline managers",
+            Command::Workers => "workers - Show runner managers (flattened view)",
+            Command::Flames => "flames  - List runners not contacted recently",
+            Command::Empty => "empty   - List runners with no managers",
+            Command::Rotate => "rotate  - Detect runners with multiple managers (rotation)",
+        }
+    }
 }
 
 impl fmt::Display for Command {
