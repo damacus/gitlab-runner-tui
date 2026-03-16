@@ -47,9 +47,10 @@ mod tests {
         let _manager_rows: Vec<ManagerRow> = runners_clone
             .iter()
             .flat_map(|r| {
+                let tags_csv = r.tag_list.join(", ");
                 r.managers.iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: r.tag_list.clone(),
+                    runner_tags_csv: tags_csv.clone(),
                     manager: m.clone(),
                 })
             })
@@ -61,11 +62,11 @@ mod tests {
         let start2 = std::time::Instant::now();
         let _manager_rows2: Vec<ManagerRow> = runners
             .into_iter()
-            .flat_map(|mut r| {
-                let tags = std::mem::take(&mut r.tag_list);
+            .flat_map(|r| {
+                let tags_csv = r.tag_list.join(", ");
                 r.managers.into_iter().map(move |m| ManagerRow {
                     runner_id: r.id,
-                    runner_tags: tags.clone(),
+                    runner_tags_csv: tags_csv.clone(),
                     manager: m,
                 })
             })

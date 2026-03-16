@@ -66,8 +66,14 @@ pub enum ResultsViewType {
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
     pub runner_id: u64,
-    pub runner_tags: Vec<String>,
+    pub runner_tags_csv: String,
     pub manager: RunnerManager,
+}
+
+#[derive(Debug, Clone)]
+pub struct UIRunner {
+    pub runner: Runner,
+    pub tags_csv: String,
 }
 
 /// Health check summary for lights command
@@ -96,7 +102,7 @@ pub struct App {
     pub config: AppConfig,
     pub mode: AppMode,
     pub should_quit: bool,
-    pub runners: Vec<Runner>,
+    pub runners: Vec<UIRunner>,
     pub manager_rows: Vec<ManagerRow>,
     pub results_view_type: ResultsViewType,
     pub health_summary: Option<HealthSummary>,
@@ -218,11 +224,11 @@ impl App {
                     Command::Workers => {
                         self.manager_rows = runners
                             .into_iter()
-                            .flat_map(|mut r| {
-                                let tags = std::mem::take(&mut r.tag_list);
+                            .flat_map(|r| {
+                                let tags_csv = r.tag_list.join(", ");
                                 r.managers.into_iter().map(move |m| ManagerRow {
                                     runner_id: r.id,
-                                    runner_tags: tags.clone(),
+                                    runner_tags_csv: tags_csv.clone(),
                                     manager: m,
                                 })
                             })
@@ -238,15 +244,33 @@ impl App {
                             online_count,
                             total_count: runners.len(),
                         });
-                        self.runners = runners;
+                        self.runners = runners
+                            .into_iter()
+                            .map(|r| UIRunner {
+                                tags_csv: r.tag_list.join(", "),
+                                runner: r,
+                            })
+                            .collect();
                         self.results_view_type = ResultsViewType::HealthCheck;
                     }
                     Command::Rotate => {
-                        self.runners = runners;
+                        self.runners = runners
+                            .into_iter()
+                            .map(|r| UIRunner {
+                                tags_csv: r.tag_list.join(", "),
+                                runner: r,
+                            })
+                            .collect();
                         self.results_view_type = ResultsViewType::Rotation;
                     }
                     _ => {
-                        self.runners = runners;
+                        self.runners = runners
+                            .into_iter()
+                            .map(|r| UIRunner {
+                                tags_csv: r.tag_list.join(", "),
+                                runner: r,
+                            })
+                            .collect();
                         self.results_view_type = ResultsViewType::Runners;
                     }
                 }
@@ -505,12 +529,12 @@ mod tests {
 
         let row = ManagerRow {
             runner_id: 12345,
-            runner_tags: vec!["alm".to_string(), "prod".to_string()],
+            runner_tags_csv: "alm, prod".to_string(),
             manager: manager.clone(),
         };
 
         assert_eq!(row.runner_id, 12345);
-        assert_eq!(row.runner_tags.len(), 2);
+        assert_eq!(row.runner_tags_csv, "alm, prod");
         assert_eq!(row.manager.system_id, "test-host");
     }
 
