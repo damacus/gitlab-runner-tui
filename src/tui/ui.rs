@@ -86,7 +86,25 @@ fn render_command_selection(app: &mut App, frame: &mut Frame, area: Rect) {
     let items: Vec<ListItem> = app
         .commands
         .iter()
-        .map(|cmd| ListItem::new(cmd.to_string()))
+        .map(|cmd| {
+            let desc = match cmd {
+                crate::tui::app::Command::Fetch => {
+                    "Fetch all GitLab Runner details with optional filters"
+                }
+                crate::tui::app::Command::Lights => {
+                    "Health check - verify all tagged runners are online"
+                }
+                crate::tui::app::Command::Switch => "List runners with offline managers",
+                crate::tui::app::Command::Workers => "Show detailed list of Runner Managers",
+                crate::tui::app::Command::Flames => "Find runners not contacted recently",
+                crate::tui::app::Command::Empty => "List runners with no managers",
+                crate::tui::app::Command::Rotate => {
+                    "Detect runners with multiple managers (rotation)"
+                }
+            };
+            let text = format!("{:<10} - {}", cmd.to_string(), desc);
+            ListItem::new(text)
+        })
         .collect();
 
     let list = List::new(items)
