@@ -38,7 +38,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        // Try CWD config.toml first, then ~/.config/igor/config.toml
+        // Load from ~/.config/igor/config.toml
         let paths = config_paths();
 
         for path in paths {
@@ -61,11 +61,6 @@ impl AppConfig {
 
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-
-    // CWD config.toml
-    if let Ok(cwd) = std::env::current_dir() {
-        paths.push(cwd.join("config.toml"));
-    }
 
     // ~/.config/igor/config.toml
     if let Some(config_dir) = dirs::config_dir() {
@@ -143,15 +138,6 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
-    }
-
-    #[test]
-    fn test_config_paths_includes_cwd() {
-        let paths = config_paths();
-        assert!(!paths.is_empty());
-        // First path should be CWD/config.toml
-        let cwd = std::env::current_dir().unwrap();
-        assert_eq!(paths[0], cwd.join("config.toml"));
     }
 
     #[test]
