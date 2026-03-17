@@ -60,6 +60,8 @@ poll_timeout_secs = 1800
 
 The legacy path `~/.config/igor/config.toml` is still read as a fallback for backward compatibility.
 
+If you launch the interactive TUI without a configured token, the app now runs a first-time setup flow and writes the canonical config file for you.
+
 Optional `config.toml` file locations (checked in this order):
 
 1. `./config.toml` (current working directory)
@@ -98,24 +100,15 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 
 ## Keyboard Navigation
 
-### Command Selection
-
-- `↑`/`↓` or `k`/`j` - Navigate commands
-- `Enter` - Select command
+- `Tab` / `Shift+Tab` - Switch dashboard tabs
+- `1`-`7` - Jump directly to a tab
+- `↑`/`↓` or `k`/`j` - Move table selection
+- `/` or `f` - Focus tag filter input
+- `Enter` or `r` - Refresh the active tab
+- `p` - Toggle polling / auto-refresh
+- `Esc` - Exit filter editing or dismiss errors
 - `?` - Toggle help
-- `q` - Quit
-
-### Filter Input
-
-- Type to enter filter tags (comma-separated)
-- `Enter` - Execute search
-- `Esc` - Back to command selection
-
-### Results View
-
-- `↑`/`↓` or `k`/`j` - Scroll results
-- `Esc` - Back to command selection
-- `q` - Quit
+- `q` or `Ctrl-C` - Quit
 
 ## Configuration Options
 

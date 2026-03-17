@@ -95,7 +95,7 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
 
     let (text, style) = if app.filter_input.is_empty() {
         (
-            "Type tags like prod,linux and press Enter to fetch the active tab",
+            "Press / to edit tags like prod,linux, then Enter to fetch the active tab",
             styles::muted_style(),
         )
     } else {
@@ -515,10 +515,12 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let mut status = match app.mode {
         AppMode::Help => "Any key closes help".to_string(),
-        AppMode::FilterInput => "Type tags | Enter: fetch active tab | Esc: stop editing".to_string(),
-        AppMode::Dashboard => {
-            "Tab/Shift+Tab: switch views | 1-7: jump | Enter/r: refresh | p: poll | ?: help | q: quit"
+        AppMode::FilterInput => {
+            "Type tags | Enter: fetch active tab | Esc: stop editing | Ctrl-C: quit"
                 .to_string()
+        }
+        AppMode::Dashboard => {
+            "Tab/Shift+Tab: switch views | 1-7: jump | /: edit filter | Enter/r: refresh | p: poll | ?: help | q/Ctrl-C: quit".to_string()
         }
     };
 
@@ -549,10 +551,11 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  Enter            Fetch the active tab"),
         Line::from("  r                Refresh the active tab"),
         Line::from("  p                Toggle polling / auto-refresh"),
-        Line::from("  q                Quit"),
+        Line::from("  q or Ctrl-C      Quit"),
         Line::from(""),
         Line::from("Filtering"),
-        Line::from("  Type any tag text to focus the filter bar"),
+        Line::from("  / or f           Focus the filter bar"),
+        Line::from("  Type tags        Edit comma-separated tag filters"),
         Line::from("  Enter            Apply filter to the active tab"),
         Line::from("  Esc              Exit filter editing"),
         Line::from(""),

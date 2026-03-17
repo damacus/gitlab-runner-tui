@@ -16,7 +16,11 @@ use crossterm::{
 };
 use models::runner::RunnerFilters;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{env, io, time::Instant};
+use std::{
+    env,
+    io::{self, Write},
+    time::Instant,
+};
 use tui::{
     app::App,
     event::{Event, EventHandler},
@@ -80,20 +84,7 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    // Priority: CLI flags > env vars > config.toml > defaults
-    let host = args
-        .host
-        .or_else(|| env::var("GITLAB_HOST").ok())
-        .or_else(|| config.gitlab_host.clone())
-        .unwrap_or_else(|| "https://gitlab.com".to_string());
-
-    let token = args
-        .token
-        .or_else(|| env::var("GITLAB_TOKEN").ok())
-        .or_else(|| config.gitlab_token.clone())
-        .context(
-            "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
-        )?;
+    let (host, token, config) = resolve_runtime_settings(&args, config)?;
 
     let client = GitLabClient::new(host, token)?;
     let conductor = Conductor::new(client);
@@ -143,6 +134,103 @@ async fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
+    resolve_runtime_settings_with_env(
+        args,
+        config,
+        env::var("GITLAB_HOST").ok(),
+        env::var("GITLAB_TOKEN").ok(),
+    )
+}
+
+fn resolve_runtime_settings_with_env(
+    args: &Args,
+    mut config: AppConfig,
+    env_host: Option<String>,
+    env_token: Option<String>,
+) -> Result<(String, String, AppConfig)> {
+    let host = args
+        .host
+        .clone()
+        .or(env_host)
+        .or_else(|| config.gitlab_host.clone())
+        .unwrap_or_else(|| "https://gitlab.com".to_string());
+
+    let token = args
+        .token
+        .clone()
+        .or(env_token)
+        .or_else(|| config.gitlab_token.clone());
+
+    if args.watch {
+        let token = token.context(
+            "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
+        )?;
+        return Ok((host, token, config));
+    }
+
+    match token {
+        Some(token) => Ok((host, token, config)),
+        None => run_first_time_setup(host, &mut config),
+    }
+}
+
+fn run_first_time_setup(
+    host: String,
+    config: &mut AppConfig,
+) -> Result<(String, String, AppConfig)> {
+    println!("No GitLab configuration found. Starting first-run setup.");
+    println!("This will write a config file to the canonical gitlab-runner-tui config path.");
+    println!();
+
+    let host = prompt_with_default("GitLab host", &host)?;
+    let token = prompt_required("GitLab personal access token (read_api scope)")?;
+
+    config.gitlab_host = Some(host.clone());
+    config.gitlab_token = Some(token.clone());
+
+    let saved_path = config.save_to_canonical_path()?;
+
+    println!();
+    println!("Saved configuration to {}", saved_path.display());
+    println!("Launching the TUI...");
+    println!();
+
+    Ok((host, token, config.clone()))
+}
+
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
+    print!("{} [{}]: ", prompt, default);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn prompt_required(prompt: &str) -> Result<String> {
+    loop {
+        print!("{}: ", prompt);
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        let trimmed = input.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+
+        println!("A value is required.");
+    }
 }
 
 async fn run_headless(
@@ -368,5 +456,45 @@ mod tests {
                 "staging".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn resolves_runtime_settings_from_config_for_interactive_mode() {
+        let args = Args {
+            host: None,
+            token: None,
+            watch: false,
+            command: "rotate".to_string(),
+            tags: None,
+        };
+        let config = AppConfig {
+            gitlab_host: Some("https://gitlab.example.com".to_string()),
+            gitlab_token: Some("glpat-config-token".to_string()),
+            ..AppConfig::default()
+        };
+
+        let (host, token, resolved_config) =
+            resolve_runtime_settings_with_env(&args, config.clone(), None, None).unwrap();
+
+        assert_eq!(host, "https://gitlab.example.com");
+        assert_eq!(token, "glpat-config-token");
+        assert_eq!(resolved_config, config);
+    }
+
+    #[test]
+    fn watch_mode_requires_token_when_not_configured() {
+        let args = Args {
+            host: None,
+            token: None,
+            watch: true,
+            command: "rotate".to_string(),
+            tags: None,
+        };
+
+        let error = resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("GITLAB_TOKEN must be set"));
     }
 }

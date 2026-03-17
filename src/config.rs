@@ -1,8 +1,8 @@
-use anyhow::Result;
-use serde::Deserialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Deserialize, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
     pub poll_interval_secs: u64,
@@ -50,6 +50,25 @@ impl AppConfig {
         }
 
         Ok(AppConfig::default())
+    }
+
+    pub fn canonical_path() -> Result<PathBuf> {
+        dirs::config_dir()
+            .map(|config_dir| config_dir.join("gitlab-runner-tui").join("config.toml"))
+            .context("Could not determine a config directory for gitlab-runner-tui")
+    }
+
+    pub fn save_to_canonical_path(&self) -> Result<PathBuf> {
+        let path = Self::canonical_path()?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let contents = toml::to_string_pretty(self)?;
+        std::fs::write(&path, contents)?;
+
+        Ok(path)
     }
 
     #[cfg(test)]
@@ -163,6 +182,16 @@ mod tests {
         if let Some(config_dir) = dirs::config_dir() {
             assert!(paths.contains(&config_dir.join("gitlab-runner-tui").join("config.toml")));
             assert!(paths.contains(&config_dir.join("igor").join("config.toml")));
+        }
+    }
+
+    #[test]
+    fn test_canonical_path_uses_gitlab_runner_tui_dir() {
+        if let Some(config_dir) = dirs::config_dir() {
+            assert_eq!(
+                AppConfig::canonical_path().unwrap(),
+                config_dir.join("gitlab-runner-tui").join("config.toml")
+            );
         }
     }
 

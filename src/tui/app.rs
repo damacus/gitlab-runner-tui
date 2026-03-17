@@ -2,7 +2,7 @@ use crate::conductor::Conductor;
 use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::fmt;
 use std::time::Instant;
@@ -545,6 +545,11 @@ impl App {
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
         if self.mode == AppMode::FilterInput {
             match key.code {
                 KeyCode::Enter => {
@@ -607,12 +612,10 @@ impl App {
                 self.next_result();
             }
             KeyCode::Backspace => {
-                self.focus_filter();
-                self.filter_input.pop();
+                self.error_message = None;
             }
-            KeyCode::Char(character) => {
+            KeyCode::Char('/') | KeyCode::Char('f') => {
                 self.focus_filter();
-                self.filter_input.push(character);
             }
             _ => {}
         }
@@ -773,6 +776,39 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE))
             .await;
         assert_eq!(app.active_tab(), Tab::Workers);
+    }
+
+    #[tokio::test]
+    async fn test_slash_focuses_filter_mode() {
+        let mut app = test_app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.mode, AppMode::FilterInput);
+    }
+
+    #[tokio::test]
+    async fn test_plain_character_does_not_force_filter_mode() {
+        let mut app = test_app();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.mode, AppMode::Dashboard);
+        assert!(app.filter_input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_c_quits_even_when_filter_is_focused() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterInput;
+        app.filter_input = "prod".to_string();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+
+        assert!(app.should_quit);
     }
 
     #[test]
