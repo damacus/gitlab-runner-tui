@@ -271,9 +271,7 @@ fn prompt_required(prompt: &str) -> Result<String> {
         print!("{}: ", prompt);
         io::stdout().flush()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
+        let input = rpassword::read_password()?;
         let trimmed = input.trim();
         if !trimmed.is_empty() {
             return Ok(trimmed.to_string());
