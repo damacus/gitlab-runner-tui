@@ -23,3 +23,8 @@ Using `#[derive(Debug)]` on structs containing sensitive credentials is an easy 
 
 **Prevention:**
 Remove the `Debug` trait from the `#[derive(...)]` attribute of any structs containing sensitive fields. Instead, provide a manual implementation of `std::fmt::Debug` where sensitive fields are explicitly redacted (e.g., `.field("gitlab_token", &self.gitlab_token.as_ref().map(|_| "[REDACTED]"))`).
+
+## 2025-03-17 - Prevent Credential Hijacking via CWD Configuration Loading
+**Vulnerability:** The application was loading configuration (`config.toml` via `src/config.rs`) and environment variables (`.env` via `dotenvy::dotenv().ok()` in `src/main.rs`) from the Current Working Directory (CWD). If a user runs the application in a directory controlled by a malicious actor, the attacker could supply arbitrary configuration or environment variables, leading to credential hijacking (e.g., exposing the GitLab token) or executing malicious API requests.
+**Learning:** Loading sensitive configuration files or environment variables from the CWD in CLI applications poses a significant security risk, as the execution environment is outside the user's explicit control.
+**Prevention:** Remove CWD fallback mechanisms. Always strictly load configuration and secrets from designated, secure user-specific directories (e.g., `~/.config/`).

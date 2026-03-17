@@ -74,7 +74,6 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
     let args = Args::parse();
     let config = AppConfig::load().unwrap_or_default();
 

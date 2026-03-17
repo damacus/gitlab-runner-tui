@@ -184,11 +184,6 @@ fn parse_runner_target(entry: &str) -> Result<RunnerTarget> {
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // CWD config.toml
-    if let Ok(cwd) = std::env::current_dir() {
-        paths.push(cwd.join("config.toml"));
-    }
-
     // ~/.config/gitlab-runner-tui/config.toml (canonical)
     // ~/.config/igor/config.toml (legacy fallback for backward compatibility)
     if let Some(config_dir) = dirs::config_dir() {
@@ -391,15 +386,6 @@ mod tests {
 
         let error = config.validate_runtime_settings().unwrap_err().to_string();
         assert!(error.contains("Poll interval"));
-    }
-
-    #[test]
-    fn test_config_paths_includes_cwd() {
-        let paths = config_paths();
-        assert!(!paths.is_empty());
-        // First path should be CWD/config.toml
-        let cwd = std::env::current_dir().unwrap();
-        assert_eq!(paths[0], cwd.join("config.toml"));
     }
 
     #[test]
