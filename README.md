@@ -60,7 +60,7 @@ poll_timeout_secs = 1800
 
 The legacy path `~/.config/igor/config.toml` is still read as a fallback for backward compatibility.
 
-If you launch the interactive TUI without a configured token, the app now runs a first-time setup flow and writes the canonical config file for you.
+If you launch the interactive TUI without a configured token, or with a stale/invalid token, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
 
 Optional `config.toml` file locations (checked in this order):
 

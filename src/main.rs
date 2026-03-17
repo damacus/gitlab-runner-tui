@@ -16,6 +16,7 @@ use crossterm::{
 };
 use models::runner::RunnerFilters;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use reqwest::StatusCode;
 use std::{
     env,
     io::{self, Write},
@@ -86,8 +87,12 @@ async fn main() -> Result<()> {
 
     let (host, token, config) = resolve_runtime_settings(&args, config)?;
 
-    let client = GitLabClient::new(host, token)?;
-    let conductor = Conductor::new(client);
+    let conductor = if args.watch {
+        let client = GitLabClient::new(host, token)?;
+        Conductor::new(client)
+    } else {
+        bootstrap_interactive_conductor(host, token, config.clone()).await?
+    };
 
     if args.watch {
         return run_headless(conductor, config, &args.command, args.tags.as_deref()).await;
@@ -143,6 +148,51 @@ fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, S
         env::var("GITLAB_HOST").ok(),
         env::var("GITLAB_TOKEN").ok(),
     )
+}
+
+async fn bootstrap_interactive_conductor(
+    mut host: String,
+    mut token: String,
+    mut config: AppConfig,
+) -> Result<Conductor> {
+    loop {
+        let client = GitLabClient::new(host.clone(), token.clone())?;
+        let conductor = Conductor::new(client);
+
+        match validate_interactive_credentials(&conductor).await {
+            Ok(()) => return Ok(conductor),
+            Err(error) if is_auth_error(&error) => {
+                println!("GitLab authentication failed during startup.");
+                println!(
+                    "Your configured token may be missing, expired, or lack `read_api` scope."
+                );
+                println!();
+
+                let (updated_host, updated_token, updated_config) =
+                    run_first_time_setup(host.clone(), &mut config)?;
+                host = updated_host;
+                token = updated_token;
+                config = updated_config;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn validate_interactive_credentials(conductor: &Conductor) -> Result<()> {
+    conductor.fetch_runners(RunnerFilters::default()).await?;
+    Ok(())
+}
+
+fn is_auth_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|reqwest_error| reqwest_error.status())
+            .is_some_and(|status| {
+                status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN
+            })
+    })
 }
 
 fn resolve_runtime_settings_with_env(
@@ -366,6 +416,7 @@ fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::{Matcher, Server};
 
     #[test]
     fn parses_supported_headless_commands() {
@@ -496,5 +547,36 @@ mod tests {
             .to_string();
 
         assert!(error.contains("GITLAB_TOKEN must be set"));
+    }
+
+    #[tokio::test]
+    async fn detects_unauthorized_reqwest_errors() {
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .match_header("PRIVATE-TOKEN", "bad-token")
+            .with_status(401)
+            .with_body(r#"{"message":"401 Unauthorized"}"#)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "bad-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+        let error = validate_interactive_credentials(&conductor)
+            .await
+            .unwrap_err();
+
+        mock.assert_async().await;
+        assert!(is_auth_error(&error));
+    }
+
+    #[test]
+    fn does_not_treat_generic_errors_as_auth_errors() {
+        let error = anyhow::anyhow!("network exploded");
+        assert!(!is_auth_error(&error));
     }
 }
