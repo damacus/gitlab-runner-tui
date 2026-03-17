@@ -1,55 +1,128 @@
 use crate::conductor::Conductor;
 use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
-use crate::models::runner::Runner;
+use crate::models::runner::{Runner, RunnerFilters};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::fmt;
 use std::time::Instant;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Command {
-    Fetch,
-    Lights,
-    Switch,
-    Workers,
-    Flames,
+pub enum Tab {
+    Runners,
+    Health,
+    Offline,
+    Uncontacted,
     Empty,
-    Rotate,
+    Rotating,
+    Workers,
 }
 
-impl Command {
-    pub const ALL: &[Command] = &[
-        Command::Fetch,
-        Command::Lights,
-        Command::Switch,
-        Command::Workers,
-        Command::Flames,
-        Command::Empty,
-        Command::Rotate,
+impl Tab {
+    pub const ALL: &[Tab] = &[
+        Tab::Runners,
+        Tab::Health,
+        Tab::Offline,
+        Tab::Uncontacted,
+        Tab::Empty,
+        Tab::Rotating,
+        Tab::Workers,
     ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Runners => "Runners",
+            Tab::Health => "Health",
+            Tab::Offline => "Offline",
+            Tab::Uncontacted => "Uncontacted",
+            Tab::Empty => "Empty",
+            Tab::Rotating => "Rotating",
+            Tab::Workers => "Workers",
+        }
+    }
+
+    pub fn shortcut(self) -> char {
+        match self {
+            Tab::Runners => '1',
+            Tab::Health => '2',
+            Tab::Offline => '3',
+            Tab::Uncontacted => '4',
+            Tab::Empty => '5',
+            Tab::Rotating => '6',
+            Tab::Workers => '7',
+        }
+    }
+
+    pub fn from_shortcut(shortcut: char) -> Option<Self> {
+        match shortcut {
+            '1' => Some(Tab::Runners),
+            '2' => Some(Tab::Health),
+            '3' => Some(Tab::Offline),
+            '4' => Some(Tab::Uncontacted),
+            '5' => Some(Tab::Empty),
+            '6' => Some(Tab::Rotating),
+            '7' => Some(Tab::Workers),
+            _ => None,
+        }
+    }
+
+    pub fn results_view_type(self) -> ResultsViewType {
+        match self {
+            Tab::Health => ResultsViewType::HealthCheck,
+            Tab::Rotating => ResultsViewType::Rotation,
+            Tab::Workers => ResultsViewType::Workers,
+            _ => ResultsViewType::Runners,
+        }
+    }
+
+    pub fn loading_label(self) -> &'static str {
+        match self {
+            Tab::Runners => "Loading runners",
+            Tab::Health => "Loading health data",
+            Tab::Offline => "Loading offline runners",
+            Tab::Uncontacted => "Loading uncontacted runners",
+            Tab::Empty => "Loading runners without managers",
+            Tab::Rotating => "Loading rotating runners",
+            Tab::Workers => "Loading workers",
+        }
+    }
+
+    pub fn empty_label(self) -> &'static str {
+        match self {
+            Tab::Runners => "No runners found for the current tag filter.",
+            Tab::Health => "No runners found for the current tag filter.",
+            Tab::Offline => "No offline runners matched the current tag filter.",
+            Tab::Uncontacted => "No uncontacted runners matched the current tag filter.",
+            Tab::Empty => "No runners without managers matched the current tag filter.",
+            Tab::Rotating => "No rotating runners matched the current tag filter.",
+            Tab::Workers => "No worker rows matched the current tag filter.",
+        }
+    }
+
+    fn query_mode(self) -> TabQueryMode {
+        match self {
+            Tab::Runners | Tab::Health | Tab::Workers => TabQueryMode::FetchRunners,
+            Tab::Offline => TabQueryMode::Offline,
+            Tab::Uncontacted => TabQueryMode::Uncontacted {
+                threshold_secs: UNCONTACTED_THRESHOLD_SECS,
+            },
+            Tab::Empty => TabQueryMode::Empty,
+            Tab::Rotating => TabQueryMode::Rotating,
+        }
+    }
 }
 
-impl fmt::Display for Command {
+impl fmt::Display for Tab {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Command::Fetch => write!(f, "fetch"),
-            Command::Lights => write!(f, "lights"),
-            Command::Switch => write!(f, "switch"),
-            Command::Workers => write!(f, "workers"),
-            Command::Flames => write!(f, "flames"),
-            Command::Empty => write!(f, "empty"),
-            Command::Rotate => write!(f, "rotate"),
-        }
+        write!(f, "{}", self.title())
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AppMode {
     #[default]
-    CommandSelection,
+    Dashboard,
     FilterInput,
-    ResultsView,
     Help,
 }
 
@@ -62,6 +135,22 @@ pub enum ResultsViewType {
     Rotation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailLayoutMode {
+    SidePanel,
+    BottomPanel,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabQueryMode {
+    FetchRunners,
+    Offline,
+    Uncontacted { threshold_secs: u64 },
+    Empty,
+    Rotating,
+}
+
 /// Flattened row for workers view: runner info + manager info
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
@@ -70,7 +159,7 @@ pub struct ManagerRow {
     pub manager: RunnerManager,
 }
 
-/// Health check summary for lights command
+/// Health check summary for the health tab.
 #[derive(Debug, Clone, Default)]
 pub struct HealthSummary {
     pub online_count: usize,
@@ -98,27 +187,26 @@ pub struct App {
     pub should_quit: bool,
     pub runners: Vec<Runner>,
     pub manager_rows: Vec<ManagerRow>,
-    pub results_view_type: ResultsViewType,
     pub health_summary: Option<HealthSummary>,
 
-    pub commands: &'static [Command],
-    pub selected_command_index: usize,
+    pub tabs: &'static [Tab],
+    pub active_tab_index: usize,
+    pub loaded_tab: Option<Tab>,
 
-    pub input_buffer: String,
+    pub filter_input: String,
     pub table_state: TableState,
 
-    // Loading and error state
     pub is_loading: bool,
     pub error_message: Option<String>,
     pub spinner_frame: usize,
 
-    // Polling state
     pub polling_active: bool,
     pub poll_started_at: Option<Instant>,
     pub last_poll_at: Option<Instant>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const UNCONTACTED_THRESHOLD_SECS: u64 = 3600;
 
 impl App {
     pub fn new(conductor: Conductor, config: AppConfig) -> Self {
@@ -129,11 +217,11 @@ impl App {
             should_quit: false,
             runners: Vec::new(),
             manager_rows: Vec::new(),
-            results_view_type: ResultsViewType::default(),
             health_summary: None,
-            commands: Command::ALL,
-            selected_command_index: 0,
-            input_buffer: String::new(),
+            tabs: Tab::ALL,
+            active_tab_index: 0,
+            loaded_tab: None,
+            filter_input: String::new(),
             table_state: TableState::default(),
             is_loading: false,
             error_message: None,
@@ -152,160 +240,257 @@ impl App {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
-    /// Clear the current error message - reserved for error recovery flows
-    #[allow(dead_code)]
-    pub fn clear_error(&mut self) {
+    pub fn active_tab(&self) -> Tab {
+        self.tabs[self.active_tab_index]
+    }
+
+    pub fn current_results_view_type(&self) -> ResultsViewType {
+        self.active_tab().results_view_type()
+    }
+
+    pub fn filter_tags(&self) -> Option<Vec<String>> {
+        let tags: Vec<String> = self
+            .filter_input
+            .split(',')
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+
+        if tags.is_empty() {
+            None
+        } else {
+            Some(tags)
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
+        self.on_tab_changed();
+    }
+
+    pub fn previous_tab(&mut self) {
+        if self.active_tab_index == 0 {
+            self.active_tab_index = self.tabs.len() - 1;
+        } else {
+            self.active_tab_index -= 1;
+        }
+        self.on_tab_changed();
+    }
+
+    pub fn select_tab(&mut self, tab: Tab) {
+        if let Some(index) = self.tabs.iter().position(|candidate| *candidate == tab) {
+            self.active_tab_index = index;
+            self.on_tab_changed();
+        }
+    }
+
+    fn on_tab_changed(&mut self) {
+        self.error_message = None;
+        self.table_state.select(None);
+    }
+
+    pub fn focus_filter(&mut self) {
+        self.mode = AppMode::FilterInput;
         self.error_message = None;
     }
 
-    pub fn next_command(&mut self) {
-        if self.selected_command_index < self.commands.len() - 1 {
-            self.selected_command_index += 1;
-        } else {
-            self.selected_command_index = 0;
+    pub fn has_loaded_active_tab(&self) -> bool {
+        self.loaded_tab == Some(self.active_tab())
+    }
+
+    fn build_filters(&self) -> RunnerFilters {
+        RunnerFilters {
+            tag_list: self.filter_tags(),
+            ..RunnerFilters::default()
         }
     }
 
-    pub fn previous_command(&mut self) {
-        if self.selected_command_index > 0 {
-            self.selected_command_index -= 1;
-        } else {
-            self.selected_command_index = self.commands.len() - 1;
+    pub fn selected_runner(&self) -> Option<&Runner> {
+        if !self.has_loaded_active_tab() {
+            return None;
+        }
+
+        match self.current_results_view_type() {
+            ResultsViewType::Workers => None,
+            _ => self
+                .table_state
+                .selected()
+                .and_then(|index| self.runners.get(index)),
         }
     }
 
-    pub fn select_command(&mut self) {
-        self.mode = AppMode::FilterInput;
-        self.input_buffer.clear();
+    pub fn selected_manager_row(&self) -> Option<&ManagerRow> {
+        if !self.has_loaded_active_tab()
+            || self.current_results_view_type() != ResultsViewType::Workers
+        {
+            return None;
+        }
+
+        self.table_state
+            .selected()
+            .and_then(|index| self.manager_rows.get(index))
+    }
+
+    pub fn compact_selection_summary(&self) -> Option<String> {
+        match self.current_results_view_type() {
+            ResultsViewType::Workers => self.selected_manager_row().map(|row| {
+                format!(
+                    "Worker {} on {} [{}]",
+                    row.manager.id, row.manager.system_id, row.manager.status
+                )
+            }),
+            _ => self.selected_runner().map(|runner| {
+                format!(
+                    "Runner {} [{}] managers={} version={}",
+                    runner.id,
+                    runner.status,
+                    runner.managers.len(),
+                    runner.version.as_deref().unwrap_or("-")
+                )
+            }),
+        }
+    }
+
+    pub fn current_tab_title(&self) -> String {
+        match self.active_tab() {
+            Tab::Runners => format!("Runners ({})", self.runners.len()),
+            Tab::Health => {
+                if let Some(summary) = &self.health_summary {
+                    format!(
+                        "Health ({}/{} online, {:.1}%)",
+                        summary.online_count,
+                        summary.total_count,
+                        summary.percentage()
+                    )
+                } else {
+                    "Health".to_string()
+                }
+            }
+            Tab::Offline => format!("Offline ({})", self.runners.len()),
+            Tab::Uncontacted => format!("Uncontacted ({})", self.runners.len()),
+            Tab::Empty => format!("Empty ({})", self.runners.len()),
+            Tab::Rotating => format!("Rotating ({})", self.runners.len()),
+            Tab::Workers => format!("Workers ({})", self.manager_rows.len()),
+        }
     }
 
     pub async fn execute_search(&mut self) {
         self.is_loading = true;
         self.error_message = None;
 
-        let command = self.commands[self.selected_command_index];
-        let mut filters = crate::models::runner::RunnerFilters::default();
+        let tab = self.active_tab();
+        let filters = self.build_filters();
 
-        if !self.input_buffer.is_empty() {
-            filters.tag_list = Some(
-                self.input_buffer
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect(),
-            );
-        }
-
-        let result = match command {
-            Command::Fetch | Command::Lights | Command::Workers => {
-                self.conductor.fetch_runners(filters).await
+        let result = match tab.query_mode() {
+            TabQueryMode::FetchRunners => self.conductor.fetch_runners(filters).await,
+            TabQueryMode::Offline => self.conductor.list_offline_runners(filters).await,
+            TabQueryMode::Uncontacted { threshold_secs } => {
+                self.conductor
+                    .list_uncontacted_runners(filters, threshold_secs)
+                    .await
             }
-            Command::Switch => self.conductor.list_offline_runners(filters).await,
-            Command::Flames => self.conductor.list_uncontacted_runners(filters, 3600).await,
-            Command::Empty => self.conductor.list_runners_without_managers(filters).await,
-            Command::Rotate => self.conductor.detect_rotating_runners(filters).await,
+            TabQueryMode::Empty => self.conductor.list_runners_without_managers(filters).await,
+            TabQueryMode::Rotating => self.conductor.detect_rotating_runners(filters).await,
         };
 
         self.is_loading = false;
 
         match result {
             Ok(runners) => {
-                // Clear all previous results before populating new ones
+                self.loaded_tab = Some(tab);
+                self.renders_from_runners(tab, runners);
+            }
+            Err(error) => {
+                self.loaded_tab = None;
                 self.runners.clear();
                 self.manager_rows.clear();
                 self.health_summary = None;
+                self.table_state.select(None);
+                self.error_message = Some(format!("{:#}", error));
+            }
+        }
+    }
 
-                match command {
-                    Command::Workers => {
-                        self.manager_rows = runners
-                            .into_iter()
-                            .flat_map(|mut r| {
-                                let tags = std::mem::take(&mut r.tag_list);
-                                r.managers.into_iter().map(move |m| ManagerRow {
-                                    runner_id: r.id,
-                                    runner_tags: tags.clone(),
-                                    manager: m,
-                                })
-                            })
-                            .collect();
-                        self.results_view_type = ResultsViewType::Workers;
-                    }
-                    Command::Lights => {
-                        let online_count = runners
+    fn renders_from_runners(&mut self, tab: Tab, runners: Vec<Runner>) {
+        self.runners.clear();
+        self.manager_rows.clear();
+        self.health_summary = None;
+
+        match tab {
+            Tab::Workers => {
+                self.manager_rows = runners
+                    .into_iter()
+                    .flat_map(|mut runner| {
+                        let tags = std::mem::take(&mut runner.tag_list);
+                        runner.managers.into_iter().map(move |manager| ManagerRow {
+                            runner_id: runner.id,
+                            runner_tags: tags.clone(),
+                            manager,
+                        })
+                    })
+                    .collect();
+            }
+            Tab::Health => {
+                let online_count = runners
+                    .iter()
+                    .filter(|runner| {
+                        runner
+                            .managers
                             .iter()
-                            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
-                            .count();
-                        self.health_summary = Some(HealthSummary {
-                            online_count,
-                            total_count: runners.len(),
-                        });
-                        self.runners = runners;
-                        self.results_view_type = ResultsViewType::HealthCheck;
-                    }
-                    Command::Rotate => {
-                        self.runners = runners;
-                        self.results_view_type = ResultsViewType::Rotation;
-                    }
-                    _ => {
-                        self.runners = runners;
-                        self.results_view_type = ResultsViewType::Runners;
-                    }
-                }
-                self.mode = AppMode::ResultsView;
-                if !self.runners.is_empty() || !self.manager_rows.is_empty() {
-                    self.table_state.select(Some(0));
-                }
+                            .any(|manager| manager.status == "online")
+                    })
+                    .count();
+                self.health_summary = Some(HealthSummary {
+                    online_count,
+                    total_count: runners.len(),
+                });
+                self.runners = runners;
             }
-            Err(e) => {
-                self.error_message = Some(format!("{:#}", e));
-                self.mode = AppMode::ResultsView; // Show error in results view
+            _ => {
+                self.runners = runners;
             }
+        }
+
+        let result_count = self.active_result_len();
+        self.table_state.select((result_count > 0).then_some(0));
+    }
+
+    pub fn active_result_len(&self) -> usize {
+        match self.current_results_view_type() {
+            ResultsViewType::Workers => self.manager_rows.len(),
+            _ => self.runners.len(),
         }
     }
 
     pub fn next_result(&mut self) {
-        let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
-                self.runners.len()
-            }
-            ResultsViewType::Workers => self.manager_rows.len(),
-        };
+        let len = self.active_result_len();
         if len == 0 {
             return;
         }
-        let i = match self.table_state.selected() {
-            Some(i) => {
-                if i >= len - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
+
+        let index = match self.table_state.selected() {
+            Some(selected) if selected >= len - 1 => 0,
+            Some(selected) => selected + 1,
             None => 0,
         };
-        self.table_state.select(Some(i));
+
+        self.table_state.select(Some(index));
     }
 
     pub fn previous_result(&mut self) {
-        let len = match self.results_view_type {
-            ResultsViewType::Runners | ResultsViewType::HealthCheck | ResultsViewType::Rotation => {
-                self.runners.len()
-            }
-            ResultsViewType::Workers => self.manager_rows.len(),
-        };
+        let len = self.active_result_len();
         if len == 0 {
             return;
         }
-        let i = match self.table_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    len - 1
-                } else {
-                    i - 1
-                }
-            }
+
+        let index = match self.table_state.selected() {
+            Some(0) => len - 1,
+            Some(selected) => selected - 1,
             None => 0,
         };
-        self.table_state.select(Some(i));
+
+        self.table_state.select(Some(index));
     }
 
     pub fn toggle_polling(&mut self) {
@@ -314,15 +499,16 @@ impl App {
             self.poll_started_at = None;
             self.last_poll_at = None;
         } else {
+            let now = Instant::now();
             self.polling_active = true;
-            self.poll_started_at = Some(Instant::now());
-            self.last_poll_at = Some(Instant::now());
+            self.poll_started_at = Some(now);
+            self.last_poll_at = Some(now);
         }
     }
 
     pub fn poll_elapsed_secs(&self) -> u64 {
         self.poll_started_at
-            .map(|t| t.elapsed().as_secs())
+            .map(|started| started.elapsed().as_secs())
             .unwrap_or(0)
     }
 
@@ -331,17 +517,15 @@ impl App {
     }
 
     fn should_poll_now(&self) -> bool {
-        if !self.polling_active || self.is_loading {
-            return false;
-        }
-        if self.mode != AppMode::ResultsView {
+        if !self.polling_active || self.is_loading || self.mode != AppMode::Dashboard {
             return false;
         }
         if self.poll_timed_out() {
             return false;
         }
+
         self.last_poll_at
-            .map(|t| t.elapsed().as_secs() >= self.config.poll_interval_secs)
+            .map(|last_poll| last_poll.elapsed().as_secs() >= self.config.poll_interval_secs)
             .unwrap_or(false)
     }
 
@@ -361,32 +545,31 @@ impl App {
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
-        // FilterInput mode: route all chars/backspace to input buffer first
         if self.mode == AppMode::FilterInput {
             match key.code {
-                KeyCode::Enter => self.execute_search().await,
+                KeyCode::Enter => {
+                    self.mode = AppMode::Dashboard;
+                    self.execute_search().await;
+                }
                 KeyCode::Esc => {
-                    self.error_message = None;
-                    self.mode = AppMode::CommandSelection;
+                    self.mode = AppMode::Dashboard;
                 }
                 KeyCode::Backspace => {
-                    self.input_buffer.pop();
+                    self.filter_input.pop();
                 }
-                KeyCode::Char(c) => {
-                    self.input_buffer.push(c);
+                KeyCode::Char(character) => {
+                    self.filter_input.push(character);
                 }
                 _ => {}
             }
             return;
         }
 
-        // Help mode: any key closes help
         if self.mode == AppMode::Help {
-            self.mode = AppMode::CommandSelection;
+            self.mode = AppMode::Dashboard;
             return;
         }
 
-        // CommandSelection and ResultsView modes
         match key.code {
             KeyCode::Char('?') => {
                 self.mode = AppMode::Help;
@@ -394,40 +577,103 @@ impl App {
             KeyCode::Char('q') => {
                 self.should_quit = true;
             }
-            KeyCode::Char('p') if self.mode == AppMode::ResultsView => {
+            KeyCode::Char('p') => {
                 self.toggle_polling();
             }
-            KeyCode::Up | KeyCode::Char('k') => match self.mode {
-                AppMode::CommandSelection => self.previous_command(),
-                AppMode::ResultsView => self.previous_result(),
-                _ => {}
-            },
-            KeyCode::Down | KeyCode::Char('j') => match self.mode {
-                AppMode::CommandSelection => self.next_command(),
-                AppMode::ResultsView => self.next_result(),
-                _ => {}
-            },
-            KeyCode::Enter => {
-                if self.mode == AppMode::CommandSelection {
-                    self.select_command();
+            KeyCode::Char('r') => {
+                self.execute_search().await;
+            }
+            KeyCode::Tab => {
+                self.next_tab();
+            }
+            KeyCode::BackTab => {
+                self.previous_tab();
+            }
+            KeyCode::Char(shortcut @ '1'..='7') => {
+                if let Some(tab) = Tab::from_shortcut(shortcut) {
+                    self.select_tab(tab);
                 }
             }
-            KeyCode::Esc => match self.mode {
-                AppMode::CommandSelection => self.should_quit = true,
-                AppMode::ResultsView => {
-                    self.error_message = None;
-                    self.mode = AppMode::CommandSelection;
-                }
-                _ => self.mode = AppMode::CommandSelection,
-            },
+            KeyCode::Enter => {
+                self.execute_search().await;
+            }
+            KeyCode::Esc => {
+                self.error_message = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.previous_result();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.next_result();
+            }
+            KeyCode::Backspace => {
+                self.focus_filter();
+                self.filter_input.pop();
+            }
+            KeyCode::Char(character) => {
+                self.focus_filter();
+                self.filter_input.push(character);
+            }
             _ => {}
         }
+    }
+}
+
+pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
+    if width >= 130 {
+        DetailLayoutMode::SidePanel
+    } else if width >= 90 && height >= 26 {
+        DetailLayoutMode::BottomPanel
+    } else {
+        DetailLayoutMode::Compact
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::GitLabClient;
+    use crate::models::manager::RunnerManager;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn test_app() -> App {
+        let client = GitLabClient::new("https://gitlab.com".to_string(), "token".to_string())
+            .expect("client");
+        App::new(Conductor::new(client), AppConfig::default())
+    }
+
+    fn test_runner(id: u64, managers: Vec<RunnerManager>) -> Runner {
+        Runner {
+            id,
+            runner_type: "group_type".to_string(),
+            active: true,
+            paused: false,
+            description: Some(format!("Runner {}", id)),
+            created_at: Some("2024-01-15T10:30:00.000Z".to_string()),
+            ip_address: Some("10.0.1.1".to_string()),
+            is_shared: false,
+            status: "online".to_string(),
+            version: Some("17.5.0".to_string()),
+            revision: Some("abc123".to_string()),
+            tag_list: vec!["prod".to_string(), "linux".to_string()],
+            managers,
+        }
+    }
+
+    fn test_manager(id: u64, status: &str) -> RunnerManager {
+        RunnerManager {
+            id,
+            system_id: format!("runner-host-{}", id),
+            created_at: "2024-01-15T10:30:00.000Z".to_string(),
+            contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
+            ip_address: Some("10.0.1.1".to_string()),
+            status: status.to_string(),
+            version: Some("17.5.0".to_string()),
+            revision: Some("abc123".to_string()),
+            platform: None,
+            architecture: None,
+        }
+    }
 
     #[test]
     fn test_health_summary_percentage_all_online() {
@@ -461,86 +707,217 @@ mod tests {
 
     #[test]
     fn test_health_summary_percentage_empty() {
-        let summary = HealthSummary {
-            online_count: 0,
-            total_count: 0,
-        };
-        assert!((summary.percentage() - 0.0).abs() < 0.001);
-        assert!(!summary.is_healthy()); // Empty is not healthy
-    }
-
-    #[test]
-    fn test_health_summary_default() {
         let summary = HealthSummary::default();
-        assert_eq!(summary.online_count, 0);
-        assert_eq!(summary.total_count, 0);
+        assert!((summary.percentage() - 0.0).abs() < 0.001);
+        assert!(!summary.is_healthy());
     }
 
     #[test]
     fn test_app_mode_default() {
-        let mode = AppMode::default();
-        assert_eq!(mode, AppMode::CommandSelection);
+        assert_eq!(AppMode::default(), AppMode::Dashboard);
     }
 
     #[test]
-    fn test_results_view_type_default() {
-        let view_type = ResultsViewType::default();
-        assert_eq!(view_type, ResultsViewType::Runners);
+    fn test_results_view_type_mapping() {
+        assert_eq!(Tab::Runners.results_view_type(), ResultsViewType::Runners);
+        assert_eq!(
+            Tab::Health.results_view_type(),
+            ResultsViewType::HealthCheck
+        );
+        assert_eq!(Tab::Rotating.results_view_type(), ResultsViewType::Rotation);
+        assert_eq!(Tab::Workers.results_view_type(), ResultsViewType::Workers);
     }
 
     #[test]
-    fn test_manager_row_creation() {
-        let manager = RunnerManager {
-            id: 1,
-            system_id: "test-host".to_string(),
-            created_at: "2024-01-15T10:30:00.000Z".to_string(),
-            contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
-            ip_address: Some("10.0.1.1".to_string()),
-            status: "online".to_string(),
-            version: Some("17.5.0".to_string()),
-            revision: None,
-            platform: None,
-            architecture: None,
-        };
+    fn test_tab_shortcut_roundtrip_mapping() {
+        for tab in Tab::ALL {
+            let shortcut = tab.shortcut();
+            assert_eq!(Tab::from_shortcut(shortcut), Some(*tab));
+        }
+        assert_eq!(Tab::from_shortcut('0'), None);
+    }
 
-        let row = ManagerRow {
-            runner_id: 12345,
-            runner_tags: vec!["alm".to_string(), "prod".to_string()],
-            manager: manager.clone(),
-        };
+    #[test]
+    fn test_active_tab_query_mapping() {
+        assert_eq!(Tab::Runners.query_mode(), TabQueryMode::FetchRunners);
+        assert_eq!(Tab::Health.query_mode(), TabQueryMode::FetchRunners);
+        assert_eq!(Tab::Workers.query_mode(), TabQueryMode::FetchRunners);
+        assert_eq!(Tab::Offline.query_mode(), TabQueryMode::Offline);
+        assert_eq!(
+            Tab::Uncontacted.query_mode(),
+            TabQueryMode::Uncontacted {
+                threshold_secs: UNCONTACTED_THRESHOLD_SECS
+            }
+        );
+        assert_eq!(Tab::Empty.query_mode(), TabQueryMode::Empty);
+        assert_eq!(Tab::Rotating.query_mode(), TabQueryMode::Rotating);
+    }
 
-        assert_eq!(row.runner_id, 12345);
-        assert_eq!(row.runner_tags.len(), 2);
-        assert_eq!(row.manager.system_id, "test-host");
+    #[test]
+    fn test_tab_switching_wraps() {
+        let mut app = test_app();
+        assert_eq!(app.active_tab(), Tab::Runners);
+        app.previous_tab();
+        assert_eq!(app.active_tab(), Tab::Workers);
+        app.next_tab();
+        assert_eq!(app.active_tab(), Tab::Runners);
+    }
+
+    #[tokio::test]
+    async fn test_direct_tab_hotkeys_select_expected_tab() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.active_tab(), Tab::Uncontacted);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.active_tab(), Tab::Workers);
+    }
+
+    #[test]
+    fn test_filter_tags_trim_and_drop_empty_entries() {
+        let mut app = test_app();
+        app.filter_input = " prod, , qa ,, linux ".to_string();
+        assert_eq!(
+            app.filter_tags(),
+            Some(vec![
+                "prod".to_string(),
+                "qa".to_string(),
+                "linux".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_filter_tags_only_noise_returns_none() {
+        let mut app = test_app();
+        app.filter_input = " , ,,   ,".to_string();
+        assert_eq!(app.filter_tags(), None);
+    }
+
+    #[test]
+    fn test_filter_persists_across_tab_switches() {
+        let mut app = test_app();
+        app.filter_input = "prod,qa".to_string();
+        app.next_tab();
+        app.next_tab();
+        assert_eq!(app.filter_input, "prod,qa");
+    }
+
+    #[test]
+    fn test_toggle_polling_does_not_change_tab() {
+        let mut app = test_app();
+        app.select_tab(Tab::Rotating);
+        app.toggle_polling();
+        assert!(app.polling_active);
+        assert_eq!(app.active_tab(), Tab::Rotating);
+    }
+
+    #[test]
+    fn test_toggle_polling_off_clears_poll_state() {
+        let mut app = test_app();
+        app.toggle_polling();
+        assert!(app.polling_active);
+        assert!(app.poll_started_at.is_some());
+        assert!(app.last_poll_at.is_some());
+
+        app.toggle_polling();
+        assert!(!app.polling_active);
+        assert!(app.poll_started_at.is_none());
+        assert!(app.last_poll_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tick_disables_polling_when_timeout_reached() {
+        let mut app = test_app();
+        app.polling_active = true;
+        app.poll_started_at = Some(Instant::now());
+        app.last_poll_at = Some(Instant::now());
+        app.config.poll_timeout_secs = 0;
+
+        app.tick().await;
+
+        assert!(!app.polling_active);
+    }
+
+    #[test]
+    fn test_detail_layout_mode_breakpoints() {
+        assert_eq!(detail_layout_mode(140, 30), DetailLayoutMode::SidePanel);
+        assert_eq!(detail_layout_mode(100, 30), DetailLayoutMode::BottomPanel);
+        assert_eq!(detail_layout_mode(80, 24), DetailLayoutMode::Compact);
+    }
+
+    #[test]
+    fn test_detail_layout_mode_requires_height_for_bottom_panel() {
+        assert_eq!(detail_layout_mode(100, 20), DetailLayoutMode::Compact);
+    }
+
+    #[test]
+    fn test_selected_runner_for_runner_tabs() {
+        let mut app = test_app();
+        app.loaded_tab = Some(Tab::Runners);
+        app.runners = vec![test_runner(42, vec![test_manager(1, "online")])];
+        app.table_state.select(Some(0));
+
+        let runner = app.selected_runner().expect("selected runner");
+        assert_eq!(runner.id, 42);
+        assert_eq!(runner.managers.len(), 1);
+    }
+
+    #[test]
+    fn test_selected_worker_for_workers_tab() {
+        let mut app = test_app();
+        app.select_tab(Tab::Workers);
+        app.loaded_tab = Some(Tab::Workers);
+        app.manager_rows = vec![ManagerRow {
+            runner_id: 42,
+            runner_tags: vec!["prod".to_string()],
+            manager: test_manager(7, "online"),
+        }];
+        app.table_state.select(Some(0));
+
+        let worker = app.selected_manager_row().expect("selected worker");
+        assert_eq!(worker.runner_id, 42);
+        assert_eq!(worker.manager.id, 7);
+    }
+
+    #[test]
+    fn test_compact_selection_summary_uses_active_tab_shape() {
+        let mut app = test_app();
+        app.loaded_tab = Some(Tab::Runners);
+        app.runners = vec![test_runner(42, vec![test_manager(1, "online")])];
+        app.table_state.select(Some(0));
+        assert!(app
+            .compact_selection_summary()
+            .expect("runner summary")
+            .contains("Runner 42"));
+
+        app.select_tab(Tab::Workers);
+        app.loaded_tab = Some(Tab::Workers);
+        app.manager_rows = vec![ManagerRow {
+            runner_id: 42,
+            runner_tags: vec!["prod".to_string()],
+            manager: test_manager(7, "online"),
+        }];
+        app.table_state.select(Some(0));
+        assert!(app
+            .compact_selection_summary()
+            .expect("worker summary")
+            .contains("Worker 7"));
     }
 
     #[tokio::test]
     async fn test_execute_search_handles_error() {
-        use crate::client::GitLabClient;
-        use crate::conductor::Conductor;
-        use crate::config::AppConfig;
-
-        let mut server = mockito::Server::new_async().await;
-        let _m = server
-            .mock("GET", "/api/v4/runners/all")
-            .match_query(mockito::Matcher::Any)
-            .with_status(500)
-            .with_body("Internal Server Error")
-            .create_async()
-            .await;
-
-        let client = GitLabClient::new(server.url(), "dummy_token".to_string()).unwrap();
+        let client =
+            GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
         let conductor = Conductor::new(client);
-        let config = AppConfig::default();
-
-        let mut app = App::new(conductor, config);
-
-        assert_eq!(app.mode, AppMode::CommandSelection);
-        assert!(app.error_message.is_none());
+        let mut app = App::new(conductor, AppConfig::default());
 
         app.execute_search().await;
 
-        assert_eq!(app.mode, AppMode::ResultsView);
         assert!(app.error_message.is_some());
+        assert!(!app.is_loading);
+        assert_eq!(app.loaded_tab, None);
     }
 }
