@@ -49,6 +49,32 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 GITLAB_HOST=https://gitlab.com
 ```
 
+Or create a config file at `~/.config/gitlab-runner-tui/config.toml`:
+
+```toml
+gitlab_host = "https://gitlab.com"
+gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+poll_interval_secs = 30
+poll_timeout_secs = 1800
+```
+
+The legacy path `~/.config/igor/config.toml` is still read as a fallback for backward compatibility.
+
+Optional `config.toml` file locations (checked in this order):
+
+1. `./config.toml` (current working directory)
+2. `~/.config/gitlab-runner-tui/config.toml` (canonical)
+3. `~/.config/igor/config.toml` (legacy fallback)
+
+Example:
+
+```toml
+poll_interval_secs = 30
+poll_timeout_secs = 1800
+gitlab_host = "https://gitlab.com"
+gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+```
+
 ### Running
 
 ```bash
@@ -144,6 +170,20 @@ cargo test
 # Run with debug logging
 RUST_LOG=debug cargo run
 ```
+
+### Git Hooks
+
+This repo uses `lefthook` for local git hooks.
+
+```bash
+brew install lefthook
+lefthook install
+```
+
+Configured hooks:
+
+- `pre-commit`: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+- `pre-push`: `cargo test`
 
 ### Testing
 

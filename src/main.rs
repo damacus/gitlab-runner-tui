@@ -23,6 +23,15 @@ use tui::{
     ui,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadlessCommand {
+    Fetch,
+    Switch,
+    Flames,
+    Empty,
+    Rotate,
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -141,6 +150,7 @@ async fn run_headless(
     command: &str,
     tags: Option<&str>,
 ) -> Result<()> {
+    let command = parse_headless_command(command)?;
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
     let started_at = Instant::now();
     let mut iteration = 0u64;
@@ -149,21 +159,14 @@ async fn run_headless(
         iteration += 1;
         let elapsed = started_at.elapsed().as_secs();
 
-        let mut filters = RunnerFilters::default();
-        if let Some(tag_str) = tags {
-            filters.tag_list = Some(tag_str.split(',').map(|s| s.trim().to_string()).collect());
-        }
+        let filters = build_runner_filters(tags);
 
         let result = match command {
-            "fetch" => conductor.fetch_runners(filters).await,
-            "switch" => conductor.list_offline_runners(filters).await,
-            "flames" => conductor.list_uncontacted_runners(filters, 3600).await,
-            "empty" => conductor.list_runners_without_managers(filters).await,
-            "rotate" => conductor.detect_rotating_runners(filters).await,
-            other => {
-                eprintln!("Unknown command: {}", other);
-                std::process::exit(1);
-            }
+            HeadlessCommand::Fetch => conductor.fetch_runners(filters).await,
+            HeadlessCommand::Switch => conductor.list_offline_runners(filters).await,
+            HeadlessCommand::Flames => conductor.list_uncontacted_runners(filters, 3600).await,
+            HeadlessCommand::Empty => conductor.list_runners_without_managers(filters).await,
+            HeadlessCommand::Rotate => conductor.detect_rotating_runners(filters).await,
         };
 
         match result {
@@ -174,7 +177,7 @@ async fn run_headless(
                     elapsed % 60,
                     iteration,
                     runners.len(),
-                    command,
+                    command.as_str(),
                 );
 
                 for runner in &runners {
@@ -199,7 +202,7 @@ async fn run_headless(
                     );
                 }
 
-                if runners.is_empty() && command == "rotate" {
+                if runners.is_empty() && command == HeadlessCommand::Rotate {
                     println!("  ✓ No rotation detected — all runners have single managers");
                 }
             }
@@ -221,4 +224,148 @@ async fn run_headless(
     }
 
     Ok(())
+}
+
+impl HeadlessCommand {
+    fn as_str(self) -> &'static str {
+        match self {
+            HeadlessCommand::Fetch => "fetch",
+            HeadlessCommand::Switch => "switch",
+            HeadlessCommand::Flames => "flames",
+            HeadlessCommand::Empty => "empty",
+            HeadlessCommand::Rotate => "rotate",
+        }
+    }
+}
+
+fn parse_headless_command(command: &str) -> Result<HeadlessCommand> {
+    match command {
+        "fetch" => Ok(HeadlessCommand::Fetch),
+        "switch" => Ok(HeadlessCommand::Switch),
+        "flames" => Ok(HeadlessCommand::Flames),
+        "empty" => Ok(HeadlessCommand::Empty),
+        "rotate" => Ok(HeadlessCommand::Rotate),
+        other => anyhow::bail!(
+            "Unknown headless command: {}. Supported commands: fetch, switch, flames, empty, rotate",
+            other
+        ),
+    }
+}
+
+fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
+    let tag_list = tags.and_then(|tag_str| {
+        let tags: Vec<String> = tag_str
+            .split(',')
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+
+        if tags.is_empty() {
+            None
+        } else {
+            Some(tags)
+        }
+    });
+
+    RunnerFilters {
+        tag_list,
+        ..RunnerFilters::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_supported_headless_commands() {
+        assert_eq!(
+            parse_headless_command("fetch").unwrap(),
+            HeadlessCommand::Fetch
+        );
+        assert_eq!(
+            parse_headless_command("switch").unwrap(),
+            HeadlessCommand::Switch
+        );
+        assert_eq!(
+            parse_headless_command("flames").unwrap(),
+            HeadlessCommand::Flames
+        );
+        assert_eq!(
+            parse_headless_command("empty").unwrap(),
+            HeadlessCommand::Empty
+        );
+        assert_eq!(
+            parse_headless_command("rotate").unwrap(),
+            HeadlessCommand::Rotate
+        );
+    }
+
+    #[test]
+    fn rejects_non_headless_commands() {
+        let error = parse_headless_command("lights").unwrap_err().to_string();
+        assert!(error.contains("Unknown headless command: lights"));
+        assert!(error.contains("fetch, switch, flames, empty, rotate"));
+    }
+
+    #[test]
+    fn rejects_headless_commands_with_case_or_whitespace_mismatch() {
+        assert!(parse_headless_command("Fetch").is_err());
+        assert!(parse_headless_command("fetch ").is_err());
+        assert!(parse_headless_command(" rotate").is_err());
+    }
+
+    #[test]
+    fn builds_empty_filters_when_tags_missing_or_blank() {
+        assert_eq!(build_runner_filters(None), RunnerFilters::default());
+        assert_eq!(
+            build_runner_filters(Some(" , , ")),
+            RunnerFilters::default()
+        );
+    }
+
+    #[test]
+    fn builds_trimmed_tag_filters() {
+        let filters = build_runner_filters(Some(" alm, production ,, linux "));
+        assert_eq!(
+            filters.tag_list,
+            Some(vec![
+                "alm".to_string(),
+                "production".to_string(),
+                "linux".to_string()
+            ])
+        );
+        assert_eq!(filters.status, None);
+        assert_eq!(filters.runner_type, None);
+        assert_eq!(filters.version_prefix, None);
+        assert_eq!(filters.paused, None);
+    }
+
+    #[test]
+    fn builds_tag_filters_preserving_order_and_duplicates() {
+        let filters = build_runner_filters(Some("prod, staging,prod,qa"));
+        assert_eq!(
+            filters.tag_list,
+            Some(vec![
+                "prod".to_string(),
+                "staging".to_string(),
+                "prod".to_string(),
+                "qa".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn builds_tag_filters_with_tab_and_newline_whitespace() {
+        let filters = build_runner_filters(Some("\tprod,\nqa,  staging "));
+        assert_eq!(
+            filters.tag_list,
+            Some(vec![
+                "prod".to_string(),
+                "qa".to_string(),
+                "staging".to_string()
+            ])
+        );
+    }
 }

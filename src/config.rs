@@ -38,7 +38,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        // Try CWD config.toml first, then ~/.config/igor/config.toml
+        // Try CWD config.toml first, then canonical and legacy config directories.
         let paths = config_paths();
 
         for path in paths {
@@ -67,8 +67,10 @@ fn config_paths() -> Vec<PathBuf> {
         paths.push(cwd.join("config.toml"));
     }
 
-    // ~/.config/igor/config.toml
+    // ~/.config/gitlab-runner-tui/config.toml (canonical)
+    // ~/.config/igor/config.toml (legacy fallback for backward compatibility)
     if let Some(config_dir) = dirs::config_dir() {
+        paths.push(config_dir.join("gitlab-runner-tui").join("config.toml"));
         paths.push(config_dir.join("igor").join("config.toml"));
     }
 
@@ -155,6 +157,16 @@ mod tests {
     }
 
     #[test]
+    fn test_config_paths_includes_canonical_and_legacy_dirs() {
+        let paths = config_paths();
+
+        if let Some(config_dir) = dirs::config_dir() {
+            assert!(paths.contains(&config_dir.join("gitlab-runner-tui").join("config.toml")));
+            assert!(paths.contains(&config_dir.join("igor").join("config.toml")));
+        }
+    }
+
+    #[test]
     fn test_debug_redacts_token() {
         let config = AppConfig {
             poll_interval_secs: 30,
@@ -165,13 +177,8 @@ mod tests {
 
         let debug_output = format!("{:?}", config);
 
-        // Ensure sensitive token is not present
         assert!(!debug_output.contains("glpat-secret-token"));
-
-        // Ensure redacted string is present
         assert!(debug_output.contains("[REDACTED]"));
-
-        // Ensure other non-sensitive fields are still visible
         assert!(debug_output.contains("https://gitlab.com"));
     }
 }

@@ -73,17 +73,7 @@ impl Conductor {
 
     pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         let runners = self.fetch_runners(filters).await?;
-        let offline = runners
-            .into_iter()
-            .filter(|r| {
-                if r.managers.is_empty() {
-                    return false;
-                }
-                // Runner is offline if none of its managers are online
-                !r.managers.iter().any(|m| m.status == "online")
-            })
-            .collect();
-        Ok(offline)
+        Ok(filter_offline_runners(runners))
     }
 
     pub async fn list_uncontacted_runners(
@@ -92,32 +82,11 @@ impl Conductor {
         threshold_secs: u64,
     ) -> Result<Vec<Runner>> {
         let runners = self.fetch_runners(filters).await?;
-        let now = Utc::now();
-
-        let uncontacted = runners
-            .into_iter()
-            .filter(|r| {
-                if r.managers.is_empty() {
-                    return false;
-                }
-                // Runner is uncontacted if ALL managers are past the threshold
-                r.managers.iter().all(|m| {
-                    match &m.contacted_at {
-                        Some(contacted_at_str) => {
-                            match DateTime::parse_from_rfc3339(contacted_at_str) {
-                                Ok(contacted_at) => {
-                                    let duration = now.signed_duration_since(contacted_at);
-                                    duration.num_seconds() > threshold_secs as i64
-                                }
-                                Err(_) => true, // Unparseable timestamp treated as uncontacted
-                            }
-                        }
-                        None => true, // Missing contacted_at treated as uncontacted
-                    }
-                })
-            })
-            .collect();
-        Ok(uncontacted)
+        Ok(filter_uncontacted_runners(
+            runners,
+            Utc::now(),
+            threshold_secs,
+        ))
     }
 
     /// Returns (online_count, total_count) - reserved for potential status aggregation
@@ -137,26 +106,77 @@ impl Conductor {
         filters: RunnerFilters,
     ) -> Result<Vec<Runner>> {
         let runners = self.fetch_runners(filters).await?;
-        let empty = runners
-            .into_iter()
-            .filter(|r| r.managers.is_empty())
-            .collect();
-        Ok(empty)
+        Ok(filter_runners_without_managers(runners))
     }
 
     pub async fn detect_rotating_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         let runners = self.fetch_runners(filters).await?;
-        let rotating = runners
-            .into_iter()
-            .filter(|r| r.managers.len() > 1)
-            .collect();
-        Ok(rotating)
+        Ok(filter_rotating_runners(runners))
     }
+}
+
+fn is_runner_offline(runner: &Runner) -> bool {
+    !runner.managers.is_empty() && !runner.managers.iter().any(|m| m.status == "online")
+}
+
+fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold_secs: u64) -> bool {
+    if runner.managers.is_empty() {
+        return false;
+    }
+
+    // Runner is uncontacted if all managers are missing/stale/invalid relative to threshold.
+    runner
+        .managers
+        .iter()
+        .all(|m| is_manager_stale(m.contacted_at.as_deref(), now, threshold_secs))
+}
+
+fn is_manager_stale(contacted_at: Option<&str>, now: DateTime<Utc>, threshold_secs: u64) -> bool {
+    match contacted_at {
+        Some(contacted_at_str) => match DateTime::parse_from_rfc3339(contacted_at_str) {
+            Ok(contacted_at) => {
+                let duration = now.signed_duration_since(contacted_at);
+                duration.num_seconds() > threshold_secs as i64
+            }
+            Err(_) => true, // Unparseable timestamp treated as stale
+        },
+        None => true, // Missing contacted_at treated as stale
+    }
+}
+
+fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
+    runners.into_iter().filter(is_runner_offline).collect()
+}
+
+fn filter_uncontacted_runners(
+    runners: Vec<Runner>,
+    now: DateTime<Utc>,
+    threshold_secs: u64,
+) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|r| is_runner_uncontacted(r, now, threshold_secs))
+        .collect()
+}
+
+fn filter_runners_without_managers(runners: Vec<Runner>) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|r| r.managers.is_empty())
+        .collect()
+}
+
+fn filter_rotating_runners(runners: Vec<Runner>) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|r| r.managers.len() > 1)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::manager::RunnerManager;
     use mockito::{Matcher, Server};
 
     fn list_response_body(id: u64, status: &str) -> String {
@@ -216,6 +236,32 @@ mod tests {
                 "revision": "abc123"
             }}"#,
             id, runner_id, status
+        )
+    }
+
+    fn manager_response_body_with_contacted_at(
+        id: u64,
+        runner_id: u64,
+        status: &str,
+        contacted_at: Option<&str>,
+    ) -> String {
+        let contacted_at_json = match contacted_at {
+            Some(value) => format!("\"{}\"", value),
+            None => "null".to_string(),
+        };
+
+        format!(
+            r#"{{
+                "id": {},
+                "system_id": "host-{}",
+                "created_at": "2024-01-15T10:30:00.000Z",
+                "contacted_at": {},
+                "ip_address": "10.0.1.1",
+                "status": "{}",
+                "version": "17.5.0",
+                "revision": "abc123"
+            }}"#,
+            id, runner_id, contacted_at_json, status
         )
     }
 
@@ -617,5 +663,255 @@ mod tests {
         for mock in &mocks {
             mock.assert_async().await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_uncontacted_runners_respects_threshold_and_all_manager_rule() {
+        let mut server = Server::new_async().await;
+
+        let stale_contact = (Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+        let recent_contact = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+
+        let list_mock = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(2, "online")
+            ))
+            .create_async()
+            .await;
+
+        let detail_1 = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "online", &["prod"]))
+            .create_async()
+            .await;
+        let detail_2 = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "online", &["staging"]))
+            .create_async()
+            .await;
+
+        let managers_1 = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                manager_response_body_with_contacted_at(10, 1, "offline", Some(&stale_contact)),
+                manager_response_body_with_contacted_at(11, 1, "offline", Some(&stale_contact))
+            ))
+            .create_async()
+            .await;
+        let managers_2 = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                manager_response_body_with_contacted_at(20, 2, "offline", Some(&stale_contact)),
+                manager_response_body_with_contacted_at(21, 2, "online", Some(&recent_contact))
+            ))
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let uncontacted = conductor
+            .list_uncontacted_runners(RunnerFilters::default(), 60)
+            .await
+            .unwrap();
+
+        assert_eq!(uncontacted.len(), 1);
+        assert_eq!(uncontacted[0].id, 1);
+
+        list_mock.assert_async().await;
+        detail_1.assert_async().await;
+        detail_2.assert_async().await;
+        managers_1.assert_async().await;
+        managers_2.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_list_uncontacted_runners_treats_missing_or_invalid_timestamps_as_uncontacted() {
+        let mut server = Server::new_async().await;
+
+        let recent_contact = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+
+        let list_mock = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(3, "online"),
+                list_response_body(4, "online")
+            ))
+            .create_async()
+            .await;
+
+        let detail_3 = server
+            .mock("GET", "/api/v4/runners/3")
+            .with_status(200)
+            .with_body(detail_response_body(3, "online", &["qa"]))
+            .create_async()
+            .await;
+        let detail_4 = server
+            .mock("GET", "/api/v4/runners/4")
+            .with_status(200)
+            .with_body(detail_response_body(4, "online", &["qa"]))
+            .create_async()
+            .await;
+
+        let managers_3 = server
+            .mock("GET", "/api/v4/runners/3/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                manager_response_body_with_contacted_at(30, 3, "offline", None),
+                manager_response_body_with_contacted_at(31, 3, "offline", Some("not-a-timestamp"))
+            ))
+            .create_async()
+            .await;
+        let managers_4 = server
+            .mock("GET", "/api/v4/runners/4/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                manager_response_body_with_contacted_at(40, 4, "offline", Some(&recent_contact)),
+                manager_response_body_with_contacted_at(41, 4, "offline", None)
+            ))
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client);
+
+        let uncontacted = conductor
+            .list_uncontacted_runners(RunnerFilters::default(), 60)
+            .await
+            .unwrap();
+
+        assert_eq!(uncontacted.len(), 1);
+        assert_eq!(uncontacted[0].id, 3);
+
+        list_mock.assert_async().await;
+        detail_3.assert_async().await;
+        detail_4.assert_async().await;
+        managers_3.assert_async().await;
+        managers_4.assert_async().await;
+    }
+
+    fn test_runner(id: u64, manager_specs: &[(&str, Option<&str>)]) -> Runner {
+        let managers = manager_specs
+            .iter()
+            .enumerate()
+            .map(|(idx, (status, contacted_at))| RunnerManager {
+                id: id * 100 + idx as u64,
+                system_id: format!("host-{}-{}", id, idx),
+                created_at: "2024-01-15T10:30:00.000Z".to_string(),
+                contacted_at: contacted_at.map(|c| c.to_string()),
+                ip_address: Some("10.0.1.1".to_string()),
+                status: (*status).to_string(),
+                version: Some("17.5.0".to_string()),
+                revision: Some("abc123".to_string()),
+                platform: None,
+                architecture: None,
+            })
+            .collect();
+
+        Runner {
+            id,
+            runner_type: "group_type".to_string(),
+            active: true,
+            paused: false,
+            description: Some(format!("Runner {}", id)),
+            created_at: Some("2024-01-15T10:30:00.000Z".to_string()),
+            ip_address: Some("10.0.1.1".to_string()),
+            is_shared: false,
+            status: "online".to_string(),
+            version: Some("17.5.0".to_string()),
+            revision: Some("abc123".to_string()),
+            tag_list: vec!["test".to_string()],
+            managers,
+        }
+    }
+
+    #[test]
+    fn test_filter_offline_runners_socket_free() {
+        let runners = vec![
+            test_runner(1, &[("online", Some("2024-01-20T14:22:00.000Z"))]),
+            test_runner(2, &[("offline", Some("2024-01-20T14:22:00.000Z"))]),
+            test_runner(
+                3,
+                &[
+                    ("offline", Some("2024-01-20T14:22:00.000Z")),
+                    ("stale", None),
+                ],
+            ),
+            test_runner(4, &[]),
+        ];
+
+        let filtered = filter_offline_runners(runners);
+        let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
+
+        assert_eq!(ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_filter_uncontacted_runners_socket_free() {
+        let now = Utc::now();
+        let stale = (now - chrono::Duration::seconds(120)).to_rfc3339();
+        let recent = (now - chrono::Duration::seconds(10)).to_rfc3339();
+
+        let runners = vec![
+            // all stale -> uncontacted
+            test_runner(1, &[("offline", Some(&stale)), ("offline", None)]),
+            // one recent contact -> not uncontacted
+            test_runner(2, &[("online", Some(&recent)), ("offline", Some(&stale))]),
+            // empty managers -> not uncontacted
+            test_runner(3, &[]),
+            // invalid timestamp treated as stale -> uncontacted
+            test_runner(4, &[("offline", Some("not-a-time"))]),
+        ];
+
+        let filtered = filter_uncontacted_runners(runners, now, 60);
+        let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
+
+        assert_eq!(ids, vec![1, 4]);
+    }
+
+    #[test]
+    fn test_filter_runners_without_managers_socket_free() {
+        let runners = vec![test_runner(1, &[("online", None)]), test_runner(2, &[])];
+
+        let filtered = filter_runners_without_managers(runners);
+        let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
+
+        assert_eq!(ids, vec![2]);
+    }
+
+    #[test]
+    fn test_filter_rotating_runners_socket_free() {
+        let runners = vec![
+            test_runner(1, &[("online", None)]),
+            test_runner(2, &[("online", None), ("offline", None)]),
+            test_runner(3, &[]),
+        ];
+
+        let filtered = filter_rotating_runners(runners);
+        let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
+
+        assert_eq!(ids, vec![2]);
     }
 }
