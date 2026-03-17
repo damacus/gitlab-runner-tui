@@ -2,6 +2,7 @@ use crate::conductor::Conductor;
 use crate::config::AppConfig;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
+use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::fmt;
@@ -143,6 +144,15 @@ pub enum DetailLayoutMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollDisplayState {
+    Live,
+    Paused,
+    Refreshing,
+    TimedOut,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabQueryMode {
     FetchRunners,
     Offline,
@@ -155,7 +165,6 @@ enum TabQueryMode {
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
     pub runner_id: u64,
-    pub runner_tags: Vec<String>,
     pub manager: RunnerManager,
 }
 
@@ -203,6 +212,8 @@ pub struct App {
     pub polling_active: bool,
     pub poll_started_at: Option<Instant>,
     pub last_poll_at: Option<Instant>,
+    pub last_refresh_at: Option<Instant>,
+    pub last_fetch_failed: bool,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -229,6 +240,8 @@ impl App {
             polling_active: false,
             poll_started_at: None,
             last_poll_at: None,
+            last_refresh_at: None,
+            last_fetch_failed: false,
         }
     }
 
@@ -264,25 +277,35 @@ impl App {
         }
     }
 
-    pub fn next_tab(&mut self) {
-        self.active_tab_index = (self.active_tab_index + 1) % self.tabs.len();
-        self.on_tab_changed();
+    pub fn next_tab(&mut self) -> bool {
+        let next = (self.active_tab_index + 1) % self.tabs.len();
+        self.set_active_tab_index(next)
     }
 
-    pub fn previous_tab(&mut self) {
-        if self.active_tab_index == 0 {
-            self.active_tab_index = self.tabs.len() - 1;
+    pub fn previous_tab(&mut self) -> bool {
+        let next = if self.active_tab_index == 0 {
+            self.tabs.len() - 1
         } else {
-            self.active_tab_index -= 1;
-        }
-        self.on_tab_changed();
+            self.active_tab_index - 1
+        };
+        self.set_active_tab_index(next)
     }
 
-    pub fn select_tab(&mut self, tab: Tab) {
+    pub fn select_tab(&mut self, tab: Tab) -> bool {
         if let Some(index) = self.tabs.iter().position(|candidate| *candidate == tab) {
-            self.active_tab_index = index;
-            self.on_tab_changed();
+            return self.set_active_tab_index(index);
         }
+        false
+    }
+
+    fn set_active_tab_index(&mut self, index: usize) -> bool {
+        if self.active_tab_index == index {
+            return false;
+        }
+
+        self.active_tab_index = index;
+        self.on_tab_changed();
+        true
     }
 
     fn on_tab_changed(&mut self) {
@@ -375,6 +398,54 @@ impl App {
         }
     }
 
+    pub fn poll_display_state(&self) -> PollDisplayState {
+        if self.is_loading {
+            PollDisplayState::Refreshing
+        } else if self.last_fetch_failed {
+            PollDisplayState::Error
+        } else if self.polling_active && self.poll_timed_out() {
+            PollDisplayState::TimedOut
+        } else if self.polling_active {
+            PollDisplayState::Live
+        } else {
+            PollDisplayState::Paused
+        }
+    }
+
+    pub fn last_refresh_age_secs(&self) -> Option<u64> {
+        self.last_refresh_at
+            .map(|refresh| refresh.elapsed().as_secs())
+    }
+
+    pub fn next_poll_in_secs(&self) -> Option<u64> {
+        if !self.polling_active || self.poll_timed_out() {
+            return None;
+        }
+
+        let interval = self.config.poll_interval_secs;
+        let elapsed = self
+            .last_refresh_at
+            .or(self.last_poll_at)?
+            .elapsed()
+            .as_secs();
+        Some(interval.saturating_sub(elapsed.min(interval)))
+    }
+
+    pub fn poll_progress_ratio(&self) -> f64 {
+        if !self.polling_active {
+            return 0.0;
+        }
+
+        let interval = self.config.poll_interval_secs.max(1);
+        let elapsed = self
+            .last_refresh_at
+            .or(self.last_poll_at)
+            .map(|last| last.elapsed().as_secs().min(interval))
+            .unwrap_or(0);
+
+        elapsed as f64 / interval as f64
+    }
+
     pub async fn execute_search(&mut self) {
         self.is_loading = true;
         self.error_message = None;
@@ -398,7 +469,13 @@ impl App {
 
         match result {
             Ok(runners) => {
+                let now = Instant::now();
                 self.loaded_tab = Some(tab);
+                self.last_refresh_at = Some(now);
+                if self.polling_active {
+                    self.last_poll_at = Some(now);
+                }
+                self.last_fetch_failed = false;
                 self.renders_from_runners(tab, runners);
             }
             Err(error) => {
@@ -407,6 +484,7 @@ impl App {
                 self.manager_rows.clear();
                 self.health_summary = None;
                 self.table_state.select(None);
+                self.last_fetch_failed = true;
                 self.error_message = Some(format!("{:#}", error));
             }
         }
@@ -421,11 +499,9 @@ impl App {
             Tab::Workers => {
                 self.manager_rows = runners
                     .into_iter()
-                    .flat_map(|mut runner| {
-                        let tags = std::mem::take(&mut runner.tag_list);
+                    .flat_map(|runner| {
                         runner.managers.into_iter().map(move |manager| ManagerRow {
                             runner_id: runner.id,
-                            runner_tags: tags.clone(),
                             manager,
                         })
                     })
@@ -502,7 +578,7 @@ impl App {
             let now = Instant::now();
             self.polling_active = true;
             self.poll_started_at = Some(now);
-            self.last_poll_at = Some(now);
+            self.last_poll_at = self.last_refresh_at.or(Some(now));
         }
     }
 
@@ -524,7 +600,8 @@ impl App {
             return false;
         }
 
-        self.last_poll_at
+        self.last_refresh_at
+            .or(self.last_poll_at)
             .map(|last_poll| last_poll.elapsed().as_secs() >= self.config.poll_interval_secs)
             .unwrap_or(false)
     }
@@ -589,14 +666,20 @@ impl App {
                 self.execute_search().await;
             }
             KeyCode::Tab => {
-                self.next_tab();
+                if self.next_tab() {
+                    self.execute_search().await;
+                }
             }
             KeyCode::BackTab => {
-                self.previous_tab();
+                if self.previous_tab() {
+                    self.execute_search().await;
+                }
             }
             KeyCode::Char(shortcut @ '1'..='7') => {
                 if let Some(tab) = Tab::from_shortcut(shortcut) {
-                    self.select_tab(tab);
+                    if self.select_tab(tab) {
+                        self.execute_search().await;
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -632,12 +715,66 @@ pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
     }
 }
 
+pub fn latest_runner_contact(runner: &Runner) -> Option<DateTime<Utc>> {
+    runner
+        .managers
+        .iter()
+        .filter_map(|manager| parse_contact_timestamp(manager.contacted_at.as_deref()))
+        .max()
+}
+
+pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> String {
+    latest_runner_contact(runner)
+        .map(|contact| relative_timestamp_label(contact, now))
+        .unwrap_or_else(|| "Never".to_string())
+}
+
+pub fn latest_runner_contact_detail(runner: &Runner) -> String {
+    latest_runner_contact(runner)
+        .map(format_absolute_timestamp)
+        .unwrap_or_else(|| "Never".to_string())
+}
+
+pub fn manager_contact_label(manager: &RunnerManager, now: DateTime<Utc>) -> String {
+    parse_contact_timestamp(manager.contacted_at.as_deref())
+        .map(|contact| relative_timestamp_label(contact, now))
+        .unwrap_or_else(|| "Never".to_string())
+}
+
+pub fn manager_contact_detail(manager: &RunnerManager) -> String {
+    parse_contact_timestamp(manager.contacted_at.as_deref())
+        .map(format_absolute_timestamp)
+        .unwrap_or_else(|| "Never".to_string())
+}
+
+fn parse_contact_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
+    value
+        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0);
+
+    match seconds {
+        0..=89 => "just now".to_string(),
+        90..=3599 => format!("{}m ago", seconds / 60),
+        3600..=86_399 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
+    timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::GitLabClient;
     use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::models::manager::RunnerManager;
+    use chrono::TimeZone;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn test_runner_targets() -> Vec<RunnerTarget> {
@@ -781,14 +918,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_tab_hotkeys_select_expected_tab() {
-        let mut app = test_app();
+        let client =
+            GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client, test_runner_targets());
+        let config = AppConfig {
+            runner_targets: test_runner_targets(),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(conductor, config);
         app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
             .await;
         assert_eq!(app.active_tab(), Tab::Uncontacted);
+        assert!(app.error_message.is_some());
 
         app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE))
             .await;
         assert_eq!(app.active_tab(), Tab::Workers);
+        assert!(app.error_message.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tab_wrap_navigation_auto_loads() {
+        let client =
+            GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client, test_runner_targets());
+        let config = AppConfig {
+            runner_targets: test_runner_targets(),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(conductor, config);
+
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.active_tab(), Tab::Health);
+        assert!(app.error_message.is_some());
     }
 
     #[tokio::test]
@@ -878,6 +1042,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_polling_stays_active_when_switching_tabs() {
+        let client =
+            GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client, test_runner_targets());
+        let config = AppConfig {
+            runner_targets: test_runner_targets(),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(conductor, config);
+        app.toggle_polling();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE))
+            .await;
+
+        assert!(app.polling_active);
+        assert_eq!(app.active_tab(), Tab::Rotating);
+        assert!(app.error_message.is_some());
+    }
+
+    #[tokio::test]
     async fn test_tick_disables_polling_when_timeout_reached() {
         let mut app = test_app();
         app.polling_active = true;
@@ -921,7 +1105,6 @@ mod tests {
         app.loaded_tab = Some(Tab::Workers);
         app.manager_rows = vec![ManagerRow {
             runner_id: 42,
-            runner_tags: vec!["prod".to_string()],
             manager: test_manager(7, "online"),
         }];
         app.table_state.select(Some(0));
@@ -946,7 +1129,6 @@ mod tests {
         app.loaded_tab = Some(Tab::Workers);
         app.manager_rows = vec![ManagerRow {
             runner_id: 42,
-            runner_tags: vec!["prod".to_string()],
             manager: test_manager(7, "online"),
         }];
         app.table_state.select(Some(0));
@@ -972,5 +1154,69 @@ mod tests {
         assert!(app.error_message.is_some());
         assert!(!app.is_loading);
         assert_eq!(app.loaded_tab, None);
+    }
+
+    #[test]
+    fn test_latest_runner_contact_uses_newest_valid_manager_timestamp() {
+        let runner = test_runner(
+            42,
+            vec![
+                RunnerManager {
+                    contacted_at: Some("invalid".to_string()),
+                    ..test_manager(1, "offline")
+                },
+                RunnerManager {
+                    contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
+                    ..test_manager(2, "online")
+                },
+                RunnerManager {
+                    contacted_at: Some("2024-01-21T09:15:00.000Z".to_string()),
+                    ..test_manager(3, "online")
+                },
+            ],
+        );
+
+        let contact = latest_runner_contact(&runner).expect("contact");
+        assert_eq!(
+            contact,
+            Utc.with_ymd_and_hms(2024, 1, 21, 9, 15, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_latest_runner_contact_label_returns_never_without_contacts() {
+        let runner = test_runner(
+            42,
+            vec![RunnerManager {
+                contacted_at: None,
+                ..test_manager(1, "offline")
+            }],
+        );
+
+        assert_eq!(
+            latest_runner_contact_label(
+                &runner,
+                Utc.with_ymd_and_hms(2024, 1, 22, 9, 15, 0).unwrap()
+            ),
+            "Never"
+        );
+        assert_eq!(latest_runner_contact_detail(&runner), "Never");
+    }
+
+    #[test]
+    fn test_manager_contact_label_uses_relative_output() {
+        let manager = RunnerManager {
+            contacted_at: Some("2024-01-21T08:15:00.000Z".to_string()),
+            ..test_manager(7, "online")
+        };
+
+        assert_eq!(
+            manager_contact_label(
+                &manager,
+                Utc.with_ymd_and_hms(2024, 1, 21, 10, 15, 0).unwrap()
+            ),
+            "2h ago"
+        );
+        assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");
     }
 }
