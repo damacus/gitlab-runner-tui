@@ -9,7 +9,8 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 ## Features
 
 - 🚀 **Interactive TUI** - Beautiful, keyboard-driven interface built with [ratatui](https://ratatui.rs/)
-- 🔍 **Multiple Query Commands** - Six specialized commands for different runner queries
+- 📊 **Seven Dashboard Tabs** - Specialized views for different runner and infrastructure metrics
+- 🔍 **Headless Watch Mode** - Run in a non-interactive loop for CI/CD or monitoring
 - 🏷️ **Tag Filtering** - Filter runners by comma-separated tags
 - ⚡ **Real-time API Queries** - Direct integration with GitLab REST API v4
 - 📊 **Detailed Results** - Tabular display of runners and managers with color highlighting
@@ -123,16 +124,17 @@ gitlab-runner-tui
 gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 ```
 
-## Commands
+## Dashboard Tabs
 
-| Command   | Description                                           |
-|-----------|-------------------------------------------------------|
-| `fetch`   | Fetch all GitLab Runner details with optional filters |
-| `lights`  | Health check - verify all tagged runners are online   |
-| `switch`  | List runners with no online managers                  |
-| `workers` | Show detailed list of Runner Managers                 |
-| `flames`  | Find runners not contacted recently (default: 1 hour) |
-| `empty`   | List runners with no managers                         |
+| Tab           | Description                                             |
+|---------------|---------------------------------------------------------|
+| `Runners`     | Fetch all GitLab Runner details with optional filters   |
+| `Health`      | Health check - verify all tagged runners are online     |
+| `Offline`     | List runners with no online managers                    |
+| `Uncontacted` | Find runners not contacted recently (default: 1 hour)   |
+| `Empty`       | List runners with no managers                           |
+| `Rotating`    | Detect runners currently in rotation (multiple managers)|
+| `Workers`     | Show detailed list of all individual Runner Managers    |
 
 ## Keyboard Navigation
 
@@ -164,32 +166,47 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 ### CLI Flags
 
 ```bash
-gitlab-runner-tui --host <URL>     # Override GITLAB_HOST
-gitlab-runner-tui --token <TOKEN>  # Override GITLAB_TOKEN
+# Override host and token
+gitlab-runner-tui --host <URL> --token <TOKEN>
+
+# Headless watch mode (non-interactive)
+gitlab-runner-tui --watch --command rotate --tags production
 ```
+
+- `--watch`: Enable headless mode; polls and logs to stdout instead of starting the TUI.
+- `--command <CMD>`: Which query to run in watch mode (`fetch`, `switch`, `flames`, `empty`, `rotate`). Defaults to `rotate`.
+- `--tags <TAGS>`: Comma-separated list of tags for filtering in watch mode.
 
 ## Examples
 
 ### Find all production runners
 
 1. Configure at least one `group` or `project` runner target
-2. Select `fetch` command
-3. Enter tags: `production`
-4. View results
+2. Select **Runners** tab (`1`)
+3. Press `/` to enter tags: `production`
+4. View filtered results
 
 ### Check runner health
 
 1. Configure at least one runner target
-2. Select `lights` command
-3. Enter tags: `production,linux`
+2. Select **Health** tab (`2`)
+3. Press `/` to enter tags: `production,linux`
 4. View health summary and runner statuses
 
 ### List offline runners
 
 1. Configure at least one runner target
-2. Select `switch` command
-3. Enter tags: `alm`
+2. Select **Offline** tab (`3`)
+3. Press `/` to enter tags: `alm`
 4. View runners with offline managers
+
+### Watch for runner rotation (Headless)
+
+Run in a non-interactive loop to monitor runners that have multiple managers (e.g. during a migration):
+
+```bash
+gitlab-runner-tui --watch --command rotate --tags prod
+```
 
 ## Development
 
