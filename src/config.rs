@@ -2,17 +2,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerDiscoveryMode {
     ConfiguredTargets,
+    #[default]
     VisibleRunners,
-}
-
-impl Default for RunnerDiscoveryMode {
-    fn default() -> Self {
-        Self::VisibleRunners
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
