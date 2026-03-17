@@ -1,13 +1,14 @@
 #[cfg(test)]
 mod tests {
     use crate::models::manager::RunnerManager;
-    use crate::models::runner::Runner;
-    use crate::tui::app::ManagerRow;
+    use crate::models::runner::{
+        benchmark_runner_processing, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey,
+    };
+    use chrono::Utc;
 
-    #[test]
-    fn test_benchmark_workers() {
+    fn build_runners(total: u64) -> Vec<Runner> {
         let mut runners = vec![];
-        for i in 0..1000 {
+        for i in 0..total {
             let mut managers = vec![];
             for j in 0..10 {
                 managers.push(RunnerManager {
@@ -17,7 +18,7 @@ mod tests {
                     contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
                     ip_address: Some("10.0.1.1".to_string()),
                     status: "online".to_string(),
-                    version: Some("17.5.0".to_string()),
+                    version: Some(if j % 2 == 0 { "17.5.0" } else { "17.4.0" }.to_string()),
                     revision: None,
                     platform: None,
                     architecture: None,
@@ -33,41 +34,53 @@ mod tests {
                 runner_type: "project_type".to_string(),
                 status: "online".to_string(),
                 tag_list: vec!["alm".to_string(), "prod".to_string()],
-                version: Some("17.5.0".to_string()),
+                version: Some(if i % 2 == 0 { "17.5.0" } else { "17.4.0" }.to_string()),
                 revision: None,
                 created_at: Some("2024-01-20T14:22:00.000Z".to_string()),
                 managers,
             });
         }
+        runners
+    }
 
-        let runners_clone = runners.clone();
+    #[test]
+    fn test_benchmark_runner_processing_reports_10_50_100_samples() {
+        let runners = build_runners(100);
+        let filters = RunnerFilters {
+            selected_versions: Some(vec!["17.5.0".to_string()]),
+            ..RunnerFilters::default()
+        };
 
-        // BASELINE
-        let start = std::time::Instant::now();
-        let _manager_rows: Vec<ManagerRow> = runners_clone
+        let snapshot = benchmark_runner_processing(
+            &runners,
+            &filters,
+            RunnerSortKey::LastContactOldestFirst,
+            Utc::now(),
+        );
+
+        assert_eq!(
+            snapshot
+                .measurements
+                .iter()
+                .map(|measurement| measurement.sample_size)
+                .collect::<Vec<_>>(),
+            vec![10, 50, 100]
+        );
+        assert!(snapshot
+            .measurements
             .iter()
-            .flat_map(|r| {
-                r.managers.iter().map(move |m| ManagerRow {
-                    runner_id: r.id,
-                    manager: m.clone(),
-                })
-            })
-            .collect();
-        let duration = start.elapsed();
-        println!("Benchmark baseline (iter/clone): {:?}", duration);
+            .all(|measurement| measurement.filtered_count <= measurement.sample_size));
+    }
 
-        // IMPROVED
-        let start2 = std::time::Instant::now();
-        let _manager_rows2: Vec<ManagerRow> = runners
-            .into_iter()
-            .flat_map(|r| {
-                r.managers.into_iter().map(move |m| ManagerRow {
-                    runner_id: r.id,
-                    manager: m,
-                })
-            })
-            .collect();
-        let duration2 = start2.elapsed();
-        println!("Benchmark improved (into_iter): {:?}", duration2);
+    #[test]
+    fn test_benchmark_snapshot_is_empty_when_no_runners_loaded() {
+        let snapshot = benchmark_runner_processing(
+            &[],
+            &RunnerFilters::default(),
+            RunnerSortKey::None,
+            Utc::now(),
+        );
+
+        assert_eq!(snapshot, LocalBenchmarkSnapshot::default());
     }
 }

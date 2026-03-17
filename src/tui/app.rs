@@ -1,10 +1,17 @@
+use crate::client::GitLabClient;
 use crate::conductor::Conductor;
-use crate::config::AppConfig;
+use crate::config::{format_runner_targets, parse_runner_targets, AppConfig, RunnerDiscoveryMode};
+use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
-use crate::models::runner::{Runner, RunnerFilters};
+use crate::models::runner::{
+    apply_runner_filters, benchmark_runner_processing, extract_runner_versions,
+    parse_manager_contacted_at, sort_runners, LocalBenchmarkSnapshot, Runner, RunnerFilters,
+    RunnerSortKey,
+};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::widgets::TableState;
+use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use std::fmt;
 use std::time::Instant;
 
@@ -124,6 +131,9 @@ pub enum AppMode {
     #[default]
     Dashboard,
     FilterInput,
+    AgeInput,
+    VersionFilter,
+    Settings,
     Help,
 }
 
@@ -150,6 +160,116 @@ pub enum PollDisplayState {
     Refreshing,
     TimedOut,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    Host,
+    Token,
+    DiscoveryMode,
+    Targets,
+    PollInterval,
+    PollTimeout,
+    Save,
+    Cancel,
+}
+
+impl SettingsField {
+    const ALL: [SettingsField; 8] = [
+        SettingsField::Host,
+        SettingsField::Token,
+        SettingsField::DiscoveryMode,
+        SettingsField::Targets,
+        SettingsField::PollInterval,
+        SettingsField::PollTimeout,
+        SettingsField::Save,
+        SettingsField::Cancel,
+    ];
+
+    fn next(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    fn previous(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsDraft {
+    pub host: String,
+    pub token: String,
+    pub discovery_mode: RunnerDiscoveryMode,
+    pub runner_targets_input: String,
+    pub poll_interval_input: String,
+    pub poll_timeout_input: String,
+    pub selected_field: SettingsField,
+}
+
+impl SettingsDraft {
+    fn from_config(config: &AppConfig) -> Self {
+        Self {
+            host: config
+                .gitlab_host
+                .clone()
+                .unwrap_or_else(|| "https://gitlab.com".to_string()),
+            token: config.gitlab_token.clone().unwrap_or_default(),
+            discovery_mode: config.discovery_mode,
+            runner_targets_input: format_runner_targets(&config.runner_targets),
+            poll_interval_input: config.poll_interval_secs.to_string(),
+            poll_timeout_input: config.poll_timeout_secs.to_string(),
+            selected_field: SettingsField::Host,
+        }
+    }
+
+    fn validate(&self) -> Result<AppConfig> {
+        let poll_interval_secs = self
+            .poll_interval_input
+            .trim()
+            .parse::<u64>()
+            .context("Poll interval must be a whole number of seconds")?;
+        let poll_timeout_secs = self
+            .poll_timeout_input
+            .trim()
+            .parse::<u64>()
+            .context("Poll timeout must be a whole number of seconds")?;
+
+        let runner_targets = if self.runner_targets_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            parse_runner_targets(&self.runner_targets_input)?
+        };
+
+        let config = AppConfig {
+            poll_interval_secs,
+            poll_timeout_secs,
+            gitlab_host: Some(self.host.trim().to_string()),
+            gitlab_token: Some(self.token.trim().to_string()),
+            discovery_mode: self.discovery_mode,
+            runner_targets,
+        };
+        config.validate_runtime_settings()?;
+        Ok(config)
+    }
+
+    fn selected_value_mut(&mut self) -> Option<&mut String> {
+        match self.selected_field {
+            SettingsField::Host => Some(&mut self.host),
+            SettingsField::Token => Some(&mut self.token),
+            SettingsField::Targets => Some(&mut self.runner_targets_input),
+            SettingsField::PollInterval => Some(&mut self.poll_interval_input),
+            SettingsField::PollTimeout => Some(&mut self.poll_timeout_input),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,16 +314,23 @@ pub struct App {
     pub config: AppConfig,
     pub mode: AppMode,
     pub should_quit: bool,
+    pub raw_runners: Vec<Runner>,
     pub runners: Vec<Runner>,
     pub manager_rows: Vec<ManagerRow>,
     pub health_summary: Option<HealthSummary>,
+    pub version_options: Vec<String>,
 
     pub tabs: &'static [Tab],
     pub active_tab_index: usize,
     pub loaded_tab: Option<Tab>,
 
     pub filter_input: String,
+    pub age_filter_input: String,
+    pub selected_versions: Vec<String>,
+    pub version_list_state: ListState,
+    pub sort_key: RunnerSortKey,
     pub table_state: TableState,
+    pub scroll_state: ScrollbarState,
 
     pub is_loading: bool,
     pub error_message: Option<String>,
@@ -214,6 +341,10 @@ pub struct App {
     pub last_poll_at: Option<Instant>,
     pub last_refresh_at: Option<Instant>,
     pub last_fetch_failed: bool,
+    pub settings_draft: SettingsDraft,
+    pub settings_message: Option<String>,
+    pub live_query_metrics: Option<LiveQueryMetrics>,
+    pub local_benchmarks: Option<LocalBenchmarkSnapshot>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -221,19 +352,27 @@ const UNCONTACTED_THRESHOLD_SECS: u64 = 3600;
 
 impl App {
     pub fn new(conductor: Conductor, config: AppConfig) -> Self {
+        let settings_draft = SettingsDraft::from_config(&config);
         Self {
             conductor,
             config,
             mode: AppMode::default(),
             should_quit: false,
+            raw_runners: Vec::new(),
             runners: Vec::new(),
             manager_rows: Vec::new(),
             health_summary: None,
+            version_options: Vec::new(),
             tabs: Tab::ALL,
             active_tab_index: 0,
             loaded_tab: None,
             filter_input: String::new(),
+            age_filter_input: String::new(),
+            selected_versions: Vec::new(),
+            version_list_state: ListState::default(),
+            sort_key: RunnerSortKey::None,
             table_state: TableState::default(),
+            scroll_state: ScrollbarState::default(),
             is_loading: false,
             error_message: None,
             spinner_frame: 0,
@@ -242,6 +381,10 @@ impl App {
             last_poll_at: None,
             last_refresh_at: None,
             last_fetch_failed: false,
+            settings_draft,
+            settings_message: None,
+            live_query_metrics: None,
+            local_benchmarks: None,
         }
     }
 
@@ -275,6 +418,10 @@ impl App {
         } else {
             Some(tags)
         }
+    }
+
+    pub fn age_filter_secs(&self) -> Option<u64> {
+        parse_duration_input(&self.age_filter_input)
     }
 
     pub fn next_tab(&mut self) -> bool {
@@ -311,10 +458,34 @@ impl App {
     fn on_tab_changed(&mut self) {
         self.error_message = None;
         self.table_state.select(None);
+        self.update_scroll_state();
     }
 
     pub fn focus_filter(&mut self) {
         self.mode = AppMode::FilterInput;
+        self.error_message = None;
+    }
+
+    pub fn focus_age_filter(&mut self) {
+        self.mode = AppMode::AgeInput;
+        self.error_message = None;
+    }
+
+    pub fn open_version_filter(&mut self) {
+        self.mode = AppMode::VersionFilter;
+        if self.version_options.is_empty() {
+            self.version_list_state.select(None);
+        } else if self.version_list_state.selected().is_none() {
+            self.version_list_state.select(Some(0));
+        }
+        self.error_message = None;
+    }
+
+    pub fn open_settings(&mut self) {
+        self.settings_draft = SettingsDraft::from_config(&self.config);
+        self.settings_message = None;
+        self.refresh_local_benchmarks();
+        self.mode = AppMode::Settings;
         self.error_message = None;
     }
 
@@ -325,7 +496,45 @@ impl App {
     fn build_filters(&self) -> RunnerFilters {
         RunnerFilters {
             tag_list: self.filter_tags(),
+            selected_versions: (!self.selected_versions.is_empty())
+                .then_some(self.selected_versions.clone()),
+            older_than_secs: self.age_filter_secs(),
             ..RunnerFilters::default()
+        }
+    }
+
+    pub fn sort_label(&self) -> &'static str {
+        match self.effective_sort_key() {
+            RunnerSortKey::None => "None",
+            RunnerSortKey::AgeOldestFirst => "Age",
+            RunnerSortKey::LastContactOldestFirst => "Last contact",
+            RunnerSortKey::CreatedNewestFirst => "Created",
+        }
+    }
+
+    pub fn selected_versions_summary(&self) -> String {
+        if self.selected_versions.is_empty() {
+            "All versions".to_string()
+        } else {
+            self.selected_versions.join(", ")
+        }
+    }
+
+    pub fn age_filter_summary(&self) -> String {
+        if self.age_filter_input.trim().is_empty() {
+            "-h".to_string()
+        } else {
+            format!("{}h", self.age_filter_input.trim())
+        }
+    }
+
+    pub fn effective_sort_key(&self) -> RunnerSortKey {
+        match self.current_results_view_type() {
+            ResultsViewType::Workers => match self.sort_key {
+                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::LastContactOldestFirst,
+                _ => RunnerSortKey::None,
+            },
+            _ => self.sort_key,
         }
     }
 
@@ -449,26 +658,39 @@ impl App {
     pub async fn execute_search(&mut self) {
         self.is_loading = true;
         self.error_message = None;
-
+        let query_started_at = Utc::now();
+        let query_started = Instant::now();
         let tab = self.active_tab();
         let filters = self.build_filters();
 
         let result = match tab.query_mode() {
-            TabQueryMode::FetchRunners => self.conductor.fetch_runners(filters).await,
-            TabQueryMode::Offline => self.conductor.list_offline_runners(filters).await,
-            TabQueryMode::Uncontacted { threshold_secs } => {
+            TabQueryMode::FetchRunners => self.conductor.fetch_runners_with_metrics(filters).await,
+            TabQueryMode::Offline => {
                 self.conductor
-                    .list_uncontacted_runners(filters, threshold_secs)
+                    .list_offline_runners_with_metrics(filters)
                     .await
             }
-            TabQueryMode::Empty => self.conductor.list_runners_without_managers(filters).await,
-            TabQueryMode::Rotating => self.conductor.detect_rotating_runners(filters).await,
+            TabQueryMode::Uncontacted { threshold_secs } => {
+                self.conductor
+                    .list_uncontacted_runners_with_metrics(filters, threshold_secs)
+                    .await
+            }
+            TabQueryMode::Empty => {
+                self.conductor
+                    .list_runners_without_managers_with_metrics(filters)
+                    .await
+            }
+            TabQueryMode::Rotating => {
+                self.conductor
+                    .detect_rotating_runners_with_metrics(filters)
+                    .await
+            }
         };
 
         self.is_loading = false;
 
         match result {
-            Ok(runners) => {
+            Ok(outcome) => {
                 let now = Instant::now();
                 self.loaded_tab = Some(tab);
                 self.last_refresh_at = Some(now);
@@ -476,28 +698,51 @@ impl App {
                     self.last_poll_at = Some(now);
                 }
                 self.last_fetch_failed = false;
-                self.renders_from_runners(tab, runners);
+                self.live_query_metrics = Some(outcome.metrics);
+                self.renders_from_runners(tab, outcome.runners);
             }
             Err(error) => {
                 self.loaded_tab = None;
+                self.raw_runners.clear();
                 self.runners.clear();
                 self.manager_rows.clear();
                 self.health_summary = None;
+                self.version_options.clear();
                 self.table_state.select(None);
+                self.update_scroll_state();
                 self.last_fetch_failed = true;
+                self.live_query_metrics = Some(LiveQueryMetrics::failure(
+                    query_started_at,
+                    Utc::now(),
+                    query_started.elapsed().as_millis(),
+                    self.conductor.discovery_mode(),
+                    error.to_string(),
+                ));
                 self.error_message = Some(format!("{:#}", error));
             }
         }
     }
 
     fn renders_from_runners(&mut self, tab: Tab, runners: Vec<Runner>) {
+        self.raw_runners = runners;
+        self.apply_view_state(tab);
+    }
+
+    fn apply_view_state(&mut self, tab: Tab) {
         self.runners.clear();
         self.manager_rows.clear();
         self.health_summary = None;
+        self.version_options = extract_runner_versions(&self.raw_runners);
+
+        self.selected_versions
+            .retain(|version| self.version_options.contains(version));
+
+        let now = Utc::now();
+        let mut filtered = apply_runner_filters(&self.raw_runners, &self.build_filters(), now);
 
         match tab {
             Tab::Workers => {
-                self.manager_rows = runners
+                let mut manager_rows: Vec<ManagerRow> = filtered
                     .into_iter()
                     .flat_map(|runner| {
                         runner.managers.into_iter().map(move |manager| ManagerRow {
@@ -506,9 +751,26 @@ impl App {
                         })
                     })
                     .collect();
+                if matches!(
+                    self.effective_sort_key(),
+                    RunnerSortKey::LastContactOldestFirst
+                ) {
+                    manager_rows.sort_by(|left, right| {
+                        let left_contact = parse_manager_contacted_at(&left.manager);
+                        let right_contact = parse_manager_contacted_at(&right.manager);
+                        match (left_contact, right_contact) {
+                            (Some(left), Some(right)) => left.cmp(&right),
+                            (None, Some(_)) => std::cmp::Ordering::Less,
+                            (Some(_), None) => std::cmp::Ordering::Greater,
+                            (None, None) => left.manager.id.cmp(&right.manager.id),
+                        }
+                    });
+                }
+                self.manager_rows = manager_rows;
             }
             Tab::Health => {
-                let online_count = runners
+                sort_runners(&mut filtered, self.effective_sort_key(), now);
+                let online_count = filtered
                     .iter()
                     .filter(|runner| {
                         runner
@@ -519,17 +781,19 @@ impl App {
                     .count();
                 self.health_summary = Some(HealthSummary {
                     online_count,
-                    total_count: runners.len(),
+                    total_count: filtered.len(),
                 });
-                self.runners = runners;
+                self.runners = filtered;
             }
             _ => {
-                self.runners = runners;
+                sort_runners(&mut filtered, self.effective_sort_key(), now);
+                self.runners = filtered;
             }
         }
 
         let result_count = self.active_result_len();
         self.table_state.select((result_count > 0).then_some(0));
+        self.update_scroll_state();
     }
 
     pub fn active_result_len(&self) -> usize {
@@ -552,6 +816,7 @@ impl App {
         };
 
         self.table_state.select(Some(index));
+        self.update_scroll_state();
     }
 
     pub fn previous_result(&mut self) {
@@ -567,6 +832,116 @@ impl App {
         };
 
         self.table_state.select(Some(index));
+        self.update_scroll_state();
+    }
+
+    fn update_scroll_state(&mut self) {
+        let content_length = self.active_result_len();
+        let position = self
+            .table_state
+            .offset()
+            .min(content_length.saturating_sub(1));
+        self.scroll_state = ScrollbarState::new(content_length).position(position);
+    }
+
+    pub fn cycle_sort_key(&mut self) {
+        self.sort_key = match self.current_results_view_type() {
+            ResultsViewType::Workers => match self.sort_key {
+                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::None,
+                _ => RunnerSortKey::LastContactOldestFirst,
+            },
+            _ => match self.sort_key {
+                RunnerSortKey::None => RunnerSortKey::AgeOldestFirst,
+                RunnerSortKey::AgeOldestFirst => RunnerSortKey::LastContactOldestFirst,
+                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::CreatedNewestFirst,
+                RunnerSortKey::CreatedNewestFirst => RunnerSortKey::None,
+            },
+        };
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
+    pub fn toggle_selected_version(&mut self) {
+        let Some(index) = self.version_list_state.selected() else {
+            return;
+        };
+        let Some(version) = self.version_options.get(index).cloned() else {
+            return;
+        };
+
+        if let Some(existing_index) = self
+            .selected_versions
+            .iter()
+            .position(|selected| selected == &version)
+        {
+            self.selected_versions.remove(existing_index);
+        } else {
+            self.selected_versions.push(version);
+            self.selected_versions.sort();
+        }
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
+    pub fn refresh_local_benchmarks(&mut self) {
+        self.local_benchmarks = Some(benchmark_runner_processing(
+            &self.raw_runners,
+            &self.build_filters(),
+            self.effective_sort_key(),
+            Utc::now(),
+        ));
+    }
+
+    async fn save_settings(&mut self) {
+        let result = async {
+            let new_config = self.settings_draft.validate()?;
+            let host = new_config
+                .gitlab_host
+                .clone()
+                .context("GitLab host is required")?;
+            let token = new_config
+                .gitlab_token
+                .clone()
+                .context("GitLab token is required")?;
+
+            let client = GitLabClient::new(host, token)?;
+            let conductor = Conductor::new_with_mode(
+                client,
+                new_config.discovery_mode,
+                new_config.runner_targets.clone(),
+            );
+            conductor.validate_token().await?;
+            new_config.save_to_canonical_path()?;
+            Ok::<(AppConfig, Conductor), anyhow::Error>((new_config, conductor))
+        }
+        .await;
+
+        match result {
+            Ok((new_config, conductor)) => {
+                self.config = new_config;
+                self.conductor = conductor;
+                self.mode = AppMode::Dashboard;
+                self.settings_message = None;
+                self.loaded_tab = None;
+                self.error_message = None;
+                self.raw_runners.clear();
+                self.runners.clear();
+                self.manager_rows.clear();
+                self.health_summary = None;
+                self.version_options.clear();
+                self.selected_versions.clear();
+                self.table_state.select(None);
+                self.update_scroll_state();
+                self.execute_search().await;
+            }
+            Err(error) => {
+                self.settings_message = Some(format!("{:#}", error));
+            }
+        }
     }
 
     pub fn toggle_polling(&mut self) {
@@ -647,6 +1022,154 @@ impl App {
             return;
         }
 
+        if self.mode == AppMode::AgeInput {
+            match key.code {
+                KeyCode::Enter => {
+                    self.mode = AppMode::Dashboard;
+                    if self.has_loaded_active_tab() {
+                        self.apply_view_state(self.active_tab());
+                    }
+                }
+                KeyCode::Esc => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Backspace => {
+                    self.age_filter_input.pop();
+                }
+                KeyCode::Char(character)
+                    if character.is_ascii_digit()
+                        || matches!(character, 's' | 'm' | 'h' | 'd' | 'w') =>
+                {
+                    self.age_filter_input.push(character);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.mode == AppMode::VersionFilter {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('v') => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Char('a') => {
+                    self.selected_versions.clear();
+                    if self.has_loaded_active_tab() {
+                        self.apply_view_state(self.active_tab());
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let len = self.version_options.len();
+                    if len > 0 {
+                        let next = match self.version_list_state.selected() {
+                            Some(0) | None => len - 1,
+                            Some(index) => index - 1,
+                        };
+                        self.version_list_state.select(Some(next));
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let len = self.version_options.len();
+                    if len > 0 {
+                        let next = match self.version_list_state.selected() {
+                            Some(index) if index + 1 < len => index + 1,
+                            _ => 0,
+                        };
+                        self.version_list_state.select(Some(next));
+                    }
+                }
+                KeyCode::Char(' ') => self.toggle_selected_version(),
+                KeyCode::Backspace => {
+                    self.selected_versions.clear();
+                    if self.has_loaded_active_tab() {
+                        self.apply_view_state(self.active_tab());
+                    }
+                }
+                KeyCode::Enter => self.mode = AppMode::Dashboard,
+                _ => {}
+            }
+            return;
+        }
+
+        if self.mode == AppMode::Settings {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = AppMode::Dashboard;
+                    self.settings_draft = SettingsDraft::from_config(&self.config);
+                }
+                KeyCode::Up => {
+                    self.settings_draft.selected_field =
+                        self.settings_draft.selected_field.previous();
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    self.settings_draft.selected_field = self.settings_draft.selected_field.next();
+                }
+                KeyCode::BackTab => {
+                    self.settings_draft.selected_field =
+                        self.settings_draft.selected_field.previous();
+                }
+                KeyCode::Left | KeyCode::Right
+                    if matches!(
+                        self.settings_draft.selected_field,
+                        SettingsField::DiscoveryMode
+                    ) =>
+                {
+                    self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
+                        RunnerDiscoveryMode::ConfiguredTargets => {
+                            RunnerDiscoveryMode::VisibleRunners
+                        }
+                        RunnerDiscoveryMode::VisibleRunners => {
+                            RunnerDiscoveryMode::ConfiguredTargets
+                        }
+                    };
+                }
+                KeyCode::Backspace => {
+                    if let Some(value) = self.settings_draft.selected_value_mut() {
+                        value.pop();
+                    }
+                }
+                KeyCode::Char('b') => self.refresh_local_benchmarks(),
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.save_settings().await;
+                }
+                KeyCode::Enter
+                    if matches!(self.settings_draft.selected_field, SettingsField::Save) =>
+                {
+                    self.save_settings().await;
+                }
+                KeyCode::Enter
+                    if matches!(self.settings_draft.selected_field, SettingsField::Cancel) =>
+                {
+                    self.mode = AppMode::Dashboard;
+                    self.settings_draft = SettingsDraft::from_config(&self.config);
+                }
+                KeyCode::Char(character)
+                    if matches!(
+                        self.settings_draft.selected_field,
+                        SettingsField::DiscoveryMode
+                    ) =>
+                {
+                    match character {
+                        't' | 'T' => {
+                            self.settings_draft.discovery_mode =
+                                RunnerDiscoveryMode::ConfiguredTargets
+                        }
+                        'v' | 'V' => {
+                            self.settings_draft.discovery_mode = RunnerDiscoveryMode::VisibleRunners
+                        }
+                        _ => {}
+                    }
+                }
+                KeyCode::Char(character) => {
+                    if let Some(value) = self.settings_draft.selected_value_mut() {
+                        value.push(character);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.mode == AppMode::Help {
             self.mode = AppMode::Dashboard;
             return;
@@ -656,6 +1179,9 @@ impl App {
             KeyCode::Char('?') => {
                 self.mode = AppMode::Help;
             }
+            KeyCode::Char('c') => {
+                self.open_settings();
+            }
             KeyCode::Char('q') => {
                 self.should_quit = true;
             }
@@ -664,6 +1190,15 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.execute_search().await;
+            }
+            KeyCode::Char('s') => {
+                self.cycle_sort_key();
+            }
+            KeyCode::Char('v') => {
+                self.open_version_filter();
+            }
+            KeyCode::Char('a') => {
+                self.focus_age_filter();
             }
             KeyCode::Tab => {
                 if self.next_tab() {
@@ -768,6 +1303,35 @@ fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
+fn parse_duration_input(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let split_at = trimmed
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let (number, suffix) = trimmed.split_at(split_at);
+    let value = number.parse::<u64>().ok()?;
+    let unit = if suffix.is_empty() {
+        "h"
+    } else {
+        suffix.trim()
+    };
+
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 60 * 60 * 24,
+        "w" => 60 * 60 * 24 * 7,
+        _ => return None,
+    };
+
+    Some(value.saturating_mul(multiplier))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,7 +1356,14 @@ mod tests {
             runner_targets: test_runner_targets(),
             ..AppConfig::default()
         };
-        App::new(Conductor::new(client, test_runner_targets()), config)
+        App::new(
+            Conductor::new_with_mode(
+                client,
+                RunnerDiscoveryMode::ConfiguredTargets,
+                test_runner_targets(),
+            ),
+            config,
+        )
     }
 
     fn test_runner(id: u64, managers: Vec<RunnerManager>) -> Runner {
@@ -920,7 +1491,11 @@ mod tests {
     async fn test_direct_tab_hotkeys_select_expected_tab() {
         let client =
             GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, test_runner_targets());
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            test_runner_targets(),
+        );
         let config = AppConfig {
             runner_targets: test_runner_targets(),
             ..AppConfig::default()
@@ -941,7 +1516,11 @@ mod tests {
     async fn test_tab_wrap_navigation_auto_loads() {
         let client =
             GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, test_runner_targets());
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            test_runner_targets(),
+        );
         let config = AppConfig {
             runner_targets: test_runner_targets(),
             ..AppConfig::default()
@@ -1045,7 +1624,11 @@ mod tests {
     async fn test_polling_stays_active_when_switching_tabs() {
         let client =
             GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, test_runner_targets());
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            test_runner_targets(),
+        );
         let config = AppConfig {
             runner_targets: test_runner_targets(),
             ..AppConfig::default()
@@ -1142,7 +1725,11 @@ mod tests {
     async fn test_execute_search_handles_error() {
         let client =
             GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, test_runner_targets());
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            test_runner_targets(),
+        );
         let config = AppConfig {
             runner_targets: test_runner_targets(),
             ..AppConfig::default()

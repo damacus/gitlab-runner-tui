@@ -1,6 +1,7 @@
 mod client;
 mod conductor;
 mod config;
+mod metrics;
 mod models;
 mod tui;
 
@@ -8,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
-use config::{AppConfig, RunnerTarget, RunnerTargetKind};
+use config::{parse_runner_targets, AppConfig, RunnerDiscoveryMode, RunnerTarget};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -89,7 +90,7 @@ async fn main() -> Result<()> {
 
     let conductor = if args.watch {
         let client = GitLabClient::new(host, token)?;
-        Conductor::new(client, config.runner_targets.clone())
+        Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone())
     } else {
         bootstrap_interactive_conductor(host, token, config.clone()).await?
     };
@@ -157,7 +158,8 @@ async fn bootstrap_interactive_conductor(
 ) -> Result<Conductor> {
     loop {
         let client = GitLabClient::new(host.clone(), token.clone())?;
-        let conductor = Conductor::new(client, config.runner_targets.clone());
+        let conductor =
+            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
 
         match validate_interactive_credentials(&conductor).await {
             Ok(()) => return Ok(conductor),
@@ -215,6 +217,7 @@ fn resolve_runtime_settings_with_env(
         .or_else(|| config.gitlab_token.clone());
 
     if args.watch {
+        config.validate_runtime_settings()?;
         let token = token.context(
             "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
         )?;
@@ -237,11 +240,15 @@ fn run_first_time_setup(
 
     let host = prompt_with_default("GitLab host", &host)?;
     let token = prompt_required("GitLab personal access token (read_api scope)")?;
-    let runner_targets = prompt_runner_targets()?;
+    let discovery_mode = prompt_discovery_mode(config.discovery_mode)?;
+    let runner_targets =
+        prompt_runner_targets(discovery_mode == RunnerDiscoveryMode::ConfiguredTargets)?;
 
     config.gitlab_host = Some(host.clone());
     config.gitlab_token = Some(token.clone());
+    config.discovery_mode = discovery_mode;
     config.runner_targets = runner_targets;
+    config.validate_runtime_settings()?;
 
     let saved_path = config.save_to_canonical_path()?;
 
@@ -283,53 +290,55 @@ fn prompt_required(prompt: &str) -> Result<String> {
     }
 }
 
-fn prompt_runner_targets() -> Result<Vec<RunnerTarget>> {
+fn prompt_discovery_mode(default: RunnerDiscoveryMode) -> Result<RunnerDiscoveryMode> {
     loop {
-        print!(
-            "Runner targets (optional, comma-separated, e.g. group:my-org/platform,project:my-org/app): "
-        );
+        let default_label = match default {
+            RunnerDiscoveryMode::ConfiguredTargets => "targets",
+            RunnerDiscoveryMode::VisibleRunners => "visible",
+        };
+
+        print!("Discovery mode [targets/visible] [{}]: ", default_label);
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
-        match parse_runner_targets(&input) {
-            Ok(targets) => return Ok(targets),
-            Err(error) => println!("{error}"),
+        match input.trim() {
+            "" => return Ok(default),
+            "targets" | "target" | "configured" => {
+                return Ok(RunnerDiscoveryMode::ConfiguredTargets)
+            }
+            "visible" | "runners" | "/runners" => return Ok(RunnerDiscoveryMode::VisibleRunners),
+            _ => println!("Choose either 'targets' or 'visible'."),
         }
     }
 }
 
-fn parse_runner_targets(input: &str) -> Result<Vec<RunnerTarget>> {
-    input
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(parse_runner_target)
-        .collect()
-}
+fn prompt_runner_targets(required: bool) -> Result<Vec<RunnerTarget>> {
+    loop {
+        let prompt = if required {
+            "Runner targets (comma-separated, e.g. group:my-org/platform,project:my-org/app): "
+        } else {
+            "Runner targets (optional, comma-separated, e.g. group:my-org/platform,project:my-org/app): "
+        };
+        print!("{prompt}");
+        io::stdout().flush()?;
 
-fn parse_runner_target(entry: &str) -> Result<RunnerTarget> {
-    let (kind, id) = entry
-        .split_once(':')
-        .context("Runner targets must use group:<id-or-path> or project:<id-or-path>")?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
 
-    let id = id.trim();
-    if id.is_empty() {
-        anyhow::bail!("Runner target identifiers cannot be empty");
+        if !required && input.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        match parse_runner_targets(&input) {
+            Ok(targets) if required && targets.is_empty() => {
+                println!("At least one target is required in targets mode.");
+            }
+            Ok(targets) => return Ok(targets),
+            Err(error) => println!("{error}"),
+        }
     }
-
-    let kind = match kind.trim() {
-        "group" => RunnerTargetKind::Group,
-        "project" => RunnerTargetKind::Project,
-        other => anyhow::bail!("Unsupported runner target kind: {other}"),
-    };
-
-    Ok(RunnerTarget {
-        kind,
-        id: id.to_string(),
-        label: None,
-    })
 }
 
 async fn run_headless(
@@ -465,6 +474,7 @@ fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RunnerTargetKind;
     use mockito::Server;
 
     #[test]
@@ -652,8 +662,9 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "bad-token".to_string()).unwrap();
-        let conductor = Conductor::new(
+        let conductor = Conductor::new_with_mode(
             client,
+            RunnerDiscoveryMode::ConfiguredTargets,
             vec![RunnerTarget {
                 kind: RunnerTargetKind::Group,
                 id: "123".to_string(),

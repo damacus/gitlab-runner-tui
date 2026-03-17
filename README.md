@@ -56,6 +56,7 @@ gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+discovery_mode = "configured_targets"
 
 [[runner_targets]]
 kind = "group"
@@ -86,6 +87,7 @@ poll_interval_secs = 30
 poll_timeout_secs = 1800
 gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+discovery_mode = "configured_targets"
 
 [[runner_targets]]
 kind = "group"
@@ -98,14 +100,14 @@ id = "12345"
 label = "App Project"
 ```
 
-`runner_targets` is optional. When omitted, the app falls back to the runners visible to the current GitLab user via `/runners`. Supported target kinds:
+`runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
 
 - `group`
 - `project`
 
 Each target `id` may be either a numeric GitLab ID or a group/project path.
 
-During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes. You can also leave the prompt blank to use the current user's visible runners:
+During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes. In the interactive TUI you can also edit the discovery mode, token, targets, and poll settings from the settings modal.
 
 ```text
 group:my-org/platform,project:my-org/app
@@ -138,6 +140,10 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 - `1`-`7` - Jump directly to a tab
 - `↑`/`↓` or `k`/`j` - Move table selection
 - `/` or `f` - Focus tag filter input
+- `a` - Edit the age filter
+- `v` - Open version multi-select
+- `o` - Cycle sort mode
+- `c` - Open settings + diagnostics
 - `Enter` or `r` - Refresh the active tab
 - `p` - Toggle polling / auto-refresh
 - `Esc` - Exit filter editing or dismiss errors
@@ -153,7 +159,7 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 | `GITLAB_TOKEN` | Yes      | -                    | Personal access token accepted by `GET /user`  |
 | `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
 
-`runner_targets` are not currently configurable through environment variables; use onboarding or `config.toml`.
+`runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal and are persisted back to the canonical config file.
 
 ### CLI Flags
 

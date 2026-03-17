@@ -1,20 +1,42 @@
 use crate::client::GitLabClient;
-use crate::config::{RunnerTarget, RunnerTargetKind};
+use crate::config::{RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind};
+use crate::metrics::{LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 pub struct Conductor {
     client: GitLabClient,
+    discovery_mode: RunnerDiscoveryMode,
     runner_targets: Vec<RunnerTarget>,
 }
 
+pub struct QueryOutcome {
+    pub runners: Vec<Runner>,
+    pub metrics: LiveQueryMetrics,
+}
+
 impl Conductor {
+    #[allow(dead_code)]
     pub fn new(client: GitLabClient, runner_targets: Vec<RunnerTarget>) -> Self {
+        Self::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            runner_targets,
+        )
+    }
+
+    pub fn new_with_mode(
+        client: GitLabClient,
+        discovery_mode: RunnerDiscoveryMode,
+        runner_targets: Vec<RunnerTarget>,
+    ) -> Self {
         Self {
             client,
+            discovery_mode,
             runner_targets,
         }
     }
@@ -23,60 +45,55 @@ impl Conductor {
         self.client.validate_token().await
     }
 
+    pub fn discovery_mode(&self) -> RunnerDiscoveryMode {
+        self.discovery_mode
+    }
+
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
+        Ok(self.fetch_runners_with_metrics(filters).await?.runners)
+    }
+
+    pub async fn fetch_runners_with_metrics(&self, filters: RunnerFilters) -> Result<QueryOutcome> {
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let (runners, request_counts) = self.fetch_runners_internal(filters).await?;
+        let finished_at = Utc::now();
+        let metrics = LiveQueryMetrics::success(
+            started_at,
+            finished_at,
+            started.elapsed().as_millis(),
+            runners.len(),
+            self.discovery_mode,
+            request_counts,
+        );
+        Ok(QueryOutcome { runners, metrics })
+    }
+
+    async fn fetch_runners_internal(
+        &self,
+        filters: RunnerFilters,
+    ) -> Result<(Vec<Runner>, QueryRequestCounts)> {
         let mut runner_map = BTreeMap::new();
         let per_page = 100;
+        let mut request_counts = QueryRequestCounts::default();
 
-        if self.runner_targets.is_empty() {
-            let mut page = 1;
-
-            loop {
-                let runners = self
-                    .client
-                    .fetch_available_runners(&filters, page, per_page)
-                    .await?;
-                if runners.is_empty() {
-                    break;
-                }
-
-                let count = runners.len();
-                for runner in runners {
-                    runner_map.entry(runner.id).or_insert(runner);
-                }
-
-                if count < per_page as usize {
-                    break;
-                }
-                page += 1;
-            }
-        } else {
-            for target in &self.runner_targets {
+        match self.discovery_mode {
+            RunnerDiscoveryMode::VisibleRunners => {
                 let mut page = 1;
 
                 loop {
-                    let runners = match target.kind {
-                        RunnerTargetKind::Group => {
-                            self.client
-                                .fetch_group_runners(&target.id, &filters, page, per_page)
-                                .await?
-                        }
-                        RunnerTargetKind::Project => {
-                            self.client
-                                .fetch_project_runners(&target.id, &filters, page, per_page)
-                                .await?
-                        }
-                    };
+                    request_counts.list_requests += 1;
+                    let runners = self
+                        .client
+                        .fetch_available_runners(&filters, page, per_page)
+                        .await?;
                     if runners.is_empty() {
                         break;
                     }
 
                     let count = runners.len();
                     for runner in runners {
-                        if let Some(existing) = runner_map.get_mut(&runner.id) {
-                            merge_runner(existing, runner);
-                        } else {
-                            runner_map.insert(runner.id, runner);
-                        }
+                        runner_map.entry(runner.id).or_insert(runner);
                     }
 
                     if count < per_page as usize {
@@ -85,9 +102,49 @@ impl Conductor {
                     page += 1;
                 }
             }
+            RunnerDiscoveryMode::ConfiguredTargets => {
+                for target in &self.runner_targets {
+                    let mut page = 1;
+
+                    loop {
+                        request_counts.list_requests += 1;
+                        let runners = match target.kind {
+                            RunnerTargetKind::Group => {
+                                self.client
+                                    .fetch_group_runners(&target.id, &filters, page, per_page)
+                                    .await?
+                            }
+                            RunnerTargetKind::Project => {
+                                self.client
+                                    .fetch_project_runners(&target.id, &filters, page, per_page)
+                                    .await?
+                            }
+                        };
+                        if runners.is_empty() {
+                            break;
+                        }
+
+                        let count = runners.len();
+                        for runner in runners {
+                            if let Some(existing) = runner_map.get_mut(&runner.id) {
+                                merge_runner(existing, runner);
+                            } else {
+                                runner_map.insert(runner.id, runner);
+                            }
+                        }
+
+                        if count < per_page as usize {
+                            break;
+                        }
+                        page += 1;
+                    }
+                }
+            }
         }
 
         let runners: Vec<Runner> = runner_map.into_values().collect();
+        request_counts.detail_requests = runners.len();
+        request_counts.manager_requests = runners.len();
 
         let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
             let client = self.client.clone();
@@ -121,12 +178,24 @@ impl Conductor {
         .collect()
         .await;
 
-        Ok(enriched)
+        Ok((enriched, request_counts))
     }
 
     pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
-        let runners = self.fetch_runners(filters).await?;
-        Ok(filter_offline_runners(runners))
+        Ok(self
+            .list_offline_runners_with_metrics(filters)
+            .await?
+            .runners)
+    }
+
+    pub async fn list_offline_runners_with_metrics(
+        &self,
+        filters: RunnerFilters,
+    ) -> Result<QueryOutcome> {
+        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
+        outcome.runners = filter_offline_runners(outcome.runners);
+        outcome.metrics.result_count = outcome.runners.len();
+        Ok(outcome)
     }
 
     pub async fn list_uncontacted_runners(
@@ -134,12 +203,21 @@ impl Conductor {
         filters: RunnerFilters,
         threshold_secs: u64,
     ) -> Result<Vec<Runner>> {
-        let runners = self.fetch_runners(filters).await?;
-        Ok(filter_uncontacted_runners(
-            runners,
-            Utc::now(),
-            threshold_secs,
-        ))
+        Ok(self
+            .list_uncontacted_runners_with_metrics(filters, threshold_secs)
+            .await?
+            .runners)
+    }
+
+    pub async fn list_uncontacted_runners_with_metrics(
+        &self,
+        filters: RunnerFilters,
+        threshold_secs: u64,
+    ) -> Result<QueryOutcome> {
+        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
+        outcome.runners = filter_uncontacted_runners(outcome.runners, Utc::now(), threshold_secs);
+        outcome.metrics.result_count = outcome.runners.len();
+        Ok(outcome)
     }
 
     /// Returns (online_count, total_count) - reserved for potential status aggregation
@@ -158,13 +236,37 @@ impl Conductor {
         &self,
         filters: RunnerFilters,
     ) -> Result<Vec<Runner>> {
-        let runners = self.fetch_runners(filters).await?;
-        Ok(filter_runners_without_managers(runners))
+        Ok(self
+            .list_runners_without_managers_with_metrics(filters)
+            .await?
+            .runners)
+    }
+
+    pub async fn list_runners_without_managers_with_metrics(
+        &self,
+        filters: RunnerFilters,
+    ) -> Result<QueryOutcome> {
+        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
+        outcome.runners = filter_runners_without_managers(outcome.runners);
+        outcome.metrics.result_count = outcome.runners.len();
+        Ok(outcome)
     }
 
     pub async fn detect_rotating_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
-        let runners = self.fetch_runners(filters).await?;
-        Ok(filter_rotating_runners(runners))
+        Ok(self
+            .detect_rotating_runners_with_metrics(filters)
+            .await?
+            .runners)
+    }
+
+    pub async fn detect_rotating_runners_with_metrics(
+        &self,
+        filters: RunnerFilters,
+    ) -> Result<QueryOutcome> {
+        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
+        outcome.runners = filter_rotating_runners(outcome.runners);
+        outcome.metrics.result_count = outcome.runners.len();
+        Ok(outcome)
     }
 }
 
@@ -430,7 +532,11 @@ mod tests {
     fn test_new() {
         let client =
             GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
-        let _conductor = Conductor::new(client, vec![group_target("123")]);
+        let _conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
     }
 
     #[tokio::test]
@@ -508,8 +614,9 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(
+        let conductor = Conductor::new_with_mode(
             client,
+            RunnerDiscoveryMode::ConfiguredTargets,
             vec![group_target("123"), project_target("my-org/app")],
         );
 
@@ -547,7 +654,8 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, Vec::new());
+        let conductor =
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::VisibleRunners, Vec::new());
 
         let runners = conductor
             .fetch_runners(RunnerFilters::default())
@@ -582,7 +690,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let (online, total) = conductor
             .check_runner_statuses(RunnerFilters::default())
@@ -609,7 +721,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let runners = conductor
             .fetch_runners(RunnerFilters::default())
@@ -659,7 +775,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let runners = conductor
             .fetch_runners(RunnerFilters::default())
@@ -690,7 +810,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let offline = conductor
             .list_offline_runners(RunnerFilters::default())
@@ -728,7 +852,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let offline = conductor
             .list_offline_runners(RunnerFilters::default())
@@ -757,7 +885,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let empty = conductor
             .list_runners_without_managers(RunnerFilters::default())
@@ -788,7 +920,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -817,7 +953,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -849,7 +989,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -879,7 +1023,11 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -951,7 +1099,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let uncontacted = conductor
             .list_uncontacted_runners(RunnerFilters::default(), 60)
@@ -1024,7 +1176,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client, vec![group_target("123")]);
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
 
         let uncontacted = conductor
             .list_uncontacted_runners(RunnerFilters::default(), 60)

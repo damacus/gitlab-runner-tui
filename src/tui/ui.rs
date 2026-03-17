@@ -1,21 +1,33 @@
+use crate::config::RunnerDiscoveryMode;
 use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_detail, latest_runner_contact_label,
         manager_contact_detail, manager_contact_label, App, AppMode, DetailLayoutMode,
-        PollDisplayState, ResultsViewType, Tab,
+        PollDisplayState, ResultsViewType, SettingsField, Tab,
     },
     styles,
 };
 use chrono::Utc;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     text::{Line, Span},
-    widgets::{Cell, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{
+        Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, Tabs, Wrap,
+    },
     Frame,
 };
 
 fn dash_or(value: &Option<String>) -> String {
     value.as_deref().unwrap_or("-").to_string()
+}
+
+fn display_or_dash(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "-"
+    } else {
+        value.trim()
+    }
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
@@ -40,6 +52,33 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
 
     render_status_bar(app, frame, chunks[4]);
+
+    match app.mode {
+        AppMode::AgeInput => render_age_filter_modal(app, frame),
+        AppMode::Settings => render_settings_modal(app, frame),
+        AppMode::VersionFilter => render_version_filter_modal(app, frame),
+        _ => {}
+    }
+}
+
+fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - height_percent) / 2),
+            Constraint::Percentage(height_percent),
+            Constraint::Percentage((100 - height_percent) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width_percent) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100 - width_percent) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
@@ -143,17 +182,33 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
 fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let title = if app.mode == AppMode::FilterInput {
         "Filter Tags [/] (focused)"
+    } else if app.mode == AppMode::AgeInput {
+        "Age Filter [a] (focused)"
     } else {
         "Filter Tags [/]"
     };
 
     let (text, style) = if app.filter_input.is_empty() {
         (
-            "Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.",
+            format!(
+                "Press / to edit tags. a: age {}. v: versions {}. o: sort {}. c: settings.",
+                app.age_filter_summary(),
+                app.selected_versions_summary(),
+                app.sort_label()
+            ),
             styles::muted_style(),
         )
     } else {
-        (app.filter_input.as_str(), styles::accent_style())
+        (
+            format!(
+                "{} | age {} | versions {} | sort {}",
+                app.filter_input,
+                app.age_filter_summary(),
+                app.selected_versions_summary(),
+                app.sort_label()
+            ),
+            styles::accent_style(),
+        )
     };
 
     let block = if app.mode == AppMode::FilterInput {
@@ -168,6 +223,11 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     if app.mode == AppMode::FilterInput {
         frame.set_cursor(
             area.x + app.filter_input.chars().count() as u16 + 1,
+            area.y + 1,
+        );
+    } else if app.mode == AppMode::AgeInput {
+        frame.set_cursor(
+            area.x + app.age_filter_input.chars().count() as u16 + 1,
             area.y + 1,
         );
     }
@@ -472,6 +532,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+    render_table_scrollbar(app, frame, area);
 }
 
 fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -544,6 +605,29 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+    render_table_scrollbar(app, frame, area);
+}
+
+fn render_table_scrollbar(app: &mut App, frame: &mut Frame, area: Rect) {
+    if app.active_result_len() <= 1 {
+        return;
+    }
+    let viewport = area.height.saturating_sub(3) as usize;
+    app.scroll_state = ScrollbarState::new(app.active_result_len())
+        .position(app.table_state.offset())
+        .viewport_content_length(viewport.max(1));
+
+    frame.render_stateful_widget(
+        Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None),
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut app.scroll_state,
+    );
 }
 
 fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
@@ -636,11 +720,271 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(list, area);
 }
 
+fn render_age_filter_modal(app: &App, frame: &mut Frame) {
+    let area = centered_rect(52, 22, frame.size());
+    frame.render_widget(Clear, area);
+    let block = styles::focused_block("Age Filter [a]");
+    let inner = block.inner(area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Type a minimum runner age like 24h, 7d, or 90m."),
+            Line::from(""),
+            Line::from(format!(
+                "Older than: {}",
+                if app.age_filter_input.trim().is_empty() {
+                    "any".to_string()
+                } else {
+                    app.age_filter_input.clone()
+                }
+            )),
+            Line::from(""),
+            Line::from("Enter: apply  Esc: cancel"),
+        ])
+        .block(block),
+        area,
+    );
+    frame.set_cursor(
+        inner.x + "Older than: ".len() as u16 + app.age_filter_input.len() as u16,
+        inner.y + 2,
+    );
+}
+
+fn render_version_filter_modal(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(50, 60, frame.size());
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = if app.version_options.is_empty() {
+        vec![ListItem::new("No versions loaded yet.")]
+    } else {
+        app.version_options
+            .iter()
+            .map(|version| {
+                let marker = if app.selected_versions.contains(version) {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                ListItem::new(format!("{marker} {version}"))
+            })
+            .collect()
+    };
+
+    let list = List::new(items)
+        .highlight_style(styles::selected_row_style())
+        .block(styles::focused_block(
+            "Version Filter [space toggle, a clear]",
+        ));
+
+    frame.render_stateful_widget(list, area, &mut app.version_list_state);
+}
+
+fn render_settings_modal(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(72, 70, frame.size());
+    frame.render_widget(Clear, area);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Min(8),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    render_connection_section(app, frame, sections[0]);
+    render_behavior_section(app, frame, sections[1]);
+    render_diagnostics_section(app, frame, sections[2]);
+    render_settings_footer(app, frame, sections[3]);
+}
+
+fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
+    let mode_label = match app.settings_draft.discovery_mode {
+        RunnerDiscoveryMode::ConfiguredTargets => "Targets",
+        RunnerDiscoveryMode::VisibleRunners => "Visible runners (/runners)",
+    };
+    let token_placeholder = if app.settings_draft.token.is_empty() {
+        "-".to_string()
+    } else {
+        "•".repeat(app.settings_draft.token.chars().count().min(24))
+    };
+
+    let lines = vec![
+        field_line(
+            app.settings_draft.selected_field == SettingsField::Host,
+            "Host",
+            &app.settings_draft.host,
+        ),
+        field_line(
+            app.settings_draft.selected_field == SettingsField::Token,
+            "Token",
+            &token_placeholder,
+        ),
+        field_line(
+            app.settings_draft.selected_field == SettingsField::DiscoveryMode,
+            "Discovery",
+            mode_label,
+        ),
+        field_line(
+            app.settings_draft.selected_field == SettingsField::Targets,
+            "Targets",
+            display_or_dash(&app.settings_draft.runner_targets_input),
+        ),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(styles::focused_block("Settings"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_behavior_section(app: &App, frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        field_line(
+            app.settings_draft.selected_field == SettingsField::PollInterval,
+            "Poll interval",
+            &format!("{}s", app.settings_draft.poll_interval_input),
+        ),
+        field_line(
+            app.settings_draft.selected_field == SettingsField::PollTimeout,
+            "Poll timeout",
+            &format!("{}s", app.settings_draft.poll_timeout_input),
+        ),
+        Line::from(format!(
+            "Age filter: {} | Versions: {} | Sort: {}",
+            app.age_filter_summary(),
+            app.selected_versions_summary(),
+            app.sort_label()
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(styles::block("Behavior"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_diagnostics_section(app: &App, frame: &mut Frame, area: Rect) {
+    let mut lines = Vec::new();
+
+    if let Some(metrics) = &app.live_query_metrics {
+        let mode = match metrics.discovery_mode {
+            RunnerDiscoveryMode::ConfiguredTargets => "targets",
+            RunnerDiscoveryMode::VisibleRunners => "/runners",
+        };
+        lines.push(Line::from(format!(
+            "Live query: {} ms | {} results | mode {} | requests L/D/M {}/{}/{}",
+            metrics.duration_millis,
+            metrics.result_count,
+            mode,
+            metrics.request_counts.list_requests,
+            metrics.request_counts.detail_requests,
+            metrics.request_counts.manager_requests
+        )));
+        if !metrics.succeeded {
+            lines.push(Line::from(format!(
+                "Last failure: {}",
+                metrics.error_message.as_deref().unwrap_or("unknown error")
+            )));
+        }
+    } else {
+        lines.push(Line::from("Live query: no measurements yet"));
+    }
+
+    lines.push(Line::from(" "));
+    lines.push(Line::from("Local processing benchmarks [b]:"));
+
+    if let Some(snapshot) = &app.local_benchmarks {
+        if snapshot.measurements.is_empty() {
+            lines.push(Line::from("No benchmark samples available."));
+        } else {
+            for measurement in &snapshot.measurements {
+                let blazing = if measurement.filter_duration_micros <= 1_000 {
+                    " blazing fast"
+                } else {
+                    ""
+                };
+                lines.push(Line::from(format!(
+                    "{} rows -> filter {}us | sort {}us | flatten {}us | workers {}{}",
+                    measurement.sample_size,
+                    measurement.filter_duration_micros,
+                    measurement.sort_duration_micros,
+                    measurement.flatten_duration_micros,
+                    measurement.worker_row_count,
+                    blazing,
+                )));
+            }
+        }
+    } else {
+        lines.push(Line::from(
+            "Open settings or press b here to benchmark current data.",
+        ));
+    }
+
+    if let Some(message) = &app.settings_message {
+        lines.push(Line::from(" "));
+        lines.push(Line::from(format!("Save error: {message}")));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(styles::block("Diagnostics"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_settings_footer(app: &App, frame: &mut Frame, area: Rect) {
+    let save_style = if app.settings_draft.selected_field == SettingsField::Save {
+        styles::accent_style()
+    } else {
+        styles::muted_style()
+    };
+    let cancel_style = if app.settings_draft.selected_field == SettingsField::Cancel {
+        styles::accent_style()
+    } else {
+        styles::muted_style()
+    };
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("[Save]", save_style),
+        Span::raw("  "),
+        Span::styled("[Cancel]", cancel_style),
+        Span::raw("  Enter: activate  Ctrl-S: save  Tab: next field  Esc: close"),
+    ]))
+    .alignment(Alignment::Center)
+    .block(styles::block("Settings Actions"));
+    frame.render_widget(footer, area);
+}
+
+fn field_line(selected: bool, label: &str, value: &str) -> Line<'static> {
+    let style = if selected {
+        styles::accent_style()
+    } else {
+        styles::muted_style()
+    };
+    Line::from(vec![
+        Span::styled(format!("{label:<13}"), style),
+        Span::raw(" "),
+        Span::raw(value.to_string()),
+    ])
+}
+
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     let mut status = match app.mode {
         AppMode::Help => "Any key closes help".to_string(),
         AppMode::FilterInput => {
             "Type tags | Enter: apply filter and refresh | Esc: stop editing | Ctrl-C: quit"
+                .to_string()
+        }
+        AppMode::AgeInput => {
+            "Type runner age like 24h, 7d, 90m | Enter: apply age filter | Esc: cancel"
+                .to_string()
+        }
+        AppMode::VersionFilter => {
+            "Version filter | ↑/↓ move | Space toggle | a/Backspace clear | Enter/Esc close"
+                .to_string()
+        }
+        AppMode::Settings => {
+            "Settings | Tab/Shift+Tab move | Type edit | ←/→ discovery | Ctrl-S save | b benchmark | Esc close"
                 .to_string()
         }
         AppMode::Dashboard => {
@@ -672,7 +1016,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     .map(|age| format!("last refresh {} ago", format_age(age)))
                     .unwrap_or_else(|| "not loaded yet".to_string());
                 format!(
-                    "{} {} loaded for {} | {} | Tab/Shift+Tab: switch and load | 1-7: jump and load | /: edit filter | r: refresh | p: poll | ?: help | q/Ctrl-C: quit",
+                    "{} {} loaded for {} | {} | / tags | a age | v versions | o sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
                     app.active_result_len(),
                     result_label,
                     app.active_tab(),
@@ -709,12 +1053,16 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  Enter            Apply the current filter"),
         Line::from("  r                Refresh the active tab"),
         Line::from("  p                Toggle polling / auto-refresh"),
+        Line::from("  a                Edit age filter (24h, 7d, 90m)"),
+        Line::from("  v                Open version multi-select filter"),
+        Line::from("  s                Cycle sort mode"),
+        Line::from("  c                Open settings and diagnostics"),
         Line::from("  q or Ctrl-C      Quit"),
         Line::from(""),
         Line::from("Filtering"),
         Line::from("  / or f           Focus the filter bar"),
         Line::from("  Type tags        Edit comma-separated tag filters"),
-        Line::from("  Enter            Apply filter to the active tab"),
+        Line::from("  Enter            Apply tag filter to the active tab"),
         Line::from("  Esc              Exit filter editing"),
         Line::from(""),
         Line::from("Views"),
@@ -733,7 +1081,7 @@ mod tests {
     use super::*;
     use crate::client::GitLabClient;
     use crate::conductor::Conductor;
-    use crate::config::AppConfig;
+    use crate::config::{AppConfig, RunnerDiscoveryMode};
     use crate::models::manager::RunnerManager;
     use crate::models::runner::Runner;
     use crate::tui::app::{HealthSummary, ManagerRow};
@@ -748,7 +1096,10 @@ mod tests {
             "token".to_string(),
         )
         .expect("client");
-        App::new(Conductor::new(client, vec![]), AppConfig::default())
+        App::new(
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::VisibleRunners, vec![]),
+            AppConfig::default(),
+        )
     }
 
     fn test_manager(
@@ -811,7 +1162,7 @@ mod tests {
     }
 
     fn sanitize_rendered_output(rendered: &str) -> String {
-        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─]").expect("border regex");
+        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█]").expect("border regex");
         let spaces = Regex::new(r"\s{2,}").expect("spaces regex");
 
         rendered
@@ -867,12 +1218,12 @@ GitLab Runner TUI Live (p to pause) last <age> next <age>
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-prod,linux
+prod,linux | age -h | versions All versions | sort None
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> ago | Tab/Shift+Tab: switch and load | 1-7: jump and load | /: edit fil");
+1 runners loaded for Runners | last refresh <age> ago | / tags | a age | v versions | o sort | c settings | r refresh | p");
     }
 
     #[test]
@@ -889,11 +1240,11 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-alm
+alm | age -h | versions All versions | sort None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offline | not loaded yet | Tab/Shift+Tab: switch and load | 1-7: jump and loa");
+0 runners loaded for Offline | not loaded yet | / tags | a age | v versions | o sort | c settings");
     }
 
     #[test]
@@ -919,12 +1270,12 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.
+Press / to edit tags. a: age -h. v: versions All versions. o: sort None. c: settings.
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Workers | not loaded yet | Tab/Shift+Tab: switch and load | 1-7: jump and load | /: edit filter |");
+1 workers loaded for Workers | not loaded yet | / tags | a age | v versions | o sort | c settings | r refresh | p poll");
     }
 
     #[test]
@@ -956,14 +1307,14 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.
+Press / to edit tags. a: age -h. v: versions All versions. o: sort None. c: settings.
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | Tab/Shift+Tab: switch and load | 1-7: jump and load | /: edit filter |");
+1 runners loaded for Health | not loaded yet | / tags | a age | v versions | o sort | c settings | r refresh | p poll");
     }
 
     #[test]

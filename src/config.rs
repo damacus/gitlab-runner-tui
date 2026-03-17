@@ -2,6 +2,19 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerDiscoveryMode {
+    ConfiguredTargets,
+    VisibleRunners,
+}
+
+impl Default for RunnerDiscoveryMode {
+    fn default() -> Self {
+        Self::VisibleRunners
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RunnerTargetKind {
@@ -24,6 +37,7 @@ pub struct AppConfig {
     pub poll_timeout_secs: u64,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
+    pub discovery_mode: RunnerDiscoveryMode,
     pub runner_targets: Vec<RunnerTarget>,
 }
 
@@ -37,6 +51,7 @@ impl std::fmt::Debug for AppConfig {
                 "gitlab_token",
                 &self.gitlab_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("discovery_mode", &self.discovery_mode)
             .field("runner_targets", &self.runner_targets)
             .finish()
     }
@@ -49,6 +64,7 @@ impl Default for AppConfig {
             poll_timeout_secs: 1800,
             gitlab_host: None,
             gitlab_token: None,
+            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
             runner_targets: Vec::new(),
         }
     }
@@ -95,10 +111,74 @@ impl AppConfig {
         Ok(config)
     }
 
-    #[cfg(test)]
     pub fn has_runner_targets(&self) -> bool {
         !self.runner_targets.is_empty()
     }
+
+    pub fn requires_runner_targets(&self) -> bool {
+        self.discovery_mode == RunnerDiscoveryMode::ConfiguredTargets
+    }
+
+    pub fn validate_runtime_settings(&self) -> Result<()> {
+        if self.requires_runner_targets() && !self.has_runner_targets() {
+            anyhow::bail!("Configured target discovery mode requires at least one runner target");
+        }
+
+        if self.poll_interval_secs == 0 {
+            anyhow::bail!("Poll interval must be greater than zero seconds");
+        }
+
+        Ok(())
+    }
+}
+
+pub fn format_runner_targets(targets: &[RunnerTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| {
+            format!(
+                "{}:{}",
+                match target.kind {
+                    RunnerTargetKind::Group => "group",
+                    RunnerTargetKind::Project => "project",
+                },
+                target.id
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub fn parse_runner_targets(input: &str) -> Result<Vec<RunnerTarget>> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(parse_runner_target)
+        .collect()
+}
+
+fn parse_runner_target(entry: &str) -> Result<RunnerTarget> {
+    let (kind, id) = entry
+        .split_once(':')
+        .context("Runner targets must use group:<id-or-path> or project:<id-or-path>")?;
+
+    let id = id.trim();
+    if id.is_empty() {
+        anyhow::bail!("Runner target identifiers cannot be empty");
+    }
+
+    let kind = match kind.trim() {
+        "group" => RunnerTargetKind::Group,
+        "project" => RunnerTargetKind::Project,
+        other => anyhow::bail!("Unsupported runner target kind: {other}"),
+    };
+
+    Ok(RunnerTarget {
+        kind,
+        id: id.to_string(),
+        label: None,
+    })
 }
 
 fn config_paths() -> Vec<PathBuf> {
@@ -130,6 +210,7 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
         assert!(config.runner_targets.is_empty());
     }
 
@@ -140,6 +221,7 @@ mod tests {
             poll_timeout_secs = 900
             gitlab_host = "https://gitlab.example.com"
             gitlab_token = "glpat-test-token"
+            discovery_mode = "visible_runners"
             
             [[runner_targets]]
             kind = "group"
@@ -155,6 +237,7 @@ mod tests {
             Some("https://gitlab.example.com".to_string())
         );
         assert_eq!(config.gitlab_token, Some("glpat-test-token".to_string()));
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
         assert_eq!(
             config.runner_targets,
             vec![RunnerTarget {
@@ -176,6 +259,7 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
         assert!(config.runner_targets.is_empty());
     }
 
@@ -202,6 +286,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
         assert!(config.runner_targets.is_empty());
     }
 
@@ -251,6 +336,64 @@ mod tests {
     }
 
     #[test]
+    fn test_format_runner_targets() {
+        let formatted = format_runner_targets(&[
+            RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "org/platform".to_string(),
+                label: None,
+            },
+            RunnerTarget {
+                kind: RunnerTargetKind::Project,
+                id: "123".to_string(),
+                label: None,
+            },
+        ]);
+
+        assert_eq!(formatted, "group:org/platform,project:123");
+    }
+
+    #[test]
+    fn test_parse_runner_targets() {
+        let targets = parse_runner_targets("group:org/platform, project:123").unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].kind, RunnerTargetKind::Group);
+        assert_eq!(targets[1].kind, RunnerTargetKind::Project);
+    }
+
+    #[test]
+    fn test_validate_runtime_settings_requires_targets_for_target_mode() {
+        let config = AppConfig {
+            discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,
+            ..AppConfig::default()
+        };
+        let error = config.validate_runtime_settings().unwrap_err().to_string();
+        assert!(error.contains("requires at least one runner target"));
+    }
+
+    #[test]
+    fn test_validate_runtime_settings_allows_visible_runners_without_targets() {
+        let config = AppConfig {
+            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+            ..AppConfig::default()
+        };
+
+        assert!(config.validate_runtime_settings().is_ok());
+    }
+
+    #[test]
+    fn test_validate_runtime_settings_rejects_zero_poll_interval() {
+        let config = AppConfig {
+            poll_interval_secs: 0,
+            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+            ..AppConfig::default()
+        };
+
+        let error = config.validate_runtime_settings().unwrap_err().to_string();
+        assert!(error.contains("Poll interval"));
+    }
+
+    #[test]
     fn test_config_paths_includes_cwd() {
         let paths = config_paths();
         assert!(!paths.is_empty());
@@ -286,6 +429,7 @@ mod tests {
             poll_timeout_secs: 1800,
             gitlab_host: Some("https://gitlab.com".to_string()),
             gitlab_token: Some("glpat-secret-token".to_string()),
+            discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,
             runner_targets: vec![RunnerTarget {
                 kind: RunnerTargetKind::Group,
                 id: "my-org/platform".to_string(),
