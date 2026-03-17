@@ -189,15 +189,23 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     let (text, style) = if app.filter_input.is_empty() {
-        (
-            format!(
-                "Press / to edit tags. a: age {}. v: versions {}. o: sort {}. c: settings.",
-                app.age_filter_summary(),
-                app.selected_versions_summary(),
-                app.sort_label()
-            ),
-            styles::muted_style(),
-        )
+        if app.mode == AppMode::FilterInput {
+            (
+                "Type comma-separated tags (e.g. prod, linux) and press Enter to apply..."
+                    .to_string(),
+                styles::muted_style(),
+            )
+        } else {
+            (
+                format!(
+                    "Press / to edit tags. a: age {}. v: versions {}. o: sort {}. c: settings.",
+                    app.age_filter_summary(),
+                    app.selected_versions_summary(),
+                    app.sort_label()
+                ),
+                styles::muted_style(),
+            )
+        }
     } else {
         (
             format!(

@@ -4,3 +4,6 @@
 ## 2024-05-14 - TUI Input Cursor Placement
 **Learning:** In Rust TUI applications, when using `frame.set_cursor()` to manually position the hardware cursor after input text, using `String::len()` will cause the cursor to jump ahead incorrectly if the user types multi-byte non-ASCII characters (e.g., emojis or accents). `String::len()` returns the byte length, not the character count.
 **Action:** Always use `.chars().count()` (or a visual width crate like `unicode-width` if full width calculation is required) when calculating cursor coordinates based on string lengths to ensure correct alignment for all inputs.
+## 2024-05-25 - Context-Aware Placeholders in TUIs
+**Learning:** Generic placeholder text or instructional key-bindings in an empty input field can be confusing, as it fails to inform users about the expected input format or what action confirms the input. Providing explicit examples and instructions directly related to the current context significantly improves the self-documenting nature of the TUI.
+**Action:** When an input mode is active (like a filter bar), provide a dimmed placeholder text that explicitly demonstrates valid input formats (e.g., "Type comma-separated tags (e.g. prod, linux) and press Enter") rather than relying on generic hotkey lists that belong in passive views.
