@@ -218,13 +218,12 @@ fn resolve_runtime_settings_with_env(
         let token = token.context(
             "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
         )?;
-        ensure_runner_targets_configured(&config)?;
         return Ok((host, token, config));
     }
 
-    match (token, config.runner_targets.is_empty()) {
-        (Some(token), false) => Ok((host, token, config)),
-        (None, _) | (Some(_), true) => run_first_time_setup(host, &mut config),
+    match token {
+        Some(token) => Ok((host, token, config)),
+        None => run_first_time_setup(host, &mut config),
     }
 }
 
@@ -252,16 +251,6 @@ fn run_first_time_setup(
     println!();
 
     Ok((host, token, config.clone()))
-}
-
-fn ensure_runner_targets_configured(config: &AppConfig) -> Result<()> {
-    if !config.has_runner_targets() {
-        anyhow::bail!(
-            "At least one runner target must be configured in config.toml. Use entries like group:my-org/platform or project:my-org/app during onboarding."
-        );
-    }
-
-    Ok(())
 }
 
 fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
@@ -296,15 +285,16 @@ fn prompt_required(prompt: &str) -> Result<String> {
 
 fn prompt_runner_targets() -> Result<Vec<RunnerTarget>> {
     loop {
-        print!("Runner targets (comma-separated, e.g. group:my-org/platform,project:my-org/app): ");
+        print!(
+            "Runner targets (optional, comma-separated, e.g. group:my-org/platform,project:my-org/app): "
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
         match parse_runner_targets(&input) {
-            Ok(targets) if !targets.is_empty() => return Ok(targets),
-            Ok(_) => println!("At least one runner target is required."),
+            Ok(targets) => return Ok(targets),
             Err(error) => println!("{error}"),
         }
     }
@@ -633,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_mode_requires_runner_targets() {
+    fn watch_mode_allows_missing_runner_targets() {
         let args = Args {
             host: None,
             token: Some("glpat-test".to_string()),
@@ -642,11 +632,12 @@ mod tests {
             tags: None,
         };
 
-        let error = resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None)
-            .unwrap_err()
-            .to_string();
+        let (host, token, config) =
+            resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None).unwrap();
 
-        assert!(error.contains("At least one runner target must be configured"));
+        assert_eq!(host, "https://gitlab.com");
+        assert_eq!(token, "glpat-test");
+        assert!(config.runner_targets.is_empty());
     }
 
     #[tokio::test]

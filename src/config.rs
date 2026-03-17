@@ -95,6 +95,7 @@ impl AppConfig {
         Ok(config)
     }
 
+    #[cfg(test)]
     pub fn has_runner_targets(&self) -> bool {
         !self.runner_targets.is_empty()
     }

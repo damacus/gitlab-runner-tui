@@ -98,14 +98,14 @@ id = "12345"
 label = "App Project"
 ```
 
-`runner_targets` is required for both interactive and headless mode. Supported target kinds:
+`runner_targets` is optional. When omitted, the app falls back to the runners visible to the current GitLab user via `/runners`. Supported target kinds:
 
 - `group`
 - `project`
 
 Each target `id` may be either a numeric GitLab ID or a group/project path.
 
-During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes, for example:
+During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes. You can also leave the prompt blank to use the current user's visible runners:
 
 ```text
 group:my-org/platform,project:my-org/app
@@ -254,6 +254,7 @@ cargo test test_name
 
 - Add one or more `[[runner_targets]]` entries to `config.toml`
 - Or rerun onboarding and enter targets like `group:my-org/platform,project:my-org/app`
+- Or leave runner targets blank and use the current user's visible runners
 - Confirm the configured group/project IDs or paths are valid for the current GitLab host
 
 ### SSL Certificate Issues

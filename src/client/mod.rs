@@ -47,22 +47,15 @@ impl GitLabClient {
         Ok(())
     }
 
-    pub async fn fetch_target_runners(
+    async fn fetch_runners_from_endpoint(
         &self,
-        target: &RunnerTarget,
+        endpoint: &str,
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
     ) -> Result<Vec<Runner>> {
-        let endpoint = match target.kind {
-            RunnerTargetKind::Group => format!("groups/{}/runners", encode_target_id(&target.id)),
-            RunnerTargetKind::Project => {
-                format!("projects/{}/runners", encode_target_id(&target.id))
-            }
-        };
-
         let mut request = self
-            .request(Method::GET, &endpoint)
+            .request(Method::GET, endpoint)
             .query(&[("per_page", per_page), ("page", page)]);
 
         if let Some(status) = &filters.status {
@@ -93,6 +86,34 @@ impl GitLabClient {
             .context("Failed to deserialize runners")?;
 
         Ok(runners)
+    }
+
+    pub async fn fetch_available_runners(
+        &self,
+        filters: &RunnerFilters,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Runner>> {
+        self.fetch_runners_from_endpoint("runners", filters, page, per_page)
+            .await
+    }
+
+    pub async fn fetch_target_runners(
+        &self,
+        target: &RunnerTarget,
+        filters: &RunnerFilters,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Runner>> {
+        let endpoint = match target.kind {
+            RunnerTargetKind::Group => format!("groups/{}/runners", encode_target_id(&target.id)),
+            RunnerTargetKind::Project => {
+                format!("projects/{}/runners", encode_target_id(&target.id))
+            }
+        };
+
+        self.fetch_runners_from_endpoint(&endpoint, filters, page, per_page)
+            .await
     }
 
     pub async fn fetch_group_runners(
@@ -347,6 +368,32 @@ mod tests {
         assert_eq!(runners[0].id, 12345);
         assert_eq!(runners[0].status, "online");
         assert!(runners[0].tag_list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_available_runners_success() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v4/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let runners = client
+            .fetch_available_runners(&RunnerFilters::default(), 1, 100)
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+        assert!(runners.is_empty());
     }
 
     #[tokio::test]

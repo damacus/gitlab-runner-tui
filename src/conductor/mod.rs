@@ -27,39 +27,63 @@ impl Conductor {
         let mut runner_map = BTreeMap::new();
         let per_page = 100;
 
-        for target in &self.runner_targets {
+        if self.runner_targets.is_empty() {
             let mut page = 1;
 
             loop {
-                let runners = match target.kind {
-                    RunnerTargetKind::Group => {
-                        self.client
-                            .fetch_group_runners(&target.id, &filters, page, per_page)
-                            .await?
-                    }
-                    RunnerTargetKind::Project => {
-                        self.client
-                            .fetch_project_runners(&target.id, &filters, page, per_page)
-                            .await?
-                    }
-                };
+                let runners = self
+                    .client
+                    .fetch_available_runners(&filters, page, per_page)
+                    .await?;
                 if runners.is_empty() {
                     break;
                 }
 
                 let count = runners.len();
                 for runner in runners {
-                    if let Some(existing) = runner_map.get_mut(&runner.id) {
-                        merge_runner(existing, runner);
-                    } else {
-                        runner_map.insert(runner.id, runner);
-                    }
+                    runner_map.entry(runner.id).or_insert(runner);
                 }
 
                 if count < per_page as usize {
                     break;
                 }
                 page += 1;
+            }
+        } else {
+            for target in &self.runner_targets {
+                let mut page = 1;
+
+                loop {
+                    let runners = match target.kind {
+                        RunnerTargetKind::Group => {
+                            self.client
+                                .fetch_group_runners(&target.id, &filters, page, per_page)
+                                .await?
+                        }
+                        RunnerTargetKind::Project => {
+                            self.client
+                                .fetch_project_runners(&target.id, &filters, page, per_page)
+                                .await?
+                        }
+                    };
+                    if runners.is_empty() {
+                        break;
+                    }
+
+                    let count = runners.len();
+                    for runner in runners {
+                        if let Some(existing) = runner_map.get_mut(&runner.id) {
+                            merge_runner(existing, runner);
+                        } else {
+                            runner_map.insert(runner.id, runner);
+                        }
+                    }
+
+                    if count < per_page as usize {
+                        break;
+                    }
+                    page += 1;
+                }
             }
         }
 
@@ -505,6 +529,33 @@ mod tests {
         managers_1.assert_async().await;
         managers_2.assert_async().await;
         managers_3.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runners_without_targets_uses_available_runner_endpoint() {
+        let mut server = Server::new_async().await;
+
+        let list_mock = server
+            .mock("GET", "/api/v4/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(client, Vec::new());
+
+        let runners = conductor
+            .fetch_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert!(runners.is_empty());
+        list_mock.assert_async().await;
     }
 
     #[tokio::test]
