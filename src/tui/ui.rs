@@ -66,7 +66,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
-    let block = styles::block("Polling");
+    let block = styles::block("Polling [p]");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -77,10 +77,10 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
     let state = app.poll_display_state();
     let badge = match state {
         PollDisplayState::Refreshing => format!("{} Refreshing", app.spinner_char()),
-        PollDisplayState::Live => "Live".to_string(),
-        PollDisplayState::Paused => "Paused".to_string(),
-        PollDisplayState::TimedOut => "Timed out".to_string(),
-        PollDisplayState::Error => "Error".to_string(),
+        PollDisplayState::Live => "Live (p to pause)".to_string(),
+        PollDisplayState::Paused => "Paused (p to resume)".to_string(),
+        PollDisplayState::TimedOut => "Timed out (p to resume)".to_string(),
+        PollDisplayState::Error => "Error (p to retry)".to_string(),
     };
 
     let age = app
@@ -142,14 +142,14 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
 
 fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let title = if app.mode == AppMode::FilterInput {
-        "Filter Tags (focused)"
+        "Filter Tags [/] (focused)"
     } else {
-        "Filter Tags"
+        "Filter Tags [/]"
     };
 
     let (text, style) = if app.filter_input.is_empty() {
         (
-            "Press / to edit tags like prod,linux. Switching tabs auto-refreshes.",
+            "Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.",
             styles::muted_style(),
         )
     } else {
@@ -862,11 +862,11 @@ mod tests {
 
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
-Dashboard Polling
-GitLab Runner TUI Live last <age> next <age>
+Dashboard Polling [p]
+GitLab Runner TUI Live (p to pause) last <age> next <age>
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags
+Filter Tags [/]
 prod,linux
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
@@ -884,11 +884,11 @@ Status
 
         let rendered = render_to_string(&mut app, 100, 20);
         assert_snapshot!(rendered, @r"
-Dashboard Polling
-GitLab Runner TUI Paused last never next -
+Dashboard Polling [p]
+GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags
+Filter Tags [/]
 alm
 Offline (0)
 No offline runners matched the current tag filter.
@@ -914,12 +914,12 @@ Status
 
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
-Dashboard Polling
-GitLab Runner TUI Paused last never next -
+Dashboard Polling [p]
+GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags
-Press / to edit tags like prod,linux. Switching tabs auto-refreshes.
+Filter Tags [/]
+Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
@@ -951,12 +951,12 @@ Status
 
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
-Dashboard Polling
-GitLab Runner TUI Paused last never next -
+Dashboard Polling [p]
+GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags
-Press / to edit tags like prod,linux. Switching tabs auto-refreshes.
+Filter Tags [/]
+Press / to edit tags like prod,linux. Press p to toggle polling. Switching tabs auto-refreshes.
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
