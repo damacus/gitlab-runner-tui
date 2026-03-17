@@ -19,7 +19,7 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 
 ### Prerequisites
 
-- GitLab personal access token with `read_api` scope
+- GitLab personal access token accepted by the GitLab user API
 - GitLab instance URL (defaults to gitlab.com)
 
 ### Installation
@@ -56,11 +56,22 @@ gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+
+[[runner_targets]]
+kind = "group"
+id = "my-org/platform"
+label = "Platform"
+
+[[runner_targets]]
+kind = "project"
+id = "my-org/app"
 ```
 
 The legacy path `~/.config/igor/config.toml` is still read as a fallback for backward compatibility.
 
-If you launch the interactive TUI without a configured token, or with a stale/invalid token, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
+If you launch the interactive TUI without a configured token, with a stale/invalid token, or without runner targets, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
+
+Runner discovery now comes from configured group/project targets instead of instance-wide runner listing. This is what makes normal GitLab.com usage possible.
 
 Optional `config.toml` file locations (checked in this order):
 
@@ -75,6 +86,29 @@ poll_interval_secs = 30
 poll_timeout_secs = 1800
 gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+[[runner_targets]]
+kind = "group"
+id = "my-org/platform"
+label = "Platform"
+
+[[runner_targets]]
+kind = "project"
+id = "12345"
+label = "App Project"
+```
+
+`runner_targets` is required for both interactive and headless mode. Supported target kinds:
+
+- `group`
+- `project`
+
+Each target `id` may be either a numeric GitLab ID or a group/project path.
+
+During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes, for example:
+
+```text
+group:my-org/platform,project:my-org/app
 ```
 
 ### Running
@@ -116,8 +150,10 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 
 | Variable       | Required | Default              | Description                                    |
 |----------------|----------|----------------------|------------------------------------------------|
-| `GITLAB_TOKEN` | Yes      | -                    | Personal access token (needs `read_api` scope) |
+| `GITLAB_TOKEN` | Yes      | -                    | Personal access token accepted by `GET /user`  |
 | `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
+
+`runner_targets` are not currently configurable through environment variables; use onboarding or `config.toml`.
 
 ### CLI Flags
 
@@ -130,21 +166,24 @@ gitlab-runner-tui --token <TOKEN>  # Override GITLAB_TOKEN
 
 ### Find all production runners
 
-1. Select `fetch` command
-2. Enter tags: `production`
-3. View results
+1. Configure at least one `group` or `project` runner target
+2. Select `fetch` command
+3. Enter tags: `production`
+4. View results
 
 ### Check runner health
 
-1. Select `lights` command
-2. Enter tags: `production,linux`
-3. View health summary and runner statuses
+1. Configure at least one runner target
+2. Select `lights` command
+3. Enter tags: `production,linux`
+4. View health summary and runner statuses
 
 ### List offline runners
 
-1. Select `switch` command
-2. Enter tags: `alm`
-3. View runners with offline managers
+1. Configure at least one runner target
+2. Select `switch` command
+3. Enter tags: `alm`
+4. View runners with offline managers
 
 ## Development
 
@@ -206,8 +245,16 @@ cargo test test_name
 **Error:** "Authentication failed"
 
 - Verify `GITLAB_TOKEN` is correct
-- Ensure token has `read_api` scope
+- Verify the token can authenticate against the GitLab user API
 - Check token hasn't expired
+
+### Runner Target Issues
+
+**Error:** "At least one runner target must be configured"
+
+- Add one or more `[[runner_targets]]` entries to `config.toml`
+- Or rerun onboarding and enter targets like `group:my-org/platform,project:my-org/app`
+- Confirm the configured group/project IDs or paths are valid for the current GitLab host
 
 ### SSL Certificate Issues
 

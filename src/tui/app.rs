@@ -636,13 +636,26 @@ pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
 mod tests {
     use super::*;
     use crate::client::GitLabClient;
+    use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::models::manager::RunnerManager;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn test_runner_targets() -> Vec<RunnerTarget> {
+        vec![RunnerTarget {
+            kind: RunnerTargetKind::Group,
+            id: "my-org/platform".to_string(),
+            label: None,
+        }]
+    }
 
     fn test_app() -> App {
         let client = GitLabClient::new("https://gitlab.com".to_string(), "token".to_string())
             .expect("client");
-        App::new(Conductor::new(client), AppConfig::default())
+        let config = AppConfig {
+            runner_targets: test_runner_targets(),
+            ..AppConfig::default()
+        };
+        App::new(Conductor::new(client, test_runner_targets()), config)
     }
 
     fn test_runner(id: u64, managers: Vec<RunnerManager>) -> Runner {
@@ -947,8 +960,12 @@ mod tests {
     async fn test_execute_search_handles_error() {
         let client =
             GitLabClient::new("http://127.0.0.1:1".to_string(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
-        let mut app = App::new(conductor, AppConfig::default());
+        let conductor = Conductor::new(client, test_runner_targets());
+        let config = AppConfig {
+            runner_targets: test_runner_targets(),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(conductor, config);
 
         app.execute_search().await;
 

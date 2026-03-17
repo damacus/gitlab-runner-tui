@@ -150,7 +150,9 @@ fn render_error(error: &str, frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(error.to_string()),
         Line::from(""),
-        Line::from("Check GITLAB_HOST, GITLAB_TOKEN, and network connectivity."),
+        Line::from(
+            "Check GITLAB_HOST, GITLAB_TOKEN, runner target config, and network connectivity.",
+        ),
         Line::from("Press Esc to dismiss the error."),
     ];
 

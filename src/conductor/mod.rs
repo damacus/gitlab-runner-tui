@@ -1,74 +1,103 @@
 use crate::client::GitLabClient;
+use crate::config::{RunnerTarget, RunnerTargetKind};
 use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
+use std::collections::BTreeMap;
 
 pub struct Conductor {
     client: GitLabClient,
+    runner_targets: Vec<RunnerTarget>,
 }
 
 impl Conductor {
-    pub fn new(client: GitLabClient) -> Self {
-        Self { client }
+    pub fn new(client: GitLabClient, runner_targets: Vec<RunnerTarget>) -> Self {
+        Self {
+            client,
+            runner_targets,
+        }
+    }
+
+    pub async fn validate_token(&self) -> Result<()> {
+        self.client.validate_token().await
     }
 
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
-        let mut all_runners = Vec::new();
-        let mut page = 1;
+        let mut runner_map = BTreeMap::new();
         let per_page = 100;
 
-        loop {
-            let runners = self.client.fetch_runners(&filters, page, per_page).await?;
-            if runners.is_empty() {
-                break;
-            }
+        for target in &self.runner_targets {
+            let mut page = 1;
 
-            let count = runners.len();
-
-            // Enrich each runner with detail (tags, version) and managers
-            // Use buffer_unordered to limit concurrent API requests
-            let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
-                let client = self.client.clone();
-                async move {
-                    let runner_id = r.id;
-
-                    // OPTIMIZATION: Fetch runner detail and managers concurrently using tokio::join!
-                    // This reduces enrichment latency per runner to the max of either API call
-                    // rather than the sum of both, making the application measurably faster.
-                    let (detail_res, managers_res) = tokio::join!(
-                        client.fetch_runner_detail(runner_id),
-                        client.fetch_runner_managers(runner_id)
-                    );
-
-                    let mut detail = match detail_res {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner detail, using list data");
-                            r
-                        }
-                    };
-                    match managers_res {
-                        Ok(managers) => detail.managers = managers,
-                        Err(e) => {
-                            tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers");
-                        }
+            loop {
+                let runners = match target.kind {
+                    RunnerTargetKind::Group => {
+                        self.client
+                            .fetch_group_runners(&target.id, &filters, page, per_page)
+                            .await?
                     }
-                    detail
+                    RunnerTargetKind::Project => {
+                        self.client
+                            .fetch_project_runners(&target.id, &filters, page, per_page)
+                            .await?
+                    }
+                };
+                if runners.is_empty() {
+                    break;
                 }
-            }))
-            .buffer_unordered(10)
-            .collect()
-            .await;
-            all_runners.extend(enriched);
 
-            if count < per_page as usize {
-                break;
+                let count = runners.len();
+                for runner in runners {
+                    if let Some(existing) = runner_map.get_mut(&runner.id) {
+                        merge_runner(existing, runner);
+                    } else {
+                        runner_map.insert(runner.id, runner);
+                    }
+                }
+
+                if count < per_page as usize {
+                    break;
+                }
+                page += 1;
             }
-            page += 1;
         }
 
-        Ok(all_runners)
+        let runners: Vec<Runner> = runner_map.into_values().collect();
+
+        let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
+            let client = self.client.clone();
+            async move {
+                let runner_id = r.id;
+
+                let (detail_res, managers_res) = tokio::join!(
+                    client.fetch_runner_detail(runner_id),
+                    client.fetch_runner_managers(runner_id)
+                );
+
+                let mut detail = match detail_res {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(runner_id, error = %e, "Failed to fetch runner detail, using list data");
+                        r
+                    }
+                };
+
+                match managers_res {
+                    Ok(managers) => detail.managers = managers,
+                    Err(e) => {
+                        tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers, keeping runner without manager data");
+                    }
+                }
+
+                detail
+            }
+        }))
+        .buffer_unordered(10)
+        .collect()
+        .await;
+
+        Ok(enriched)
     }
 
     pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
@@ -173,9 +202,44 @@ fn filter_rotating_runners(runners: Vec<Runner>) -> Vec<Runner> {
         .collect()
 }
 
+fn merge_runner(existing: &mut Runner, incoming: Runner) {
+    if existing.description.is_none() {
+        existing.description = incoming.description.clone();
+    }
+    if existing.created_at.is_none() {
+        existing.created_at = incoming.created_at.clone();
+    }
+    if existing.ip_address.is_none() {
+        existing.ip_address = incoming.ip_address.clone();
+    }
+    if existing.version.is_none() {
+        existing.version = incoming.version.clone();
+    }
+    if existing.revision.is_none() {
+        existing.revision = incoming.revision.clone();
+    }
+
+    for tag in incoming.tag_list {
+        if !existing.tag_list.contains(&tag) {
+            existing.tag_list.push(tag);
+        }
+    }
+
+    for manager in incoming.managers {
+        if !existing
+            .managers
+            .iter()
+            .any(|current| current.id == manager.id)
+        {
+            existing.managers.push(manager);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::models::manager::RunnerManager;
     use mockito::{Matcher, Server};
 
@@ -267,6 +331,22 @@ mod tests {
 
     type RunnerSpec<'a> = (u64, &'a str, &'a [&'a str], &'a [(u64, &'a str)]);
 
+    fn group_target(id: &str) -> RunnerTarget {
+        RunnerTarget {
+            kind: RunnerTargetKind::Group,
+            id: id.to_string(),
+            label: None,
+        }
+    }
+
+    fn project_target(id: &str) -> RunnerTarget {
+        RunnerTarget {
+            kind: RunnerTargetKind::Project,
+            id: id.to_string(),
+            label: None,
+        }
+    }
+
     async fn setup_runner_mocks(
         server: &mut Server,
         runners: &[RunnerSpec<'_>],
@@ -282,7 +362,7 @@ mod tests {
 
         mocks.push(
             server
-                .mock("GET", "/api/v4/runners/all")
+                .mock("GET", "/api/v4/groups/123/runners")
                 .match_query(Matcher::AllOf(vec![
                     Matcher::UrlEncoded("per_page".into(), "100".into()),
                     Matcher::UrlEncoded("page".into(), "1".into()),
@@ -326,7 +406,105 @@ mod tests {
     fn test_new() {
         let client =
             GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
-        let _conductor = Conductor::new(client);
+        let _conductor = Conductor::new(client, vec![group_target("123")]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runners_merges_and_dedupes_across_targets() {
+        let mut server = Server::new_async().await;
+
+        let group_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(2, "offline")
+            ))
+            .create_async()
+            .await;
+
+        let project_list = server
+            .mock("GET", "/api/v4/projects/my-org%2Fapp/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(3, "online")
+            ))
+            .create_async()
+            .await;
+
+        let detail_1 = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "online", &["prod"]))
+            .expect(1)
+            .create_async()
+            .await;
+        let detail_2 = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "offline", &["staging"]))
+            .create_async()
+            .await;
+        let detail_3 = server
+            .mock("GET", "/api/v4/runners/3")
+            .with_status(200)
+            .with_body(detail_response_body(3, "online", &["qa"]))
+            .create_async()
+            .await;
+
+        let managers_1 = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(10, 1, "online")))
+            .expect(1)
+            .create_async()
+            .await;
+        let managers_2 = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(20, 2, "offline")))
+            .create_async()
+            .await;
+        let managers_3 = server
+            .mock("GET", "/api/v4/runners/3/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(30, 3, "online")))
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new(
+            client,
+            vec![group_target("123"), project_target("my-org/app")],
+        );
+
+        let runners = conductor
+            .fetch_runners(RunnerFilters::default())
+            .await
+            .unwrap();
+        let ids: Vec<u64> = runners.iter().map(|runner| runner.id).collect();
+
+        assert_eq!(ids, vec![1, 2, 3]);
+
+        group_list.assert_async().await;
+        project_list.assert_async().await;
+        detail_1.assert_async().await;
+        detail_2.assert_async().await;
+        detail_3.assert_async().await;
+        managers_1.assert_async().await;
+        managers_2.assert_async().await;
+        managers_3.assert_async().await;
     }
 
     #[tokio::test]
@@ -353,7 +531,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let (online, total) = conductor
             .check_runner_statuses(RunnerFilters::default())
@@ -380,7 +558,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let runners = conductor
             .fetch_runners(RunnerFilters::default())
@@ -403,7 +581,7 @@ mod tests {
 
         // List returns one runner
         let list_mock = server
-            .mock("GET", "/api/v4/runners/all")
+            .mock("GET", "/api/v4/groups/123/runners")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -430,7 +608,7 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let runners = conductor
             .fetch_runners(RunnerFilters::default())
@@ -461,7 +639,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let offline = conductor
             .list_offline_runners(RunnerFilters::default())
@@ -499,7 +677,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let offline = conductor
             .list_offline_runners(RunnerFilters::default())
@@ -528,7 +706,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let empty = conductor
             .list_runners_without_managers(RunnerFilters::default())
@@ -559,7 +737,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -588,7 +766,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -620,7 +798,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -650,7 +828,7 @@ mod tests {
         .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let rotating = conductor
             .detect_rotating_runners(RunnerFilters::default())
@@ -673,7 +851,7 @@ mod tests {
         let recent_contact = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
 
         let list_mock = server
-            .mock("GET", "/api/v4/runners/all")
+            .mock("GET", "/api/v4/groups/123/runners")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -722,7 +900,7 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let uncontacted = conductor
             .list_uncontacted_runners(RunnerFilters::default(), 60)
@@ -746,7 +924,7 @@ mod tests {
         let recent_contact = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
 
         let list_mock = server
-            .mock("GET", "/api/v4/runners/all")
+            .mock("GET", "/api/v4/groups/123/runners")
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
@@ -795,7 +973,7 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, vec![group_target("123")]);
 
         let uncontacted = conductor
             .list_uncontacted_runners(RunnerFilters::default(), 60)

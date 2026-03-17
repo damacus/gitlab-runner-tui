@@ -2,6 +2,21 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RunnerTargetKind {
+    Group,
+    Project,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct RunnerTarget {
+    pub kind: RunnerTargetKind,
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 #[derive(Deserialize, Serialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -9,6 +24,7 @@ pub struct AppConfig {
     pub poll_timeout_secs: u64,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
+    pub runner_targets: Vec<RunnerTarget>,
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -21,6 +37,7 @@ impl std::fmt::Debug for AppConfig {
                 "gitlab_token",
                 &self.gitlab_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("runner_targets", &self.runner_targets)
             .finish()
     }
 }
@@ -32,6 +49,7 @@ impl Default for AppConfig {
             poll_timeout_secs: 1800,
             gitlab_host: None,
             gitlab_token: None,
+            runner_targets: Vec::new(),
         }
     }
 }
@@ -76,6 +94,10 @@ impl AppConfig {
         let config: AppConfig = toml::from_str(toml_str)?;
         Ok(config)
     }
+
+    pub fn has_runner_targets(&self) -> bool {
+        !self.runner_targets.is_empty()
+    }
 }
 
 fn config_paths() -> Vec<PathBuf> {
@@ -107,6 +129,7 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
+        assert!(config.runner_targets.is_empty());
     }
 
     #[test]
@@ -116,6 +139,11 @@ mod tests {
             poll_timeout_secs = 900
             gitlab_host = "https://gitlab.example.com"
             gitlab_token = "glpat-test-token"
+            
+            [[runner_targets]]
+            kind = "group"
+            id = "my-org/platform"
+            label = "Platform"
         "#;
 
         let config = AppConfig::load_from_str(toml_str).unwrap();
@@ -126,6 +154,14 @@ mod tests {
             Some("https://gitlab.example.com".to_string())
         );
         assert_eq!(config.gitlab_token, Some("glpat-test-token".to_string()));
+        assert_eq!(
+            config.runner_targets,
+            vec![RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "my-org/platform".to_string(),
+                label: Some("Platform".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -139,6 +175,7 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
+        assert!(config.runner_targets.is_empty());
     }
 
     #[test]
@@ -164,6 +201,52 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
+        assert!(config.runner_targets.is_empty());
+    }
+
+    #[test]
+    fn test_load_from_toml_with_mixed_runner_targets() {
+        let toml_str = r#"
+            [[runner_targets]]
+            kind = "group"
+            id = "my-org/platform"
+
+            [[runner_targets]]
+            kind = "project"
+            id = "12345"
+            label = "App Project"
+        "#;
+
+        let config = AppConfig::load_from_str(toml_str).unwrap();
+        assert_eq!(
+            config.runner_targets,
+            vec![
+                RunnerTarget {
+                    kind: RunnerTargetKind::Group,
+                    id: "my-org/platform".to_string(),
+                    label: None,
+                },
+                RunnerTarget {
+                    kind: RunnerTargetKind::Project,
+                    id: "12345".to_string(),
+                    label: Some("App Project".to_string()),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn test_has_runner_targets() {
+        let mut config = AppConfig::default();
+        assert!(!config.has_runner_targets());
+
+        config.runner_targets.push(RunnerTarget {
+            kind: RunnerTargetKind::Group,
+            id: "my-org/platform".to_string(),
+            label: None,
+        });
+
+        assert!(config.has_runner_targets());
     }
 
     #[test]
@@ -202,6 +285,11 @@ mod tests {
             poll_timeout_secs: 1800,
             gitlab_host: Some("https://gitlab.com".to_string()),
             gitlab_token: Some("glpat-secret-token".to_string()),
+            runner_targets: vec![RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "my-org/platform".to_string(),
+                label: Some("Platform".to_string()),
+            }],
         };
 
         let debug_output = format!("{:?}", config);

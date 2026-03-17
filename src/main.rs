@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
-use config::AppConfig;
+use config::{AppConfig, RunnerTarget, RunnerTargetKind};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
 
     let conductor = if args.watch {
         let client = GitLabClient::new(host, token)?;
-        Conductor::new(client)
+        Conductor::new(client, config.runner_targets.clone())
     } else {
         bootstrap_interactive_conductor(host, token, config.clone()).await?
     };
@@ -157,14 +157,14 @@ async fn bootstrap_interactive_conductor(
 ) -> Result<Conductor> {
     loop {
         let client = GitLabClient::new(host.clone(), token.clone())?;
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(client, config.runner_targets.clone());
 
         match validate_interactive_credentials(&conductor).await {
             Ok(()) => return Ok(conductor),
             Err(error) if is_auth_error(&error) => {
                 println!("GitLab authentication failed during startup.");
                 println!(
-                    "Your configured token may be missing, expired, or lack `read_api` scope."
+                    "Your configured token may be missing, expired, or not accepted by the GitLab user API."
                 );
                 println!();
 
@@ -180,7 +180,7 @@ async fn bootstrap_interactive_conductor(
 }
 
 async fn validate_interactive_credentials(conductor: &Conductor) -> Result<()> {
-    conductor.fetch_runners(RunnerFilters::default()).await?;
+    conductor.validate_token().await?;
     Ok(())
 }
 
@@ -218,12 +218,13 @@ fn resolve_runtime_settings_with_env(
         let token = token.context(
             "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
         )?;
+        ensure_runner_targets_configured(&config)?;
         return Ok((host, token, config));
     }
 
-    match token {
-        Some(token) => Ok((host, token, config)),
-        None => run_first_time_setup(host, &mut config),
+    match (token, config.runner_targets.is_empty()) {
+        (Some(token), false) => Ok((host, token, config)),
+        (None, _) | (Some(_), true) => run_first_time_setup(host, &mut config),
     }
 }
 
@@ -231,15 +232,17 @@ fn run_first_time_setup(
     host: String,
     config: &mut AppConfig,
 ) -> Result<(String, String, AppConfig)> {
-    println!("No GitLab configuration found. Starting first-run setup.");
+    println!("GitLab configuration is incomplete. Starting setup.");
     println!("This will write a config file to the canonical gitlab-runner-tui config path.");
     println!();
 
     let host = prompt_with_default("GitLab host", &host)?;
     let token = prompt_required("GitLab personal access token (read_api scope)")?;
+    let runner_targets = prompt_runner_targets()?;
 
     config.gitlab_host = Some(host.clone());
     config.gitlab_token = Some(token.clone());
+    config.runner_targets = runner_targets;
 
     let saved_path = config.save_to_canonical_path()?;
 
@@ -249,6 +252,16 @@ fn run_first_time_setup(
     println!();
 
     Ok((host, token, config.clone()))
+}
+
+fn ensure_runner_targets_configured(config: &AppConfig) -> Result<()> {
+    if !config.has_runner_targets() {
+        anyhow::bail!(
+            "At least one runner target must be configured in config.toml. Use entries like group:my-org/platform or project:my-org/app during onboarding."
+        );
+    }
+
+    Ok(())
 }
 
 fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
@@ -279,6 +292,54 @@ fn prompt_required(prompt: &str) -> Result<String> {
 
         println!("A value is required.");
     }
+}
+
+fn prompt_runner_targets() -> Result<Vec<RunnerTarget>> {
+    loop {
+        print!("Runner targets (comma-separated, e.g. group:my-org/platform,project:my-org/app): ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        match parse_runner_targets(&input) {
+            Ok(targets) if !targets.is_empty() => return Ok(targets),
+            Ok(_) => println!("At least one runner target is required."),
+            Err(error) => println!("{error}"),
+        }
+    }
+}
+
+fn parse_runner_targets(input: &str) -> Result<Vec<RunnerTarget>> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(parse_runner_target)
+        .collect()
+}
+
+fn parse_runner_target(entry: &str) -> Result<RunnerTarget> {
+    let (kind, id) = entry
+        .split_once(':')
+        .context("Runner targets must use group:<id-or-path> or project:<id-or-path>")?;
+
+    let id = id.trim();
+    if id.is_empty() {
+        anyhow::bail!("Runner target identifiers cannot be empty");
+    }
+
+    let kind = match kind.trim() {
+        "group" => RunnerTargetKind::Group,
+        "project" => RunnerTargetKind::Project,
+        other => anyhow::bail!("Unsupported runner target kind: {other}"),
+    };
+
+    Ok(RunnerTarget {
+        kind,
+        id: id.to_string(),
+        label: None,
+    })
 }
 
 async fn run_headless(
@@ -414,7 +475,7 @@ fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::{Matcher, Server};
+    use mockito::Server;
 
     #[test]
     fn parses_supported_headless_commands() {
@@ -508,6 +569,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_mixed_runner_targets() {
+        let targets = parse_runner_targets("group:my-org/platform, project:42").unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].kind, RunnerTargetKind::Group);
+        assert_eq!(targets[0].id, "my-org/platform");
+        assert_eq!(targets[1].kind, RunnerTargetKind::Project);
+        assert_eq!(targets[1].id, "42");
+    }
+
+    #[test]
+    fn rejects_runner_targets_without_kind_prefix() {
+        let error = parse_runner_targets("my-org/platform")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("group:<id-or-path> or project:<id-or-path>"));
+    }
+
+    #[test]
     fn resolves_runtime_settings_from_config_for_interactive_mode() {
         let args = Args {
             host: None,
@@ -519,6 +599,11 @@ mod tests {
         let config = AppConfig {
             gitlab_host: Some("https://gitlab.example.com".to_string()),
             gitlab_token: Some("glpat-config-token".to_string()),
+            runner_targets: vec![RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "my-org/platform".to_string(),
+                label: None,
+            }],
             ..AppConfig::default()
         };
 
@@ -547,15 +632,28 @@ mod tests {
         assert!(error.contains("GITLAB_TOKEN must be set"));
     }
 
+    #[test]
+    fn watch_mode_requires_runner_targets() {
+        let args = Args {
+            host: None,
+            token: Some("glpat-test".to_string()),
+            watch: true,
+            command: "rotate".to_string(),
+            tags: None,
+        };
+
+        let error = resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("At least one runner target must be configured"));
+    }
+
     #[tokio::test]
     async fn detects_unauthorized_reqwest_errors() {
         let mut server = Server::new_async().await;
         let mock = server
-            .mock("GET", "/api/v4/runners/all")
-            .match_query(Matcher::AllOf(vec![
-                Matcher::UrlEncoded("per_page".into(), "100".into()),
-                Matcher::UrlEncoded("page".into(), "1".into()),
-            ]))
+            .mock("GET", "/api/v4/user")
             .match_header("PRIVATE-TOKEN", "bad-token")
             .with_status(401)
             .with_body(r#"{"message":"401 Unauthorized"}"#)
@@ -563,7 +661,14 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(server.url(), "bad-token".to_string()).unwrap();
-        let conductor = Conductor::new(client);
+        let conductor = Conductor::new(
+            client,
+            vec![RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "123".to_string(),
+                label: None,
+            }],
+        );
         let error = validate_interactive_credentials(&conductor)
             .await
             .unwrap_err();
