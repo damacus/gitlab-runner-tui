@@ -12,6 +12,8 @@ pub struct GitLabClient {
 
 impl GitLabClient {
     pub fn new(host: String, token: String) -> Result<Self> {
+        let host = normalize_host(&host);
+
         let mut headers = reqwest::header::HeaderMap::new();
         let mut auth_value =
             reqwest::header::HeaderValue::from_str(&token).context("Invalid token format")?;
@@ -203,6 +205,16 @@ fn encode_target_id(id: &str) -> String {
     encoded
 }
 
+fn normalize_host(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('/');
+
+    if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +255,12 @@ mod tests {
     }
 
     #[test]
+    fn test_client_creation_without_scheme() {
+        let client = GitLabClient::new("gitlab.example.com".to_string(), "token".to_string());
+        assert!(client.is_ok());
+    }
+
+    #[test]
     fn test_request_url_construction() {
         let client = GitLabClient::new(
             "https://gitlab.example.com".to_string(),
@@ -279,6 +297,18 @@ mod tests {
 
         let req = client_with_slash
             .request(Method::GET, "/runners")
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://gitlab.example.com/api/v4/runners"
+        );
+
+        let no_scheme_client =
+            GitLabClient::new("gitlab.example.com".to_string(), "token".to_string()).unwrap();
+
+        let req = no_scheme_client
+            .request(Method::GET, "runners")
             .build()
             .unwrap();
         assert_eq!(
