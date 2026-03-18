@@ -792,20 +792,7 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         })
         .unwrap_or_else(|| "-".to_string());
 
-    let url = {
-        let host = app
-            .config
-            .gitlab_host
-            .as_deref()
-            .unwrap_or("https://gitlab.com")
-            .trim_end_matches('/');
-        format!("{host}/admin/runners/{}", runner.id)
-    };
-
-    let mut items = vec![
-        ListItem::new(format!("ID: {}", runner.id)),
-        ListItem::new(format!("URL: {url}")),
-    ];
+    let mut items = vec![ListItem::new(format!("ID: {}", runner.id))];
 
     if let Some(desc) = &runner.description {
         if !desc.trim().is_empty() {
