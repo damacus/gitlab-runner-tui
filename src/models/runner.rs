@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, time::Instant};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct RunnerGroup {
+    pub id: u64,
+    pub name: String,
+    pub web_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Runner {
     pub id: u64,
     pub runner_type: String,
@@ -20,6 +27,8 @@ pub struct Runner {
     pub tag_list: Vec<String>,
     #[serde(default)]
     pub managers: Vec<RunnerManager>,
+    #[serde(default)]
+    pub groups: Vec<RunnerGroup>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -573,6 +582,7 @@ mod tests {
             revision: None,
             tag_list: vec!["alm".to_string()],
             managers,
+            groups: vec![],
         }
     }
 

@@ -775,48 +775,99 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         vec![ListItem::new(ratatui::text::Text::from(lines))]
     };
 
+    let display_type = match runner.runner_type.as_str() {
+        "project_type" => "project",
+        "group_type" => "group",
+        "instance_type" => "instance",
+        other => other,
+    };
+
+    let registered = runner
+        .created_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| {
+            let age = (now - dt.with_timezone(&Utc)).num_seconds().max(0) as u64;
+            format!("{} ago", format_age(age))
+        })
+        .unwrap_or_else(|| "-".to_string());
+
+    let url = {
+        let host = app
+            .config
+            .gitlab_host
+            .as_deref()
+            .unwrap_or("https://gitlab.com")
+            .trim_end_matches('/');
+        format!("{host}/admin/runners/{}", runner.id)
+    };
+
     let mut items = vec![
         ListItem::new(format!("ID: {}", runner.id)),
-        ListItem::new(format!(
-            "Last Contact: {}",
-            latest_runner_contact_label(runner, now)
-        )),
-        ListItem::new(format!(
-            "Version: {}",
-            runner.version.as_deref().unwrap_or("-")
-        )),
-        ListItem::new(format!(
-            "Revision: {}",
-            runner.revision.as_deref().unwrap_or("-")
-        )),
+        ListItem::new(format!("URL: {url}")),
     ];
 
+    if let Some(desc) = &runner.description {
+        if !desc.trim().is_empty() {
+            items.push(ListItem::new(format!("Name: {desc}")));
+        }
+    }
+
+    if runner.paused {
+        items.push(
+            ListItem::new("⚠  Paused — will not pick up jobs").style(styles::status_style("stale")),
+        );
+    }
+
+    items.push(ListItem::new(format!("Type: {display_type}")));
+
+    items.push(ListItem::new(format!(
+        "Last Contact: {}",
+        latest_runner_contact_label(runner, now)
+    )));
+    items.push(ListItem::new(format!("Registered: {registered}")));
+    items.push(ListItem::new(format!(
+        "Version: {}",
+        runner.version.as_deref().unwrap_or("-")
+    )));
+    items.push(ListItem::new(format!(
+        "Revision: {}",
+        runner.revision.as_deref().unwrap_or("-")
+    )));
+
+    if let Some(ip) = &runner.ip_address {
+        items.push(ListItem::new(format!("IP: {ip}")));
+    }
+
+    if !runner.groups.is_empty() {
+        let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
+        items.push(ListItem::new(format!("Groups: {}", group_names.join(", "))));
+    }
+
     items.extend(tag_items);
-
-    if !runner.runner_type.is_empty() {
-        let display_type = match runner.runner_type.as_str() {
-            "project_type" => "project",
-            "group_type" => "group",
-            "instance_type" => "instance",
-            other => other,
-        };
-        items.push(ListItem::new(format!("Type: {display_type}")));
-    }
-
-    if let Some(ip_address) = &runner.ip_address {
-        items.push(ListItem::new(format!("IP: {}", ip_address)));
-    }
 
     if !runner.managers.is_empty() {
         items.push(ListItem::new(" "));
         items.push(ListItem::new("Managers:").style(styles::accent_style()));
         for manager in &runner.managers {
+            let platform = match (manager.platform.as_deref(), manager.architecture.as_deref()) {
+                (Some(p), Some(a)) => format!("  {p}/{a}"),
+                (Some(p), None) => format!("  {p}"),
+                _ => String::new(),
+            };
+            let ip = manager
+                .ip_address
+                .as_deref()
+                .map(|ip| format!("  {ip}"))
+                .unwrap_or_default();
             items.push(ListItem::new(format!(
-                "{} [{}] {} {}",
+                "{} [{}] {} {}{}{}",
                 manager.system_id,
                 manager.status,
                 manager_contact_label(manager, now),
-                manager.version.as_deref().unwrap_or("-")
+                manager.version.as_deref().unwrap_or("-"),
+                platform,
+                ip,
             )));
         }
     }
@@ -1394,6 +1445,7 @@ mod tests {
             revision: Some("9ffb4aa0".to_string()),
             tag_list: tags.iter().map(|tag| tag.to_string()).collect(),
             managers,
+            groups: vec![],
         }
     }
 

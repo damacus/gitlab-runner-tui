@@ -4,7 +4,17 @@
       "Bash(cargo update:*)",
       "Bash(cargo build:*)",
       "Bash(cargo fmt:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo insta:*)",
+      "Bash(INSTA_UPDATE=always cargo test)",
+      "Bash(INSTA_UPDATE=unseen cargo test)",
+      "Bash(INSTA_UPDATE=unseen cargo test tui::ui)",
+      "Bash(cargo add:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(cargo doc:*)",
+      "Bash(/Users/damacus/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.5/skills/brainstorming/scripts/start-server.sh --project-dir /Users/damacus/repos/damacus/gitlab-runner-tui)",
+      "Bash(/Users/damacus/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.5/skills/brainstorming/scripts/stop-server.sh /Users/damacus/repos/damacus/gitlab-runner-tui/.superpowers/brainstorm/3148-1773865184)"
     ]
   }
 }

@@ -1622,6 +1622,7 @@ mod tests {
             revision: Some("abc123".to_string()),
             tag_list: vec!["prod".to_string(), "linux".to_string()],
             managers,
+            groups: vec![],
         }
     }
 

@@ -38,6 +38,7 @@ mod tests {
                 revision: None,
                 created_at: Some("2024-01-20T14:22:00.000Z".to_string()),
                 managers,
+                groups: vec![],
             });
         }
         runners

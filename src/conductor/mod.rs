@@ -1312,6 +1312,7 @@ mod tests {
             revision: Some("abc123".to_string()),
             tag_list: vec!["test".to_string()],
             managers,
+            groups: vec![],
         }
     }
 
