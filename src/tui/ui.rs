@@ -317,6 +317,14 @@ fn render_runner_like_tab(app: &mut App, frame: &mut Frame, area: Rect, rotating
         return;
     }
 
+    if app.detail_expanded {
+        let chunks =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+        render_runner_table(app, frame, chunks[0], rotating);
+        render_runner_detail_drawer(app, frame, chunks[1]);
+        return;
+    }
+
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
             let chunks =
@@ -601,6 +609,14 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
         return;
     }
 
+    if app.detail_expanded {
+        let chunks =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+        render_workers_table(app, frame, chunks[0]);
+        render_worker_detail(app, frame, chunks[1]);
+        return;
+    }
+
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
             let chunks =
@@ -773,6 +789,119 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
 
     let list = List::new(items).block(styles::block("Runner Detail"));
     frame.render_widget(list, area);
+}
+
+fn render_runner_detail_drawer(app: &App, frame: &mut Frame, area: Rect) {
+    let Some(runner) = app.selected_runner() else {
+        let paragraph = Paragraph::new("Select a runner to inspect its details.")
+            .style(styles::muted_style())
+            .block(styles::focused_block("Details  esc: close"));
+        frame.render_widget(paragraph, area);
+        return;
+    };
+
+    let now = Utc::now();
+
+    let status_indicator = if runner.status == "online" {
+        "●"
+    } else {
+        "○"
+    };
+    let title = format!(
+        "Runner #{}  {}  {}  ·  esc: close",
+        runner.id, status_indicator, runner.status
+    );
+    let outer = styles::focused_block(&title);
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let cols = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(35),
+        Constraint::Percentage(35),
+    ])
+    .split(inner);
+
+    // --- Column 1: identity fields ---
+    let display_type = match runner.runner_type.as_str() {
+        "project_type" => "project",
+        "group_type" => "group",
+        "instance_type" => "instance",
+        other => other,
+    };
+    let mut left_items = vec![
+        ListItem::new(format!(
+            "Version  {}",
+            runner.version.as_deref().unwrap_or("-")
+        )),
+        ListItem::new(format!(
+            "Revision {}",
+            runner.revision.as_deref().unwrap_or("-")
+        )),
+        ListItem::new(format!(
+            "Contact  {}",
+            latest_runner_contact_label(runner, now)
+        )),
+    ];
+    if !runner.runner_type.is_empty() {
+        left_items.push(ListItem::new(format!("Type     {display_type}")));
+    }
+    if let Some(ip) = &runner.ip_address {
+        left_items.push(ListItem::new(format!("IP       {ip}")));
+    }
+    let left_list = List::new(left_items).block(styles::block("Info"));
+    frame.render_widget(left_list, cols[0]);
+
+    // --- Column 2: tags ---
+    let inner_width = cols[1].width.saturating_sub(2) as usize;
+    let tag_items: Vec<ListItem> = if runner.tag_list.is_empty() {
+        vec![ListItem::new("-")]
+    } else {
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        let mut current_line = String::new();
+        for tag in &runner.tag_list {
+            let candidate = if current_line.is_empty() {
+                tag.clone()
+            } else {
+                format!("{}, {}", current_line, tag)
+            };
+            if !current_line.is_empty() && candidate.len() > inner_width {
+                lines.push(ratatui::text::Line::from(current_line.clone()));
+                current_line = tag.clone();
+            } else {
+                current_line = candidate;
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(ratatui::text::Line::from(current_line));
+        }
+        lines.into_iter().map(ListItem::new).collect()
+    };
+    let tags_list = List::new(tag_items).block(styles::block("Tags"));
+    frame.render_widget(tags_list, cols[1]);
+
+    // --- Column 3: managers ---
+    let mgr_items: Vec<ListItem> = if runner.managers.is_empty() {
+        vec![ListItem::new("-")]
+    } else {
+        runner
+            .managers
+            .iter()
+            .flat_map(|m| {
+                vec![
+                    ListItem::new(format!("{}  [{}]", m.system_id, m.status)),
+                    ListItem::new(format!(
+                        "  {} · {}",
+                        manager_contact_label(m, now),
+                        m.version.as_deref().unwrap_or("-")
+                    ))
+                    .style(styles::muted_style()),
+                ]
+            })
+            .collect()
+    };
+    let mgr_list = List::new(mgr_items).block(styles::block("Managers"));
+    frame.render_widget(mgr_list, cols[2]);
 }
 
 fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {

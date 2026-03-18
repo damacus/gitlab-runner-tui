@@ -340,6 +340,7 @@ pub struct App {
     pub tag_options: Vec<String>,
     pub selected_tags: Vec<String>,
     pub tag_list_state: ListState,
+    pub detail_expanded: bool,
     pub sort_key: RunnerSortKey,
     pub table_state: TableState,
     pub scroll_state: ScrollbarState,
@@ -390,6 +391,7 @@ impl App {
             tag_options: Vec::new(),
             selected_tags: Vec::new(),
             tag_list_state: ListState::default(),
+            detail_expanded: false,
             sort_key: RunnerSortKey::None,
             table_state: TableState::default(),
             scroll_state: ScrollbarState::default(),
@@ -475,6 +477,7 @@ impl App {
 
     fn on_tab_changed(&mut self) {
         self.error_message = None;
+        self.detail_expanded = false;
         self.table_state.select(None);
         self.update_scroll_state();
     }
@@ -1461,9 +1464,17 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.start_search();
+                if self.table_state.selected().is_some() {
+                    self.detail_expanded = true;
+                } else {
+                    self.start_search();
+                }
             }
             KeyCode::Esc => {
+                if self.detail_expanded {
+                    self.detail_expanded = false;
+                    return;
+                }
                 self.error_message = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
