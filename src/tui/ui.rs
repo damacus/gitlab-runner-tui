@@ -10,7 +10,7 @@ use crate::tui::{
 };
 use chrono::Utc;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     text::{Line, Span},
     widgets::{
         Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
@@ -32,16 +32,14 @@ fn display_or_dash(value: &str) -> &str {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .split(frame.area());
 
     render_header(app, frame, chunks[0]);
     render_tabs(app, frame, chunks[1]);
@@ -62,30 +60,23 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - height_percent) / 2),
-            Constraint::Percentage(height_percent),
-            Constraint::Percentage((100 - height_percent) / 2),
-        ])
-        .split(area);
+    let vert = Layout::vertical([
+        Constraint::Percentage((100 - height_percent) / 2),
+        Constraint::Percentage(height_percent),
+        Constraint::Percentage((100 - height_percent) / 2),
+    ])
+    .split(area);
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - width_percent) / 2),
-            Constraint::Percentage(width_percent),
-            Constraint::Percentage((100 - width_percent) / 2),
-        ])
-        .split(popup_layout[1])[1]
+    Layout::horizontal([
+        Constraint::Percentage((100 - width_percent) / 2),
+        Constraint::Percentage(width_percent),
+        Constraint::Percentage((100 - width_percent) / 2),
+    ])
+    .split(vert[1])[1]
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(42)])
-        .split(area);
+    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(42)]).split(area);
 
     let title = if app.is_loading {
         format!(
@@ -283,10 +274,7 @@ fn render_error(error: &str, frame: &mut Frame, area: Rect) {
 }
 
 fn render_health_tab(app: &mut App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(1)])
-        .split(area);
+    let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).split(area);
 
     render_health_summary(app, frame, chunks[0]);
     render_runners_tab(app, frame, chunks[1]);
@@ -337,18 +325,14 @@ fn render_runner_like_tab(app: &mut App, frame: &mut Frame, area: Rect, rotating
 
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
-                .split(area);
+            let chunks =
+                Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)])
+                    .split(area);
             render_runner_table(app, frame, chunks[0], rotating);
             render_runner_detail(app, frame, chunks[1]);
         }
         DetailLayoutMode::BottomPanel => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(10)])
-                .split(area);
+            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).split(area);
             render_runner_table(app, frame, chunks[0], rotating);
             render_runner_detail(app, frame, chunks[1]);
         }
@@ -372,6 +356,53 @@ fn header_with_indicator(
         Cell::from(format!("{label} {symbol}"))
     } else {
         Cell::from(label.to_string())
+    }
+}
+
+fn sort_column_index(rotating: bool, tab: Tab, sort_key: RunnerSortKey) -> Option<usize> {
+    if sort_key == RunnerSortKey::None {
+        return None;
+    }
+    if rotating {
+        return match sort_key {
+            RunnerSortKey::Status => Some(3),
+            RunnerSortKey::LastContact => Some(4),
+            _ => None,
+        };
+    }
+    match tab {
+        Tab::Runners => match sort_key {
+            RunnerSortKey::Status => Some(1),
+            RunnerSortKey::Version => Some(2),
+            RunnerSortKey::LastContact => Some(3),
+            RunnerSortKey::Tags => Some(4),
+            RunnerSortKey::Managers => Some(5),
+            _ => None,
+        },
+        Tab::Health => match sort_key {
+            RunnerSortKey::Status => Some(1),
+            RunnerSortKey::Version => Some(2),
+            RunnerSortKey::LastContact => Some(3),
+            RunnerSortKey::Managers => Some(4),
+            _ => None,
+        },
+        Tab::Offline | Tab::Uncontacted => match sort_key {
+            RunnerSortKey::Version => Some(1),
+            RunnerSortKey::LastContact => Some(2),
+            RunnerSortKey::Managers => Some(3),
+            _ => None,
+        },
+        Tab::Empty => match sort_key {
+            RunnerSortKey::Version => Some(1),
+            RunnerSortKey::Status => Some(2),
+            _ => None,
+        },
+        Tab::Workers => match sort_key {
+            RunnerSortKey::Status => Some(3),
+            RunnerSortKey::LastContact => Some(4),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -553,9 +584,13 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         }
     };
 
+    let col_idx = sort_column_index(rotating, active_tab, active_sort);
+    app.table_state.select_column(col_idx);
+
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(styles::selected_row_style())
+        .column_highlight_style(styles::sort_column_style())
         .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -574,18 +609,14 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
 
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-                .split(area);
+            let chunks =
+                Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+                    .split(area);
             render_workers_table(app, frame, chunks[0]);
             render_worker_detail(app, frame, chunks[1]);
         }
         DetailLayoutMode::BottomPanel => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(10)])
-                .split(area);
+            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).split(area);
             render_workers_table(app, frame, chunks[0]);
             render_worker_detail(app, frame, chunks[1]);
         }
@@ -627,10 +658,16 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(14),
         ],
-    )
-    .header(header)
-    .row_highlight_style(styles::selected_row_style())
-    .block(styles::block(app.current_tab_title()));
+    );
+
+    let col_idx = sort_column_index(false, Tab::Workers, app.effective_sort_key());
+    app.table_state.select_column(col_idx);
+
+    let table = table
+        .header(header)
+        .row_highlight_style(styles::selected_row_style())
+        .column_highlight_style(styles::sort_column_style())
+        .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
     render_table_scrollbar(app, frame, area);
@@ -783,14 +820,12 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     let area = centered_rect(55, 65, frame.area());
     frame.render_widget(Clear, area);
 
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(47),
-            Constraint::Percentage(47),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let sections = Layout::vertical([
+        Constraint::Percentage(47),
+        Constraint::Percentage(47),
+        Constraint::Length(1),
+    ])
+    .split(area);
 
     // --- Tags section ---
     let tags_focused = app.filter_popup_section == FilterPopupSection::Tags;
@@ -876,15 +911,13 @@ fn render_settings_modal(app: &mut App, frame: &mut Frame) {
     let area = centered_rect(72, 70, frame.area());
     frame.render_widget(Clear, area);
 
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Min(8),
-            Constraint::Length(3),
-        ])
-        .split(area);
+    let sections = Layout::vertical([
+        Constraint::Length(10),
+        Constraint::Length(8),
+        Constraint::Min(8),
+        Constraint::Length(3),
+    ])
+    .split(area);
 
     render_connection_section(app, frame, sections[0]);
     render_behavior_section(app, frame, sections[1]);
@@ -1158,10 +1191,8 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         horizontal: 1,
         vertical: 1,
     });
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(shortcuts_width)])
-        .split(inner);
+    let cols =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcuts_width)]).split(inner);
 
     let block = styles::block("Status");
     frame.render_widget(block, area);

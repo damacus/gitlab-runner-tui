@@ -86,6 +86,10 @@ pub fn active_tab_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+pub fn sort_column_style() -> Style {
+    Style::default().fg(COLOR_ACCENT_DIM)
+}
+
 pub fn error_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()

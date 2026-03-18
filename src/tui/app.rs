@@ -945,14 +945,11 @@ impl App {
         if len == 0 {
             return;
         }
-
-        let index = match self.table_state.selected() {
-            Some(selected) if selected >= len - 1 => 0,
-            Some(selected) => selected + 1,
-            None => 0,
-        };
-
-        self.table_state.select(Some(index));
+        if self.table_state.selected().is_some_and(|i| i >= len - 1) {
+            self.table_state.select_first();
+        } else {
+            self.table_state.select_next();
+        }
         self.update_scroll_state();
     }
 
@@ -961,14 +958,11 @@ impl App {
         if len == 0 {
             return;
         }
-
-        let index = match self.table_state.selected() {
-            Some(0) => len - 1,
-            Some(selected) => selected - 1,
-            None => 0,
-        };
-
-        self.table_state.select(Some(index));
+        if self.table_state.selected().is_none_or(|i| i == 0) {
+            self.table_state.select(Some(len - 1));
+        } else {
+            self.table_state.select_previous();
+        }
         self.update_scroll_state();
     }
 
@@ -1199,45 +1193,25 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
                     FilterPopupSection::Tags => {
-                        let len = self.tag_options.len();
-                        if len > 0 {
-                            let next = match self.tag_list_state.selected() {
-                                Some(0) | None => len - 1,
-                                Some(i) => i - 1,
-                            };
-                            self.tag_list_state.select(Some(next));
+                        if !self.tag_options.is_empty() {
+                            self.tag_list_state.select_previous();
                         }
                     }
                     FilterPopupSection::Versions => {
-                        let len = self.version_options.len();
-                        if len > 0 {
-                            let next = match self.version_list_state.selected() {
-                                Some(0) | None => len - 1,
-                                Some(i) => i - 1,
-                            };
-                            self.version_list_state.select(Some(next));
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_previous();
                         }
                     }
                 },
                 KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
                     FilterPopupSection::Tags => {
-                        let len = self.tag_options.len();
-                        if len > 0 {
-                            let next = match self.tag_list_state.selected() {
-                                Some(i) if i + 1 < len => i + 1,
-                                _ => 0,
-                            };
-                            self.tag_list_state.select(Some(next));
+                        if !self.tag_options.is_empty() {
+                            self.tag_list_state.select_next();
                         }
                     }
                     FilterPopupSection::Versions => {
-                        let len = self.version_options.len();
-                        if len > 0 {
-                            let next = match self.version_list_state.selected() {
-                                Some(i) if i + 1 < len => i + 1,
-                                _ => 0,
-                            };
-                            self.version_list_state.select(Some(next));
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_next();
                         }
                     }
                 },
@@ -1421,6 +1395,31 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.next_result();
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                if self.active_result_len() > 0 {
+                    self.table_state.select_first();
+                    self.update_scroll_state();
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                let len = self.active_result_len();
+                if len > 0 {
+                    self.table_state.select(Some(len - 1));
+                    self.update_scroll_state();
+                }
+            }
+            KeyCode::PageDown => {
+                if self.active_result_len() > 0 {
+                    self.table_state.scroll_down_by(10);
+                    self.update_scroll_state();
+                }
+            }
+            KeyCode::PageUp => {
+                if self.active_result_len() > 0 {
+                    self.table_state.scroll_up_by(10);
+                    self.update_scroll_state();
+                }
             }
             KeyCode::Backspace => {
                 self.error_message = None;
