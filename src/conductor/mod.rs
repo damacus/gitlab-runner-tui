@@ -78,6 +78,71 @@ impl Conductor {
         let mut request_counts = QueryRequestCounts::default();
 
         match self.discovery_mode {
+            RunnerDiscoveryMode::AllRunners => {
+                // Try /runners/all (admin-only); fall back to /runners on 403.
+                let first = self.client.fetch_all_runners(&filters, 1, per_page).await;
+
+                let use_admin = match &first {
+                    Ok(_) => true,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        // 403 means not an admin — fall back silently
+                        !msg.contains("403")
+                    }
+                };
+
+                if use_admin {
+                    // First page already fetched; continue from page 2
+                    let first_page = first?;
+                    request_counts.list_requests += 1;
+                    let first_len = first_page.len();
+                    for runner in first_page {
+                        runner_map.entry(runner.id).or_insert(runner);
+                    }
+                    if first_len >= per_page as usize {
+                        let mut page = 2;
+                        loop {
+                            request_counts.list_requests += 1;
+                            let runners = self
+                                .client
+                                .fetch_all_runners(&filters, page, per_page)
+                                .await?;
+                            if runners.is_empty() {
+                                break;
+                            }
+                            let count = runners.len();
+                            for runner in runners {
+                                runner_map.entry(runner.id).or_insert(runner);
+                            }
+                            if count < per_page as usize {
+                                break;
+                            }
+                            page += 1;
+                        }
+                    }
+                } else {
+                    // Fallback: /runners (visible to current user)
+                    let mut page = 1;
+                    loop {
+                        request_counts.list_requests += 1;
+                        let runners = self
+                            .client
+                            .fetch_available_runners(&filters, page, per_page)
+                            .await?;
+                        if runners.is_empty() {
+                            break;
+                        }
+                        let count = runners.len();
+                        for runner in runners {
+                            runner_map.entry(runner.id).or_insert(runner);
+                        }
+                        if count < per_page as usize {
+                            break;
+                        }
+                        page += 1;
+                    }
+                }
+            }
             RunnerDiscoveryMode::VisibleRunners => {
                 let mut page = 1;
 

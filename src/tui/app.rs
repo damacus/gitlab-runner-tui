@@ -1234,12 +1234,11 @@ impl App {
                     ) =>
                 {
                     self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
-                        RunnerDiscoveryMode::ConfiguredTargets => {
-                            RunnerDiscoveryMode::VisibleRunners
-                        }
+                        RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
                         RunnerDiscoveryMode::VisibleRunners => {
                             RunnerDiscoveryMode::ConfiguredTargets
                         }
+                        RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
                     };
                 }
                 KeyCode::Backspace => {
@@ -1275,6 +1274,9 @@ impl App {
                         }
                         'v' | 'V' => {
                             self.settings_draft.discovery_mode = RunnerDiscoveryMode::VisibleRunners
+                        }
+                        'a' | 'A' => {
+                            self.settings_draft.discovery_mode = RunnerDiscoveryMode::AllRunners
                         }
                         _ => {}
                     }

@@ -910,8 +910,9 @@ fn render_settings_modal(app: &mut App, frame: &mut Frame) {
 
 fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
     let mode_label = match app.settings_draft.discovery_mode {
-        RunnerDiscoveryMode::ConfiguredTargets => "Targets",
+        RunnerDiscoveryMode::AllRunners => "All runners (/runners/all → /runners)",
         RunnerDiscoveryMode::VisibleRunners => "Visible runners (/runners)",
+        RunnerDiscoveryMode::ConfiguredTargets => "Targets",
     };
     let is_token_selected = app.settings_draft.selected_field == SettingsField::Token;
     let token_display = if is_token_selected {
@@ -982,8 +983,9 @@ fn render_diagnostics_section(app: &App, frame: &mut Frame, area: Rect) {
 
     if let Some(metrics) = &app.live_query_metrics {
         let mode = match metrics.discovery_mode {
-            RunnerDiscoveryMode::ConfiguredTargets => "targets",
+            RunnerDiscoveryMode::AllRunners => "/runners/all",
             RunnerDiscoveryMode::VisibleRunners => "/runners",
+            RunnerDiscoveryMode::ConfiguredTargets => "targets",
         };
         lines.push(Line::from(format!(
             "Live query: {} ms | {} results | mode {} | requests L/D/M {}/{}/{}",

@@ -100,6 +100,16 @@ impl GitLabClient {
             .await
     }
 
+    pub async fn fetch_all_runners(
+        &self,
+        filters: &RunnerFilters,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Runner>> {
+        self.fetch_runners_from_endpoint("runners/all", filters, page, per_page)
+            .await
+    }
+
     pub async fn fetch_target_runners(
         &self,
         target: &RunnerTarget,

@@ -293,11 +293,12 @@ fn prompt_required(prompt: &str) -> Result<String> {
 fn prompt_discovery_mode(default: RunnerDiscoveryMode) -> Result<RunnerDiscoveryMode> {
     loop {
         let default_label = match default {
+            RunnerDiscoveryMode::AllRunners => "all",
             RunnerDiscoveryMode::ConfiguredTargets => "targets",
             RunnerDiscoveryMode::VisibleRunners => "visible",
         };
 
-        print!("Discovery mode [targets/visible] [{}]: ", default_label);
+        print!("Discovery mode [all/targets/visible] [{}]: ", default_label);
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -305,11 +306,12 @@ fn prompt_discovery_mode(default: RunnerDiscoveryMode) -> Result<RunnerDiscovery
 
         match input.trim() {
             "" => return Ok(default),
+            "all" | "/runners/all" => return Ok(RunnerDiscoveryMode::AllRunners),
             "targets" | "target" | "configured" => {
                 return Ok(RunnerDiscoveryMode::ConfiguredTargets)
             }
             "visible" | "runners" | "/runners" => return Ok(RunnerDiscoveryMode::VisibleRunners),
-            _ => println!("Choose either 'targets' or 'visible'."),
+            _ => println!("Choose 'all', 'targets', or 'visible'."),
         }
     }
 }

@@ -7,11 +7,13 @@ use std::path::PathBuf;
 pub enum RunnerDiscoveryMode {
     ConfiguredTargets,
     VisibleRunners,
+    /// Calls /api/v4/runners/all (admin only); falls back to /api/v4/runners on 403.
+    AllRunners,
 }
 
 impl Default for RunnerDiscoveryMode {
     fn default() -> Self {
-        Self::VisibleRunners
+        Self::AllRunners
     }
 }
 
