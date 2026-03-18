@@ -821,19 +821,55 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     frame.render_widget(Clear, area);
 
     let sections = Layout::vertical([
-        Constraint::Percentage(47),
-        Constraint::Percentage(47),
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Percentage(35),
         Constraint::Length(1),
     ])
     .split(area);
 
+    // --- Tag search section ---
+    let search_focused = app.filter_popup_section == FilterPopupSection::TagSearch;
+    let search_title = if search_focused {
+        "▶ Search Tags"
+    } else {
+        "  Search Tags"
+    };
+    let search_text = if search_focused {
+        format!("{}█", app.tag_search_input)
+    } else if app.tag_search_input.is_empty() {
+        "Type to filter tags...".to_string()
+    } else {
+        app.tag_search_input.clone()
+    };
+    let search_style = if search_focused {
+        styles::selected_row_style()
+    } else if app.tag_search_input.is_empty() {
+        styles::muted_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    let search_widget = ratatui::widgets::Paragraph::new(search_text)
+        .style(search_style)
+        .block(if search_focused {
+            styles::focused_block(search_title)
+        } else {
+            styles::block(search_title)
+        });
+    frame.render_widget(search_widget, sections[0]);
+
     // --- Tags section ---
     let tags_focused = app.filter_popup_section == FilterPopupSection::Tags;
     let tags_title = if tags_focused { "▶ Tags" } else { "  Tags" };
-    let tag_items: Vec<ListItem> = if app.tag_options.is_empty() {
-        vec![ListItem::new("No tags discovered yet.")]
+    let filtered_tags: Vec<&String> = app.filtered_tag_options().collect();
+    let tag_items: Vec<ListItem> = if filtered_tags.is_empty() {
+        vec![ListItem::new(if app.tag_options.is_empty() {
+            "No tags discovered yet."
+        } else {
+            "No tags match the search."
+        })]
     } else {
-        app.tag_options
+        filtered_tags
             .iter()
             .map(|tag| {
                 let marker = if app.selected_tags.contains(tag) {
@@ -857,9 +893,9 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(tags_title)
         });
     if tags_focused {
-        frame.render_stateful_widget(tags_list, sections[0], &mut app.tag_list_state);
+        frame.render_stateful_widget(tags_list, sections[1], &mut app.tag_list_state);
     } else {
-        frame.render_widget(tags_list, sections[0]);
+        frame.render_widget(tags_list, sections[1]);
     }
 
     // --- Versions section ---
@@ -896,15 +932,16 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(versions_title)
         });
     if versions_focused {
-        frame.render_stateful_widget(versions_list, sections[1], &mut app.version_list_state);
+        frame.render_stateful_widget(versions_list, sections[2], &mut app.version_list_state);
     } else {
-        frame.render_widget(versions_list, sections[1]);
+        frame.render_widget(versions_list, sections[2]);
     }
 
     // --- Footer ---
-    let footer = Paragraph::new("space:toggle  tab:switch section  a:clear section  esc:close")
-        .style(styles::muted_style());
-    frame.render_widget(footer, sections[2]);
+    let footer =
+        Paragraph::new("type:search  space:toggle  tab:switch section  a:clear section  esc:close")
+            .style(styles::muted_style());
+    frame.render_widget(footer, sections[3]);
 }
 
 fn render_settings_modal(app: &mut App, frame: &mut Frame) {

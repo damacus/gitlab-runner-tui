@@ -192,10 +192,8 @@ fn config_paths() -> Vec<PathBuf> {
     }
 
     // ~/.config/gitlab-runner-tui/config.toml (canonical)
-    // ~/.config/igor/config.toml (legacy fallback for backward compatibility)
     if let Some(config_dir) = dirs::config_dir() {
         paths.push(config_dir.join("gitlab-runner-tui").join("config.toml"));
-        paths.push(config_dir.join("igor").join("config.toml"));
     }
 
     paths
@@ -435,7 +433,6 @@ mod tests {
 
         if let Some(config_dir) = dirs::config_dir() {
             assert!(paths.contains(&config_dir.join("gitlab-runner-tui").join("config.toml")));
-            assert!(paths.contains(&config_dir.join("igor").join("config.toml")));
         }
     }
 

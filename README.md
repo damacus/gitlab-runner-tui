@@ -69,8 +69,6 @@ kind = "project"
 id = "my-org/app"
 ```
 
-The legacy path `~/.config/igor/config.toml` is still read as a fallback for backward compatibility.
-
 If you launch the interactive TUI without a configured token, with a stale/invalid token, or without runner targets, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
 
 Runner discovery now comes from configured group/project targets instead of instance-wide runner listing. This is what makes normal GitLab.com usage possible.
@@ -79,7 +77,6 @@ Optional `config.toml` file locations (checked in this order):
 
 1. `./config.toml` (current working directory)
 2. `~/.config/gitlab-runner-tui/config.toml` (canonical)
-3. `~/.config/igor/config.toml` (legacy fallback)
 
 Example:
 

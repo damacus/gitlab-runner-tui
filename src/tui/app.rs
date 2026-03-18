@@ -139,6 +139,7 @@ pub enum AppMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FilterPopupSection {
     #[default]
+    TagSearch,
     Tags,
     Versions,
 }
@@ -334,6 +335,7 @@ pub struct App {
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
     pub filter_popup_section: FilterPopupSection,
+    pub tag_search_input: String,
     pub tag_options: Vec<String>,
     pub selected_tags: Vec<String>,
     pub tag_list_state: ListState,
@@ -382,6 +384,7 @@ impl App {
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
             filter_popup_section: FilterPopupSection::default(),
+            tag_search_input: String::new(),
             tag_options: Vec::new(),
             selected_tags: Vec::new(),
             tag_list_state: ListState::default(),
@@ -481,7 +484,9 @@ impl App {
 
     pub fn open_filter_popup(&mut self) {
         self.mode = AppMode::FilterPopup;
-        if self.tag_options.is_empty() {
+        self.filter_popup_section = FilterPopupSection::TagSearch;
+        let filtered_count = self.filtered_tag_options().count();
+        if filtered_count == 0 {
             self.tag_list_state.select(None);
         } else if self.tag_list_state.selected().is_none() {
             self.tag_list_state.select(Some(0));
@@ -1021,11 +1026,25 @@ impl App {
         }
     }
 
+    pub fn filtered_tag_options(&self) -> impl Iterator<Item = &String> {
+        let query = self.tag_search_input.to_lowercase();
+        self.tag_options
+            .iter()
+            .filter(move |t| query.is_empty() || t.to_lowercase().contains(&query))
+    }
+
     pub fn toggle_selected_tag(&mut self) {
         let Some(index) = self.tag_list_state.selected() else {
             return;
         };
-        let Some(tag) = self.tag_options.get(index).cloned() else {
+        let query = self.tag_search_input.to_lowercase();
+        let Some(tag) = self
+            .tag_options
+            .iter()
+            .filter(|t| query.is_empty() || t.to_lowercase().contains(&query))
+            .nth(index)
+            .cloned()
+        else {
             return;
         };
 
@@ -1181,59 +1200,119 @@ impl App {
         }
 
         if self.mode == AppMode::FilterPopup {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('f') => {
-                    self.mode = AppMode::Dashboard;
-                }
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.filter_popup_section = match self.filter_popup_section {
-                        FilterPopupSection::Tags => FilterPopupSection::Versions,
-                        FilterPopupSection::Versions => FilterPopupSection::Tags,
-                    };
-                }
-                KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
-                    FilterPopupSection::Tags => {
-                        if !self.tag_options.is_empty() {
-                            self.tag_list_state.select_previous();
+            match self.filter_popup_section {
+                FilterPopupSection::TagSearch => match key.code {
+                    KeyCode::Esc => {
+                        if !self.tag_search_input.is_empty() {
+                            self.tag_search_input.clear();
+                            let filtered_count = self.filtered_tag_options().count();
+                            if filtered_count == 0 {
+                                self.tag_list_state.select(None);
+                            } else {
+                                self.tag_list_state.select(Some(0));
+                            }
+                        } else {
+                            self.mode = AppMode::Dashboard;
                         }
                     }
-                    FilterPopupSection::Versions => {
-                        if !self.version_options.is_empty() {
-                            self.version_list_state.select_previous();
+                    KeyCode::Char('f') if key.modifiers.is_empty() => {
+                        self.mode = AppMode::Dashboard;
+                    }
+                    KeyCode::Tab => {
+                        self.filter_popup_section = FilterPopupSection::Tags;
+                    }
+                    KeyCode::BackTab => {
+                        self.filter_popup_section = FilterPopupSection::Versions;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.filter_popup_section = FilterPopupSection::Tags;
+                    }
+                    KeyCode::Backspace => {
+                        self.tag_search_input.pop();
+                        let filtered_count = self.filtered_tag_options().count();
+                        if filtered_count == 0 {
+                            self.tag_list_state.select(None);
+                        } else {
+                            self.tag_list_state.select(Some(0));
                         }
                     }
+                    KeyCode::Char(c) => {
+                        self.tag_search_input.push(c);
+                        let filtered_count = self.filtered_tag_options().count();
+                        if filtered_count == 0 {
+                            self.tag_list_state.select(None);
+                        } else {
+                            self.tag_list_state.select(Some(0));
+                        }
+                    }
+                    _ => {}
                 },
-                KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
-                    FilterPopupSection::Tags => {
-                        if !self.tag_options.is_empty() {
-                            self.tag_list_state.select_next();
-                        }
+                FilterPopupSection::Tags | FilterPopupSection::Versions => match key.code {
+                    KeyCode::Esc | KeyCode::Char('f') => {
+                        self.mode = AppMode::Dashboard;
                     }
-                    FilterPopupSection::Versions => {
-                        if !self.version_options.is_empty() {
-                            self.version_list_state.select_next();
-                        }
+                    KeyCode::Tab => {
+                        self.filter_popup_section = match self.filter_popup_section {
+                            FilterPopupSection::Tags => FilterPopupSection::Versions,
+                            FilterPopupSection::Versions => FilterPopupSection::TagSearch,
+                            FilterPopupSection::TagSearch => unreachable!(),
+                        };
                     }
+                    KeyCode::BackTab => {
+                        self.filter_popup_section = match self.filter_popup_section {
+                            FilterPopupSection::Tags => FilterPopupSection::TagSearch,
+                            FilterPopupSection::Versions => FilterPopupSection::Tags,
+                            FilterPopupSection::TagSearch => unreachable!(),
+                        };
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
+                        FilterPopupSection::Tags => {
+                            if self.filtered_tag_options().count() > 0 {
+                                self.tag_list_state.select_previous();
+                            }
+                        }
+                        FilterPopupSection::Versions => {
+                            if !self.version_options.is_empty() {
+                                self.version_list_state.select_previous();
+                            }
+                        }
+                        FilterPopupSection::TagSearch => unreachable!(),
+                    },
+                    KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
+                        FilterPopupSection::Tags => {
+                            if self.filtered_tag_options().count() > 0 {
+                                self.tag_list_state.select_next();
+                            }
+                        }
+                        FilterPopupSection::Versions => {
+                            if !self.version_options.is_empty() {
+                                self.version_list_state.select_next();
+                            }
+                        }
+                        FilterPopupSection::TagSearch => unreachable!(),
+                    },
+                    KeyCode::Char(' ') => match self.filter_popup_section {
+                        FilterPopupSection::Tags => self.toggle_selected_tag(),
+                        FilterPopupSection::Versions => self.toggle_selected_version(),
+                        FilterPopupSection::TagSearch => unreachable!(),
+                    },
+                    KeyCode::Char('a') | KeyCode::Backspace => match self.filter_popup_section {
+                        FilterPopupSection::Tags => {
+                            self.selected_tags.clear();
+                            if self.has_loaded_active_tab() {
+                                self.apply_view_state(self.active_tab());
+                            }
+                        }
+                        FilterPopupSection::Versions => {
+                            self.selected_versions.clear();
+                            if self.has_loaded_active_tab() {
+                                self.apply_view_state(self.active_tab());
+                            }
+                        }
+                        FilterPopupSection::TagSearch => unreachable!(),
+                    },
+                    _ => {}
                 },
-                KeyCode::Char(' ') => match self.filter_popup_section {
-                    FilterPopupSection::Tags => self.toggle_selected_tag(),
-                    FilterPopupSection::Versions => self.toggle_selected_version(),
-                },
-                KeyCode::Char('a') | KeyCode::Backspace => match self.filter_popup_section {
-                    FilterPopupSection::Tags => {
-                        self.selected_tags.clear();
-                        if self.has_loaded_active_tab() {
-                            self.apply_view_state(self.active_tab());
-                        }
-                    }
-                    FilterPopupSection::Versions => {
-                        self.selected_versions.clear();
-                        if self.has_loaded_active_tab() {
-                            self.apply_view_state(self.active_tab());
-                        }
-                    }
-                },
-                _ => {}
             }
             return;
         }
@@ -1644,7 +1723,7 @@ mod tests {
     #[test]
     fn test_app_initial_filter_popup_fields() {
         let app = test_app();
-        assert_eq!(app.filter_popup_section, FilterPopupSection::Tags);
+        assert_eq!(app.filter_popup_section, FilterPopupSection::TagSearch);
         assert!(app.tag_options.is_empty());
         assert!(app.selected_tags.is_empty());
         assert_eq!(app.tag_list_state.selected(), None);
@@ -1874,7 +1953,7 @@ mod tests {
         app.filter_popup_section = FilterPopupSection::Versions;
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.filter_popup_section, FilterPopupSection::Tags);
+        assert_eq!(app.filter_popup_section, FilterPopupSection::TagSearch);
     }
 
     #[tokio::test]
