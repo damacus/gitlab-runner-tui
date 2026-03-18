@@ -753,6 +753,9 @@ impl App {
                 self.manager_rows.clear();
                 self.health_summary = None;
                 self.version_options.clear();
+                self.tag_options.clear();
+                self.selected_tags.clear();
+                self.selected_versions.clear();
                 self.table_state.select(None);
                 self.update_scroll_state();
                 self.last_fetch_failed = true;
@@ -1014,6 +1017,8 @@ impl App {
                 self.health_summary = None;
                 self.version_options.clear();
                 self.selected_versions.clear();
+                self.tag_options.clear();
+                self.selected_tags.clear();
                 self.table_state.select(None);
                 self.update_scroll_state();
                 self.execute_search().await;
@@ -1745,7 +1750,112 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
             .await;
 
+        assert_eq!(app.mode, AppMode::FilterPopup);
+    }
+
+    #[tokio::test]
+    async fn test_f_key_opens_filter_popup() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::FilterPopup);
+    }
+
+    #[tokio::test]
+    async fn test_slash_key_opens_filter_popup() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::FilterPopup);
+    }
+
+    #[tokio::test]
+    async fn test_t_key_opens_filter_input() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE))
+            .await;
         assert_eq!(app.mode, AppMode::FilterInput);
+    }
+
+    #[tokio::test]
+    async fn test_v_key_does_nothing_in_dashboard() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn test_esc_closes_filter_popup() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn test_f_key_closes_filter_popup() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn test_slash_inside_filter_popup_is_noop() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.mode, AppMode::FilterPopup);
+    }
+
+    #[tokio::test]
+    async fn test_tab_switches_section_tags_to_versions() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Tags;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.filter_popup_section, FilterPopupSection::Versions);
+    }
+
+    #[tokio::test]
+    async fn test_tab_switches_section_versions_to_tags() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Versions;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.filter_popup_section, FilterPopupSection::Tags);
+    }
+
+    #[tokio::test]
+    async fn test_a_clears_focused_tags_section_only() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Tags;
+        app.selected_tags = vec!["docker".to_owned()];
+        app.selected_versions = vec!["17.5.0".to_owned()];
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+            .await;
+        assert!(app.selected_tags.is_empty());
+        assert_eq!(app.selected_versions, vec!["17.5.0".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn test_backspace_clears_focused_versions_section_only() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Versions;
+        app.selected_tags = vec!["docker".to_owned()];
+        app.selected_versions = vec!["17.5.0".to_owned()];
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .await;
+        assert!(app.selected_versions.is_empty());
+        assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
     }
 
     #[tokio::test]
