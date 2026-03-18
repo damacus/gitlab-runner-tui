@@ -1,5 +1,5 @@
 use crate::config::RunnerDiscoveryMode;
-use crate::models::runner::RunnerSortKey;
+use crate::models::runner::{RunnerSortKey, TagFilterMode};
 use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
@@ -176,35 +176,29 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let has_active_filter = has_text || has_popup_tags;
 
     let title = if app.mode == AppMode::FilterInput {
-        "Filter Tags [t] (focused)"
-    } else if has_active_filter {
-        "Currently active filter"
+        "Active Filters (editing)"
     } else {
-        "Filter Tags [t]"
+        "Active Filters"
     };
 
     let (text, style) = if !has_active_filter {
         (
             format!(
-                "Press t to edit tags. f: filter popup. s: sort {}. c: settings.",
+                "t: tag text filter  f: filter popup  s: sort {}  c: settings",
                 app.sort_label()
             ),
             styles::muted_style(),
         )
     } else {
         let tag_part = match (has_text, has_popup_tags) {
-            (true, true) => format!(
-                "{} +{} popup tags",
-                app.filter_input,
-                app.selected_tags.len()
-            ),
+            (true, true) => format!("{}, {}", app.filter_input, app.selected_tags.join(", ")),
             (true, false) => app.filter_input.clone(),
-            (false, true) => format!("{} popup tags", app.selected_tags.len()),
+            (false, true) => app.selected_tags.join(", "),
             (false, false) => unreachable!(),
         };
         (
             format!(
-                "{} | versions {} | sort {}",
+                "tags: {} | versions: {} | sort: {}",
                 tag_part,
                 app.selected_versions_summary(),
                 app.sort_label()
@@ -860,7 +854,16 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
 
     // --- Tags section ---
     let tags_focused = app.filter_popup_section == FilterPopupSection::Tags;
-    let tags_title = if tags_focused { "▶ Tags" } else { "  Tags" };
+    let mode_label = match app.tag_filter_mode {
+        TagFilterMode::And => "[m: AND]",
+        TagFilterMode::Or => "[m: OR] ",
+    };
+    let tags_title = if tags_focused {
+        format!("▶ Tags {mode_label}")
+    } else {
+        format!("  Tags {mode_label}")
+    };
+    let tags_title = tags_title.as_str();
     let filtered_tags: Vec<&String> = app.filtered_tag_options().collect();
     let tag_items: Vec<ListItem> = if filtered_tags.is_empty() {
         vec![ListItem::new(if app.tag_options.is_empty() {
@@ -938,9 +941,10 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     }
 
     // --- Footer ---
-    let footer =
-        Paragraph::new("type:search  space:toggle  tab:switch section  a:clear section  esc:close")
-            .style(styles::muted_style());
+    let footer = Paragraph::new(
+        "type:search  space:toggle  m:AND/OR  tab:switch  c:clear section  esc:close",
+    )
+    .style(styles::muted_style());
     frame.render_widget(footer, sections[3]);
 }
 
@@ -1159,7 +1163,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             Some("Type tags | Enter: apply filter and refresh | Esc: stop editing | Ctrl-C: quit")
         }
         AppMode::FilterPopup => {
-            Some("Filter | f/esc close | tab switch section | space toggle | a clear section")
+            Some("Filter | f/esc close | tab switch section | space toggle | c clear section")
         }
         AppMode::Settings => Some(
             "Settings | Tab/Shift+Tab move | Type edit | ←/→ discovery | Ctrl-S save | b benchmark | Esc close",
@@ -1420,8 +1424,8 @@ Dashboard Polling [p]
 GitLab Runner TUI Live (p to pause) last <age> next <age>
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Currently active filter
-prod,linux | versions All versions | sort None
+Active Filters
+tags: prod,linux | versions: All versions | sort: None
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
@@ -1442,8 +1446,8 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Currently active filter
-alm | versions All versions | sort None
+Active Filters
+tags: alm | versions: All versions | sort: None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
@@ -1472,8 +1476,8 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [t]
-Press t to edit tags. f: filter popup. s: sort None. c: settings.
+Active Filters
+t: tag text filter f: filter popup s: sort None c: settings
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
@@ -1509,8 +1513,8 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [t]
-Press t to edit tags. f: filter popup. s: sort None. c: settings.
+Active Filters
+t: tag text filter f: filter popup s: sort None c: settings
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)

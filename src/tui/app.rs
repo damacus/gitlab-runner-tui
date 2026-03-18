@@ -6,7 +6,7 @@ use crate::models::manager::RunnerManager;
 use crate::models::runner::{
     apply_runner_filters, benchmark_runner_processing, extract_runner_tags,
     extract_runner_versions, parse_manager_contacted_at, sort_runners, LocalBenchmarkSnapshot,
-    Runner, RunnerFilters, RunnerSortKey,
+    Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -336,6 +336,7 @@ pub struct App {
     pub version_list_state: ListState,
     pub filter_popup_section: FilterPopupSection,
     pub tag_search_input: String,
+    pub tag_filter_mode: TagFilterMode,
     pub tag_options: Vec<String>,
     pub selected_tags: Vec<String>,
     pub tag_list_state: ListState,
@@ -385,6 +386,7 @@ impl App {
             version_list_state: ListState::default(),
             filter_popup_section: FilterPopupSection::default(),
             tag_search_input: String::new(),
+            tag_filter_mode: TagFilterMode::default(),
             tag_options: Vec::new(),
             selected_tags: Vec::new(),
             tag_list_state: ListState::default(),
@@ -528,21 +530,10 @@ impl App {
     }
 
     fn build_filters(&self) -> RunnerFilters {
-        let text_tags = self.filter_tags();
-        let popup_tags = (!self.selected_tags.is_empty()).then_some(self.selected_tags.clone());
-
-        let tag_list = match (text_tags, popup_tags) {
-            (Some(mut a), Some(b)) => {
-                a.extend(b);
-                Some(a)
-            }
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
-
         RunnerFilters {
-            tag_list,
+            tag_list: self.filter_tags(),
+            popup_tags: (!self.selected_tags.is_empty()).then_some(self.selected_tags.clone()),
+            popup_tag_mode: self.tag_filter_mode,
             selected_versions: (!self.selected_versions.is_empty())
                 .then_some(self.selected_versions.clone()),
             ..RunnerFilters::default()
@@ -1296,7 +1287,13 @@ impl App {
                         FilterPopupSection::Versions => self.toggle_selected_version(),
                         FilterPopupSection::TagSearch => unreachable!(),
                     },
-                    KeyCode::Char('a') | KeyCode::Backspace => match self.filter_popup_section {
+                    KeyCode::Char('m') => {
+                        self.tag_filter_mode = self.tag_filter_mode.toggle();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    KeyCode::Char('c') => match self.filter_popup_section {
                         FilterPopupSection::Tags => {
                             self.selected_tags.clear();
                             if self.has_loaded_active_tab() {
@@ -1645,9 +1642,8 @@ mod tests {
         app.filter_input = "linux".to_owned();
         app.selected_tags = vec!["docker".to_owned()];
         let filters = app.build_filters();
-        let tags = filters.tag_list.unwrap();
-        assert!(tags.contains(&"linux".to_owned()));
-        assert!(tags.contains(&"docker".to_owned()));
+        assert_eq!(filters.tag_list, Some(vec!["linux".to_owned()]));
+        assert_eq!(filters.popup_tags, Some(vec!["docker".to_owned()]));
     }
 
     #[test]
@@ -1655,7 +1651,8 @@ mod tests {
         let mut app = test_app();
         app.selected_tags = vec!["docker".to_owned()];
         let filters = app.build_filters();
-        assert_eq!(filters.tag_list, Some(vec!["docker".to_owned()]));
+        assert!(filters.tag_list.is_none());
+        assert_eq!(filters.popup_tags, Some(vec!["docker".to_owned()]));
     }
 
     #[test]
@@ -1679,8 +1676,9 @@ mod tests {
         app.filter_input = "docker".to_owned();
         app.selected_tags = vec!["docker".to_owned()];
         let filters = app.build_filters();
-        let tags = filters.tag_list.unwrap();
-        assert_eq!(tags.iter().filter(|t| t.as_str() == "docker").count(), 2);
+        // text tags go to tag_list, popup tags go to popup_tags — no merging
+        assert_eq!(filters.tag_list, Some(vec!["docker".to_owned()]));
+        assert_eq!(filters.popup_tags, Some(vec!["docker".to_owned()]));
     }
 
     #[test]
@@ -1957,26 +1955,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_clears_focused_tags_section_only() {
+    async fn test_c_clears_focused_tags_section_only() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
         app.filter_popup_section = FilterPopupSection::Tags;
         app.selected_tags = vec!["docker".to_owned()];
         app.selected_versions = vec!["17.5.0".to_owned()];
-        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
             .await;
         assert!(app.selected_tags.is_empty());
         assert_eq!(app.selected_versions, vec!["17.5.0".to_owned()]);
     }
 
     #[tokio::test]
-    async fn test_backspace_clears_focused_versions_section_only() {
+    async fn test_c_clears_focused_versions_section_only() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
         app.filter_popup_section = FilterPopupSection::Versions;
         app.selected_tags = vec!["docker".to_owned()];
         app.selected_versions = vec!["17.5.0".to_owned()];
-        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
             .await;
         assert!(app.selected_versions.is_empty());
         assert_eq!(app.selected_tags, vec!["docker".to_owned()]);

@@ -22,9 +22,29 @@ pub struct Runner {
     pub managers: Vec<RunnerManager>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagFilterMode {
+    #[default]
+    And,
+    Or,
+}
+
+impl TagFilterMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            TagFilterMode::And => TagFilterMode::Or,
+            TagFilterMode::Or => TagFilterMode::And,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct RunnerFilters {
+    /// Text-filter tags — sent to the GitLab API (always AND).
     pub tag_list: Option<Vec<String>>,
+    /// Popup-selected tags — filtered client-side with `popup_tag_mode`.
+    pub popup_tags: Option<Vec<String>>,
+    pub popup_tag_mode: TagFilterMode,
     pub status: Option<String>,
     pub version_prefix: Option<String>,
     pub selected_versions: Option<Vec<String>>,
@@ -140,6 +160,20 @@ pub fn runner_matches_filters(
             .iter()
             .all(|tag| runner.tag_list.iter().any(|value| value == tag))
         {
+            return false;
+        }
+    }
+
+    if let Some(popup_tags) = &filters.popup_tags {
+        let matched = match filters.popup_tag_mode {
+            TagFilterMode::And => popup_tags
+                .iter()
+                .all(|tag| runner.tag_list.iter().any(|v| v == tag)),
+            TagFilterMode::Or => popup_tags
+                .iter()
+                .any(|tag| runner.tag_list.iter().any(|v| v == tag)),
+        };
+        if !matched {
             return false;
         }
     }
@@ -500,12 +534,7 @@ mod tests {
     fn test_runner_filters_with_tags() {
         let filters = RunnerFilters {
             tag_list: Some(vec!["alm".to_string(), "production".to_string()]),
-            status: None,
-            version_prefix: None,
-            selected_versions: None,
-            older_than_secs: None,
-            runner_type: None,
-            paused: None,
+            ..RunnerFilters::default()
         };
 
         let tags = filters.tag_list.unwrap();
