@@ -486,8 +486,13 @@ impl App {
         self.error_message = None;
     }
 
-    pub fn open_version_filter(&mut self) {
+    pub fn open_filter_popup(&mut self) {
         self.mode = AppMode::FilterPopup;
+        if self.tag_options.is_empty() {
+            self.tag_list_state.select(None);
+        } else if self.tag_list_state.selected().is_none() {
+            self.tag_list_state.select(Some(0));
+        }
         if self.version_options.is_empty() {
             self.version_list_state.select(None);
         } else if self.version_list_state.selected().is_none() {
@@ -534,6 +539,15 @@ impl App {
             "All versions".to_string()
         } else {
             self.selected_versions.join(", ")
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn selected_tags_summary(&self) -> String {
+        if self.selected_tags.is_empty() {
+            "all tags".to_string()
+        } else {
+            format!("{} selected", self.selected_tags.len())
         }
     }
 
@@ -1277,8 +1291,11 @@ impl App {
             KeyCode::Char('s') => {
                 self.cycle_sort_key();
             }
-            KeyCode::Char('v') => {
-                self.open_version_filter();
+            KeyCode::Char('t') => {
+                self.focus_filter();
+            }
+            KeyCode::Char('/') | KeyCode::Char('f') => {
+                self.open_filter_popup();
             }
             KeyCode::Char('a') => {
                 self.focus_age_filter();
@@ -1314,9 +1331,6 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.error_message = None;
-            }
-            KeyCode::Char('/') | KeyCode::Char('f') => {
-                self.focus_filter();
             }
             _ => {}
         }
@@ -1480,6 +1494,43 @@ mod tests {
             platform: None,
             architecture: None,
         }
+    }
+
+    #[test]
+    fn test_open_filter_popup_selects_first_item_when_tags_available() {
+        let mut app = test_app();
+        app.tag_options = vec!["docker".to_owned(), "linux".to_owned()];
+        app.tag_list_state.select(None);
+        app.open_filter_popup();
+        assert_eq!(app.mode, AppMode::FilterPopup);
+        assert_eq!(app.tag_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_open_filter_popup_none_when_tags_empty() {
+        let mut app = test_app();
+        app.tag_options = vec![];
+        app.open_filter_popup();
+        assert_eq!(app.tag_list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_toggle_selected_tag_adds_and_removes() {
+        let mut app = test_app();
+        app.tag_options = vec!["docker".to_owned(), "linux".to_owned()];
+        app.tag_list_state.select(Some(0));
+        app.toggle_selected_tag();
+        assert_eq!(app.selected_tags, vec!["docker"]);
+        app.toggle_selected_tag();
+        assert!(app.selected_tags.is_empty());
+    }
+
+    #[test]
+    fn test_selected_tags_summary_empty_and_non_empty() {
+        let mut app = test_app();
+        assert_eq!(app.selected_tags_summary(), "all tags");
+        app.selected_tags = vec!["docker".to_owned(), "linux".to_owned()];
+        assert_eq!(app.selected_tags_summary(), "2 selected");
     }
 
     #[test]
