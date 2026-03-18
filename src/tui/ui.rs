@@ -684,7 +684,13 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
     ];
 
     if !runner.runner_type.is_empty() {
-        items.push(ListItem::new(format!("Type: {}", runner.runner_type)));
+        let display_type = match runner.runner_type.as_str() {
+            "project_type" => "project",
+            "group_type" => "group",
+            "instance_type" => "instance",
+            other => other,
+        };
+        items.push(ListItem::new(format!("Type: {display_type}")));
     }
 
     if let Some(ip_address) = &runner.ip_address {
