@@ -115,6 +115,21 @@ pub fn extract_runner_versions(runners: &[Runner]) -> Vec<String> {
 }
 
 #[allow(dead_code)]
+pub fn extract_runner_tags(runners: &[Runner]) -> Vec<String> {
+    let mut tags: Vec<String> = runners
+        .iter()
+        .flat_map(|runner| runner.tag_list.iter())
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+#[allow(dead_code)]
 pub fn runner_matches_filters(
     runner: &Runner,
     filters: &RunnerFilters,
@@ -568,6 +583,30 @@ mod tests {
         assert_eq!(empty.len(), 2);
         assert!(empty.iter().any(|r| r.id == 2));
         assert!(empty.iter().any(|r| r.id == 3));
+    }
+
+    #[test]
+    fn test_extract_runner_tags_deduplicates_and_sorts_alpha() {
+        let mut r1 = create_test_runner(1, "online", None);
+        r1.tag_list = vec!["linux".to_owned(), "docker".to_owned()];
+        let mut r2 = create_test_runner(2, "online", None);
+        r2.tag_list = vec!["docker".to_owned(), "prod".to_owned()];
+        let tags = extract_runner_tags(&[r1, r2]);
+        assert_eq!(tags, vec!["docker", "linux", "prod"]);
+    }
+
+    #[test]
+    fn test_extract_runner_tags_trims_and_drops_empty() {
+        let mut r = create_test_runner(1, "online", None);
+        r.tag_list = vec!["  linux  ".to_owned(), "".to_owned(), " ".to_owned()];
+        let tags = extract_runner_tags(&[r]);
+        assert_eq!(tags, vec!["linux"]);
+    }
+
+    #[test]
+    fn test_extract_runner_tags_empty_runners() {
+        let tags = extract_runner_tags(&[]);
+        assert!(tags.is_empty());
     }
 
     #[test]
