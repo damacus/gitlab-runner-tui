@@ -1266,7 +1266,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     // Dashboard mode: left = count/state, right = shortcuts.
-    let shortcuts = "↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit";
+    let shortcuts = "p poll | r refresh | f filter | s sort | c settings | ?: help | q quit";
 
     let left_text = if app.is_loading {
         let filter = if app.filter_input.trim().is_empty() {
@@ -1518,7 +1518,7 @@ Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 runners loaded for Runners | last refresh <age> p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1538,7 +1538,7 @@ tags: alm | sort: None | f: popup | c: settings
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q");
+0 runners loaded for Offli p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1568,7 +1568,7 @@ Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 workers loaded for Workers | not loaded yet p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1606,7 +1606,7 @@ Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 runners loaded for Health | not loaded yet | p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
 
     #[test]
