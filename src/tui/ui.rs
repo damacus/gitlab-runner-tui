@@ -803,7 +803,14 @@ fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
         RunnerDiscoveryMode::ConfiguredTargets => "Targets",
         RunnerDiscoveryMode::VisibleRunners => "Visible runners (/runners)",
     };
-    let token_placeholder = if app.settings_draft.token.is_empty() {
+    let is_token_selected = app.settings_draft.selected_field == SettingsField::Token;
+    let token_display = if is_token_selected {
+        if app.settings_draft.token.is_empty() {
+            "-".to_string()
+        } else {
+            app.settings_draft.token.clone()
+        }
+    } else if app.settings_draft.token.is_empty() {
         "-".to_string()
     } else {
         "•".repeat(app.settings_draft.token.chars().count().min(24))
@@ -815,11 +822,7 @@ fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
             "Host",
             &app.settings_draft.host,
         ),
-        field_line(
-            app.settings_draft.selected_field == SettingsField::Token,
-            "Token",
-            &token_placeholder,
-        ),
+        field_line(is_token_selected, "Token", &token_display),
         field_line(
             app.settings_draft.selected_field == SettingsField::DiscoveryMode,
             "Discovery",
