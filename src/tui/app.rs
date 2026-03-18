@@ -352,6 +352,8 @@ pub struct App {
     pub last_poll_at: Option<Instant>,
     pub last_refresh_at: Option<Instant>,
     pub last_fetch_failed: bool,
+    /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
+    pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
     pub settings_message: Option<String>,
     pub live_query_metrics: Option<LiveQueryMetrics>,
@@ -396,6 +398,7 @@ impl App {
             last_poll_at: None,
             last_refresh_at: None,
             last_fetch_failed: false,
+            all_runners_fell_back: false,
             settings_draft,
             settings_message: None,
             live_query_metrics: None,
@@ -759,6 +762,7 @@ impl App {
                     self.last_poll_at = Some(now);
                 }
                 self.last_fetch_failed = false;
+                self.all_runners_fell_back = outcome.all_runners_fell_back;
                 self.live_query_metrics = Some(outcome.metrics);
                 self.renders_from_runners(tab, outcome.runners);
             }

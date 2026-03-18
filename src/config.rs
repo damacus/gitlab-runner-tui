@@ -66,7 +66,7 @@ impl Default for AppConfig {
             poll_timeout_secs: 1800,
             gitlab_host: None,
             gitlab_token: None,
-            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+            discovery_mode: RunnerDiscoveryMode::AllRunners,
             runner_targets: Vec::new(),
         }
     }
@@ -212,8 +212,18 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
-        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
+    }
+
+    #[test]
+    fn test_default_discovery_mode_matches_app_config_default() {
+        // RunnerDiscoveryMode::default() and AppConfig::default().discovery_mode must agree
+        // so that serde's #[serde(default)] fills missing fields with AllRunners, not VisibleRunners.
+        assert_eq!(
+            RunnerDiscoveryMode::default(),
+            AppConfig::default().discovery_mode
+        );
     }
 
     #[test]
@@ -261,7 +271,7 @@ mod tests {
         assert_eq!(config.poll_timeout_secs, 1800);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
-        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
     }
 
@@ -288,8 +298,23 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
-        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
+    }
+
+    #[test]
+    fn test_explicit_visible_runners_in_toml_is_respected() {
+        // An existing config file that explicitly says visible_runners should NOT be upgraded.
+        let toml_str = r#"discovery_mode = "visible_runners""#;
+        let config = AppConfig::load_from_str(toml_str).unwrap();
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::VisibleRunners);
+    }
+
+    #[test]
+    fn test_explicit_all_runners_in_toml_is_respected() {
+        let toml_str = r#"discovery_mode = "all_runners""#;
+        let config = AppConfig::load_from_str(toml_str).unwrap();
+        assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
     }
 
     #[test]

@@ -914,8 +914,17 @@ fn render_settings_modal(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
+    let all_runners_label;
     let mode_label = match app.settings_draft.discovery_mode {
-        RunnerDiscoveryMode::AllRunners => "All runners (/runners/all)",
+        RunnerDiscoveryMode::AllRunners => {
+            if app.all_runners_fell_back {
+                all_runners_label =
+                    "All runners (/runners/all → fell back to /runners)".to_string();
+                all_runners_label.as_str()
+            } else {
+                "All runners (/runners/all)"
+            }
+        }
         RunnerDiscoveryMode::VisibleRunners => "Visible runners (/runners)",
         RunnerDiscoveryMode::ConfiguredTargets => "Targets",
     };
@@ -988,7 +997,13 @@ fn render_diagnostics_section(app: &App, frame: &mut Frame, area: Rect) {
 
     if let Some(metrics) = &app.live_query_metrics {
         let mode = match metrics.discovery_mode {
-            RunnerDiscoveryMode::AllRunners => "/runners/all",
+            RunnerDiscoveryMode::AllRunners => {
+                if app.all_runners_fell_back {
+                    "/runners/all→/runners"
+                } else {
+                    "/runners/all"
+                }
+            }
             RunnerDiscoveryMode::VisibleRunners => "/runners",
             RunnerDiscoveryMode::ConfiguredTargets => "targets",
         };
