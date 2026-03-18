@@ -1266,7 +1266,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     // Dashboard mode: left = count/state, right = shortcuts.
-    let shortcuts = "p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit";
+    let shortcuts = "↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit";
 
     let left_text = if app.is_loading {
         let filter = if app.filter_input.trim().is_empty() {
@@ -1345,7 +1345,7 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  ↑/↓ or j/k       Move table selection"),
         Line::from(""),
         Line::from("Actions"),
-        Line::from("  Enter            Apply the current filter"),
+        Line::from("  Enter            Open selected runner in browser (GitLab admin page)"),
         Line::from("  r                Refresh the active tab"),
         Line::from("  p                Toggle polling / auto-refresh"),
         Line::from("  f or /           Open filter popup (tags + versions multi-select)"),
@@ -1518,7 +1518,7 @@ Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Run p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 runners loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1538,7 +1538,7 @@ tags: alm | sort: None | f: popup | c: settings
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 ru p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+0↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q");
     }
 
     #[test]
@@ -1568,7 +1568,7 @@ Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Wor p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 workers loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1606,7 +1606,7 @@ Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Hea p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
+1 runners loa ↵ open | p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]

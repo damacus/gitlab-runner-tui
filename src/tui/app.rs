@@ -1465,7 +1465,18 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.start_search();
+                if let Some(runner) = self.selected_runner() {
+                    let host = self
+                        .config
+                        .gitlab_host
+                        .as_deref()
+                        .unwrap_or("https://gitlab.com")
+                        .trim_end_matches('/');
+                    let url = format!("{host}/admin/runners/{}", runner.id);
+                    open_in_browser(&url);
+                } else {
+                    self.start_search();
+                }
             }
             KeyCode::Esc => {
                 self.error_message = None;
@@ -1525,6 +1536,17 @@ pub fn latest_runner_contact(runner: &Runner) -> Option<DateTime<Utc>> {
         .iter()
         .filter_map(|manager| parse_contact_timestamp(manager.contacted_at.as_deref()))
         .max()
+}
+
+pub fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", url])
+        .spawn();
 }
 
 pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> String {
