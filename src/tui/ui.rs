@@ -11,10 +11,11 @@ use crate::tui::{
 use chrono::Utc;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, Tabs, Wrap,
+        ScrollbarState, Table, Wrap,
     },
     Frame,
 };
@@ -33,9 +34,9 @@ fn display_or_dash(value: &str) -> &str {
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Length(3),
+        Constraint::Length(4),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
@@ -76,6 +77,7 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
+    use crate::config::RunnerDiscoveryMode;
     let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(42)]).split(area);
 
     let title = if app.is_loading {
@@ -88,9 +90,19 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
         "GitLab Runner TUI".to_string()
     };
 
-    let header = Paragraph::new(title)
-        .style(styles::app_title_style())
-        .block(styles::block("Dashboard"));
+    let host = app.config.gitlab_host.as_deref().unwrap_or("gitlab.com");
+    let mode_label = match app.conductor.discovery_mode() {
+        RunnerDiscoveryMode::AllRunners => "all runners",
+        RunnerDiscoveryMode::VisibleRunners => "visible runners",
+        RunnerDiscoveryMode::ConfiguredTargets => "target runners",
+    };
+    let subtitle = format!("{host} · {mode_label}");
+
+    let header = Paragraph::new(vec![
+        Line::from(Span::styled(title, styles::app_title_style())),
+        Line::from(Span::styled(subtitle, styles::muted_style())),
+    ])
+    .block(styles::block("Dashboard"));
     frame.render_widget(header, chunks[0]);
     render_polling_widget(app, frame, chunks[1]);
 }
@@ -107,7 +119,7 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
     let state = app.poll_display_state();
     let badge = match state {
         PollDisplayState::Refreshing => format!("{} Refreshing", app.spinner_char()),
-        PollDisplayState::Live => "Live (p to pause)".to_string(),
+        PollDisplayState::Live => "● Live (p to pause)".to_string(),
         PollDisplayState::Paused => "Paused (p to resume)".to_string(),
         PollDisplayState::TimedOut => "Timed out (p to resume)".to_string(),
         PollDisplayState::Error => "Error (p to retry)".to_string(),
@@ -122,21 +134,44 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
         .map(format_age)
         .unwrap_or_else(|| "-".to_string());
 
+    let status_style = match state {
+        PollDisplayState::Live | PollDisplayState::Refreshing => styles::accent_style(),
+        PollDisplayState::Paused => styles::muted_style(),
+        PollDisplayState::TimedOut => styles::status_style("stale"),
+        PollDisplayState::Error => styles::status_style("offline"),
+    };
+
+    let gauge_style = match state {
+        PollDisplayState::Live | PollDisplayState::Refreshing => styles::accent_style(),
+        PollDisplayState::Paused => styles::muted_style(),
+        PollDisplayState::TimedOut => styles::status_style("stale"),
+        PollDisplayState::Error => styles::status_style("offline"),
+    };
+
     let ratio = match state {
         PollDisplayState::Paused => 0.0,
         _ => app.poll_progress_ratio(),
     };
-    let gauge = Gauge::default()
-        .label(format!("{}  last {}  next {}", badge, age, next))
-        .gauge_style(match state {
-            PollDisplayState::Live => styles::accent_style(),
-            PollDisplayState::Refreshing => styles::accent_style(),
-            PollDisplayState::Paused => styles::muted_style(),
-            PollDisplayState::TimedOut => styles::status_style("stale"),
-            PollDisplayState::Error => styles::status_style("offline"),
-        })
-        .ratio(ratio.clamp(0.0, 1.0));
-    frame.render_widget(gauge, inner);
+
+    if inner.height >= 2 {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+        frame.render_widget(Paragraph::new(Span::styled(badge, status_style)), rows[0]);
+        frame.render_widget(
+            Gauge::default()
+                .label(format!("last {age}  next {next}"))
+                .gauge_style(gauge_style)
+                .ratio(ratio.clamp(0.0, 1.0)),
+            rows[1],
+        );
+    } else {
+        frame.render_widget(
+            Gauge::default()
+                .label(format!("{badge}  last {age}  next {next}"))
+                .gauge_style(gauge_style)
+                .ratio(ratio.clamp(0.0, 1.0)),
+            inner,
+        );
+    }
 }
 
 fn format_age(seconds: u64) -> String {
@@ -148,46 +183,71 @@ fn format_age(seconds: u64) -> String {
     }
 }
 
+fn tab_chip_colors(tab: Tab) -> (Color, Color) {
+    match tab {
+        Tab::Runners => (Color::Rgb(125, 207, 255), Color::Rgb(30, 42, 66)),
+        Tab::Offline => (Color::Rgb(247, 118, 142), Color::Rgb(58, 26, 30)),
+        Tab::Uncontacted => (Color::Rgb(224, 175, 104), Color::Rgb(58, 42, 10)),
+        Tab::Empty => (Color::Rgb(86, 95, 137), Color::Rgb(34, 37, 58)),
+        Tab::Rotating => (Color::Rgb(187, 154, 247), Color::Rgb(42, 26, 62)),
+        Tab::Health | Tab::Workers => (Color::Rgb(125, 207, 255), Color::Rgb(30, 42, 66)),
+    }
+}
+
 fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
-    let titles: Vec<Line> = app
-        .tabs
-        .iter()
-        .map(|tab| {
-            Line::from(vec![
-                Span::styled(format!("{} ", tab.shortcut()), styles::muted_style()),
-                Span::raw(tab.title()),
-            ])
-        })
-        .collect();
+    let mut spans: Vec<Span> = Vec::new();
 
-    let tabs = Tabs::new(titles)
-        .select(app.active_tab_index)
-        .style(styles::tab_style())
-        .highlight_style(styles::active_tab_style())
-        .divider("|")
-        .block(styles::block("Views"));
+    for (i, tab) in app.tabs.iter().enumerate() {
+        let is_active = i == app.active_tab_index;
 
-    frame.render_widget(tabs, area);
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+
+        spans.push(Span::styled(
+            format!("{} ", tab.shortcut()),
+            styles::muted_style(),
+        ));
+
+        let name_style = if is_active {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            styles::muted_style()
+        };
+        spans.push(Span::styled(tab.title(), name_style));
+
+        if let Some(&count) = app.tab_counts.get(tab) {
+            let (chip_fg, chip_bg) = tab_chip_colors(*tab);
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {count} "),
+                Style::default().fg(chip_fg).bg(chip_bg),
+            ));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let has_text = !app.filter_input.is_empty();
     let has_popup_tags = !app.selected_tags.is_empty();
     let has_active_filter = has_text || has_popup_tags;
-
-    let title = if app.mode == AppMode::FilterInput {
-        "Active Filters (editing)"
-    } else {
-        "Active Filters"
-    };
+    let is_editing = app.mode == AppMode::FilterInput;
 
     let (text, style) = if !has_active_filter {
         (
             format!(
-                "t: tag text filter  f: filter popup  s: sort {}  c: settings",
+                "t: tag filter  f: filter popup  s: sort {}  c: settings",
                 app.sort_label()
             ),
-            styles::muted_style(),
+            if is_editing {
+                styles::accent_style()
+            } else {
+                styles::muted_style()
+            },
         )
     } else {
         let tag_part = match (has_text, has_popup_tags) {
@@ -196,31 +256,21 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
             (false, true) => app.selected_tags.join(", "),
             (false, false) => unreachable!(),
         };
-        (
-            format!(
-                "tags: {} | versions: {} | sort: {}",
-                tag_part,
-                app.selected_versions_summary(),
-                app.sort_label()
-            ),
-            styles::accent_style(),
-        )
+        let mut parts = vec![format!("tags: {tag_part}")];
+        let versions = app.selected_versions_summary();
+        if versions != "All versions" {
+            parts.push(format!("versions: {versions}"));
+        }
+        parts.push(format!("sort: {}", app.sort_label()));
+        parts.push("f: popup".to_string());
+        parts.push("c: settings".to_string());
+        (parts.join(" | "), styles::accent_style())
     };
 
-    let block = if app.mode == AppMode::FilterInput {
-        styles::focused_block(title)
-    } else {
-        styles::block(title)
-    };
+    frame.render_widget(Paragraph::new(text).style(style), area);
 
-    let paragraph = Paragraph::new(text).style(style).block(block);
-    frame.render_widget(paragraph, area);
-
-    if app.mode == AppMode::FilterInput {
-        frame.set_cursor_position((
-            area.x + app.filter_input.chars().count() as u16 + 1,
-            area.y + 1,
-        ));
+    if is_editing {
+        frame.set_cursor_position((area.x + app.filter_input.chars().count() as u16, area.y));
     }
 }
 
@@ -1273,8 +1323,8 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  Esc              Exit filter editing"),
         Line::from(""),
         Line::from("Views"),
-        Line::from("  1 Runners   2 Health   3 Offline   4 Uncontacted"),
-        Line::from("  5 Empty     6 Rotating 7 Workers"),
+        Line::from("  1 Runners   2 Health   3 Offline   4 Stale"),
+        Line::from("  5 Idle      6 Rotating 7 Workers"),
     ];
 
     let paragraph = Paragraph::new(help)
@@ -1421,11 +1471,10 @@ mod tests {
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Live (p to pause) last <age> next <age>
-Views
-1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Active Filters
-tags: prod,linux | versions: All versions | sort: None
+GitLab Runner TUI ● Live (p to pause)
+gitlab.com · visible runners last <age> next <age>
+1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
+tags: prod,linux | sort: None | f: popup | c: settings
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
@@ -1443,11 +1492,10 @@ Status
         let rendered = render_to_string(&mut app, 100, 20);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume) last never next -
-Views
-1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Active Filters
-tags: alm | versions: All versions | sort: None
+GitLab Runner TUI Paused (p to resume)
+gitlab.com · visible runners last never next -
+1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
+tags: alm | sort: None | f: popup | c: settings
 Offline (0)
 No offline runners matched the current tag filter.
 Status
@@ -1473,11 +1521,10 @@ Status
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume) last never next -
-Views
-1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Active Filters
-t: tag text filter f: filter popup s: sort None c: settings
+GitLab Runner TUI Paused (p to resume)
+gitlab.com · visible runners last never next -
+1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
+t: tag filter f: filter popup s: sort None c: settings
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
@@ -1510,11 +1557,10 @@ Status
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume) last never next -
-Views
-1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Active Filters
-t: tag text filter f: filter popup s: sort None c: settings
+GitLab Runner TUI Paused (p to resume)
+gitlab.com · visible runners last never next -
+1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
+t: tag filter f: filter popup s: sort None c: settings
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)

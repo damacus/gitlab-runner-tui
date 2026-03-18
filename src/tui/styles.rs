@@ -75,17 +75,6 @@ pub fn table_header_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn tab_style() -> Style {
-    Style::default().fg(COLOR_MUTED)
-}
-
-pub fn active_tab_style() -> Style {
-    Style::default()
-        .fg(COLOR_FG)
-        .bg(COLOR_ACCENT_DIM)
-        .add_modifier(Modifier::BOLD)
-}
-
 pub fn sort_column_style() -> Style {
     Style::default().fg(COLOR_ACCENT_DIM)
 }

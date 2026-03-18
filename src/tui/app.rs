@@ -12,10 +12,11 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{ListState, ScrollbarState, TableState};
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Tab {
     Runners,
     Health,
@@ -42,8 +43,8 @@ impl Tab {
             Tab::Runners => "Runners",
             Tab::Health => "Health",
             Tab::Offline => "Offline",
-            Tab::Uncontacted => "Uncontacted",
-            Tab::Empty => "Empty",
+            Tab::Uncontacted => "Stale",
+            Tab::Empty => "Idle",
             Tab::Rotating => "Rotating",
             Tab::Workers => "Workers",
         }
@@ -330,6 +331,7 @@ pub struct App {
     pub tabs: &'static [Tab],
     pub active_tab_index: usize,
     pub loaded_tab: Option<Tab>,
+    pub tab_counts: HashMap<Tab, usize>,
 
     pub filter_input: String,
     pub selected_versions: Vec<String>,
@@ -381,6 +383,7 @@ impl App {
             tabs: Tab::ALL,
             active_tab_index: 0,
             loaded_tab: None,
+            tab_counts: HashMap::new(),
             filter_input: String::new(),
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
@@ -641,8 +644,8 @@ impl App {
                 }
             }
             Tab::Offline => format!("Offline ({})", self.runners.len()),
-            Tab::Uncontacted => format!("Uncontacted ({})", self.runners.len()),
-            Tab::Empty => format!("Empty ({})", self.runners.len()),
+            Tab::Uncontacted => format!("Stale ({})", self.runners.len()),
+            Tab::Empty => format!("Idle ({})", self.runners.len()),
             Tab::Rotating => format!("Rotating ({})", self.runners.len()),
             Tab::Workers => format!("Workers ({})", self.manager_rows.len()),
         }
@@ -925,6 +928,7 @@ impl App {
         }
 
         let result_count = self.active_result_len();
+        self.tab_counts.insert(tab, result_count);
         self.table_state.select((result_count > 0).then_some(0));
         self.update_scroll_state();
     }
