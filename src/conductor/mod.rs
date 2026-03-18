@@ -17,6 +17,17 @@ pub struct Conductor {
 pub struct QueryOutcome {
     pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
+    /// True when AllRunners mode fell back from /runners/all to /runners due to 403.
+    pub all_runners_fell_back: bool,
+}
+
+fn is_forbidden(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(|e| e.status())
+            .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
+    })
 }
 
 impl Conductor {
@@ -56,7 +67,8 @@ impl Conductor {
     pub async fn fetch_runners_with_metrics(&self, filters: RunnerFilters) -> Result<QueryOutcome> {
         let started_at = Utc::now();
         let started = Instant::now();
-        let (runners, request_counts) = self.fetch_runners_internal(filters).await?;
+        let (runners, request_counts, all_runners_fell_back) =
+            self.fetch_runners_internal(filters).await?;
         let finished_at = Utc::now();
         let metrics = LiveQueryMetrics::success(
             started_at,
@@ -66,16 +78,21 @@ impl Conductor {
             self.discovery_mode,
             request_counts,
         );
-        Ok(QueryOutcome { runners, metrics })
+        Ok(QueryOutcome {
+            runners,
+            metrics,
+            all_runners_fell_back,
+        })
     }
 
     async fn fetch_runners_internal(
         &self,
         filters: RunnerFilters,
-    ) -> Result<(Vec<Runner>, QueryRequestCounts)> {
+    ) -> Result<(Vec<Runner>, QueryRequestCounts, bool)> {
         let mut runner_map = BTreeMap::new();
         let per_page = 100;
         let mut request_counts = QueryRequestCounts::default();
+        let mut all_runners_fell_back = false;
 
         match self.discovery_mode {
             RunnerDiscoveryMode::AllRunners => {
@@ -85,9 +102,8 @@ impl Conductor {
                 let use_admin = match &first {
                     Ok(_) => true,
                     Err(e) => {
-                        let msg = e.to_string();
-                        // 403 means not an admin — fall back silently
-                        !msg.contains("403")
+                        // 403 Forbidden means not an admin — fall back silently
+                        !is_forbidden(e)
                     }
                 };
 
@@ -122,6 +138,7 @@ impl Conductor {
                     }
                 } else {
                     // Fallback: /runners (visible to current user)
+                    all_runners_fell_back = true;
                     let mut page = 1;
                     loop {
                         request_counts.list_requests += 1;
@@ -243,7 +260,7 @@ impl Conductor {
         .collect()
         .await;
 
-        Ok((enriched, request_counts))
+        Ok((enriched, request_counts, all_runners_fell_back))
     }
 
     pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
