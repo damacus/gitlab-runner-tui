@@ -257,7 +257,7 @@ impl Conductor {
                 detail
             }
         }))
-        .buffer_unordered(10)
+        .buffer_unordered(50)
         .collect()
         .await;
 

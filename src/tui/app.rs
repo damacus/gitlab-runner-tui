@@ -1,5 +1,5 @@
 use crate::client::GitLabClient;
-use crate::conductor::Conductor;
+use crate::conductor::{Conductor, QueryOutcome};
 use crate::config::{format_runner_targets, parse_runner_targets, AppConfig, RunnerDiscoveryMode};
 use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
@@ -352,6 +352,7 @@ pub struct App {
     pub last_poll_at: Option<Instant>,
     pub last_refresh_at: Option<Instant>,
     pub last_fetch_failed: bool,
+    pending_search: Option<tokio::task::JoinHandle<(Tab, anyhow::Result<QueryOutcome>)>>,
     /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
     pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
@@ -398,6 +399,7 @@ impl App {
             last_poll_at: None,
             last_refresh_at: None,
             last_fetch_failed: false,
+            pending_search: None,
             all_runners_fell_back: false,
             settings_draft,
             settings_message: None,
@@ -719,11 +721,84 @@ impl App {
         elapsed as f64 / interval as f64
     }
 
+    /// Spawn a background task to fetch runners; the UI stays responsive during the fetch.
+    /// Call `poll_pending_search()` on each tick to collect the result.
+    pub fn start_search(&mut self) {
+        if let Some(handle) = self.pending_search.take() {
+            handle.abort();
+        }
+        self.is_loading = true;
+        self.error_message = None;
+
+        let client = self.conductor.client().clone();
+        let mode = self.conductor.discovery_mode();
+        let targets = self.config.runner_targets.clone();
+        let filters = self.build_filters();
+        let tab = self.active_tab();
+
+        self.pending_search = Some(tokio::spawn(async move {
+            let conductor = Conductor::new_with_mode(client, mode, targets);
+            let result = match tab.query_mode() {
+                TabQueryMode::FetchRunners => conductor.fetch_runners_with_metrics(filters).await,
+                TabQueryMode::Offline => conductor.list_offline_runners_with_metrics(filters).await,
+                TabQueryMode::Uncontacted { threshold_secs } => {
+                    conductor
+                        .list_uncontacted_runners_with_metrics(filters, threshold_secs)
+                        .await
+                }
+                TabQueryMode::Empty => {
+                    conductor
+                        .list_runners_without_managers_with_metrics(filters)
+                        .await
+                }
+                TabQueryMode::Rotating => {
+                    conductor
+                        .detect_rotating_runners_with_metrics(filters)
+                        .await
+                }
+            };
+            (tab, result)
+        }));
+    }
+
+    /// Check whether the background search has finished and, if so, apply its result.
+    pub async fn poll_pending_search(&mut self) {
+        let finished = self
+            .pending_search
+            .as_ref()
+            .is_some_and(|h| h.is_finished());
+        if !finished {
+            return;
+        }
+        let handle = self.pending_search.take().unwrap();
+        match handle.await {
+            Ok((tab, result)) => self.process_search_result(tab, result),
+            Err(_) => {
+                self.is_loading = false;
+                self.error_message = Some("Search task failed unexpectedly".to_string());
+            }
+        }
+    }
+
+    /// Wait for the background search task to finish (test helper only).
+    #[cfg(test)]
+    pub async fn await_pending_search(&mut self) {
+        if let Some(handle) = self.pending_search.take() {
+            match handle.await {
+                Ok((tab, result)) => self.process_search_result(tab, result),
+                Err(_) => {
+                    self.is_loading = false;
+                    self.error_message = Some("Search task failed unexpectedly".to_string());
+                }
+            }
+        }
+    }
+
+    /// Blocking search used in tests.
+    #[cfg(test)]
     pub async fn execute_search(&mut self) {
         self.is_loading = true;
         self.error_message = None;
-        let query_started_at = Utc::now();
-        let query_started = Instant::now();
         let tab = self.active_tab();
         let filters = self.build_filters();
 
@@ -751,8 +826,11 @@ impl App {
             }
         };
 
-        self.is_loading = false;
+        self.process_search_result(tab, result);
+    }
 
+    fn process_search_result(&mut self, tab: Tab, result: anyhow::Result<QueryOutcome>) {
+        self.is_loading = false;
         match result {
             Ok(outcome) => {
                 let now = Instant::now();
@@ -780,9 +858,9 @@ impl App {
                 self.update_scroll_state();
                 self.last_fetch_failed = true;
                 self.live_query_metrics = Some(LiveQueryMetrics::failure(
-                    query_started_at,
                     Utc::now(),
-                    query_started.elapsed().as_millis(),
+                    Utc::now(),
+                    0,
                     self.conductor.discovery_mode(),
                     error.to_string(),
                 ));
@@ -1041,7 +1119,7 @@ impl App {
                 self.selected_tags.clear();
                 self.table_state.select(None);
                 self.update_scroll_state();
-                self.execute_search().await;
+                self.start_search();
             }
             Err(error) => {
                 self.settings_message = Some(format!("{:#}", error));
@@ -1091,9 +1169,11 @@ impl App {
             self.advance_spinner();
         }
 
+        self.poll_pending_search().await;
+
         if self.should_poll_now() {
             self.last_poll_at = Some(Instant::now());
-            self.execute_search().await;
+            self.start_search();
         }
 
         if self.polling_active && self.poll_timed_out() {
@@ -1111,7 +1191,7 @@ impl App {
             match key.code {
                 KeyCode::Enter => {
                     self.mode = AppMode::Dashboard;
-                    self.execute_search().await;
+                    self.start_search();
                 }
                 KeyCode::Esc => {
                     self.mode = AppMode::Dashboard;
@@ -1281,6 +1361,20 @@ impl App {
                     self.mode = AppMode::Dashboard;
                     self.settings_draft = SettingsDraft::from_config(&self.config);
                 }
+                KeyCode::Enter
+                    if matches!(
+                        self.settings_draft.selected_field,
+                        SettingsField::DiscoveryMode
+                    ) =>
+                {
+                    self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
+                        RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
+                        RunnerDiscoveryMode::VisibleRunners => {
+                            RunnerDiscoveryMode::ConfiguredTargets
+                        }
+                        RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
+                    };
+                }
                 KeyCode::Char(character)
                     if matches!(
                         self.settings_draft.selected_field,
@@ -1330,11 +1424,11 @@ impl App {
                 self.toggle_polling();
             }
             KeyCode::Char('r') => {
-                self.execute_search().await;
+                self.start_search();
             }
             KeyCode::Char('d') => {
                 self.cycle_discovery_mode();
-                self.execute_search().await;
+                self.start_search();
             }
             KeyCode::Char('s') => {
                 self.cycle_sort_key();
@@ -1350,23 +1444,23 @@ impl App {
             }
             KeyCode::Tab => {
                 if self.next_tab() {
-                    self.execute_search().await;
+                    self.start_search();
                 }
             }
             KeyCode::BackTab => {
                 if self.previous_tab() {
-                    self.execute_search().await;
+                    self.start_search();
                 }
             }
             KeyCode::Char(shortcut @ '1'..='7') => {
                 if let Some(tab) = Tab::from_shortcut(shortcut) {
                     if self.select_tab(tab) {
-                        self.execute_search().await;
+                        self.start_search();
                     }
                 }
             }
             KeyCode::Enter => {
-                self.execute_search().await;
+                self.start_search();
             }
             KeyCode::Esc => {
                 self.error_message = None;
@@ -1738,11 +1832,13 @@ mod tests {
         let mut app = App::new(conductor, config);
         app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
             .await;
+        app.await_pending_search().await;
         assert_eq!(app.active_tab(), Tab::Uncontacted);
         assert!(app.error_message.is_some());
 
         app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE))
             .await;
+        app.await_pending_search().await;
         assert_eq!(app.active_tab(), Tab::Workers);
         assert!(app.error_message.is_some());
     }
@@ -1764,6 +1860,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
             .await;
+        app.await_pending_search().await;
 
         assert_eq!(app.active_tab(), Tab::Health);
         assert!(app.error_message.is_some());
@@ -1978,6 +2075,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE))
             .await;
+        app.await_pending_search().await;
 
         assert!(app.polling_active);
         assert_eq!(app.active_tab(), Tab::Rotating);

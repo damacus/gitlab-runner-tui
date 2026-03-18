@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     }
 
     let mut app = App::new(conductor, config);
-    app.execute_search().await;
+    app.start_search();
 
     // Setup Terminal
     enable_raw_mode()?;
