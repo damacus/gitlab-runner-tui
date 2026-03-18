@@ -4,9 +4,9 @@ use crate::config::{format_runner_targets, parse_runner_targets, AppConfig, Runn
 use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{
-    apply_runner_filters, benchmark_runner_processing, extract_runner_versions,
-    parse_manager_contacted_at, sort_runners, LocalBenchmarkSnapshot, Runner, RunnerFilters,
-    RunnerSortKey,
+    apply_runner_filters, benchmark_runner_processing, extract_runner_tags,
+    extract_runner_versions, parse_manager_contacted_at, sort_runners, LocalBenchmarkSnapshot,
+    Runner, RunnerFilters, RunnerSortKey,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -514,8 +514,21 @@ impl App {
     }
 
     fn build_filters(&self) -> RunnerFilters {
+        let text_tags = self.filter_tags();
+        let popup_tags = (!self.selected_tags.is_empty()).then_some(self.selected_tags.clone());
+
+        let tag_list = match (text_tags, popup_tags) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b);
+                Some(a)
+            }
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
         RunnerFilters {
-            tag_list: self.filter_tags(),
+            tag_list,
             selected_versions: (!self.selected_versions.is_empty())
                 .then_some(self.selected_versions.clone()),
             older_than_secs: self.age_filter_secs(),
@@ -768,6 +781,10 @@ impl App {
 
         self.selected_versions
             .retain(|version| self.version_options.contains(version));
+
+        self.tag_options = extract_runner_tags(&self.raw_runners);
+        self.selected_tags
+            .retain(|tag| self.tag_options.contains(tag));
 
         let now = Utc::now();
         let mut filtered = apply_runner_filters(&self.raw_runners, &self.build_filters(), now);
@@ -1494,6 +1511,50 @@ mod tests {
             platform: None,
             architecture: None,
         }
+    }
+
+    #[test]
+    fn test_build_filters_merges_text_and_popup_tags() {
+        let mut app = test_app();
+        app.filter_input = "linux".to_owned();
+        app.selected_tags = vec!["docker".to_owned()];
+        let filters = app.build_filters();
+        let tags = filters.tag_list.unwrap();
+        assert!(tags.contains(&"linux".to_owned()));
+        assert!(tags.contains(&"docker".to_owned()));
+    }
+
+    #[test]
+    fn test_build_filters_popup_tags_only() {
+        let mut app = test_app();
+        app.selected_tags = vec!["docker".to_owned()];
+        let filters = app.build_filters();
+        assert_eq!(filters.tag_list, Some(vec!["docker".to_owned()]));
+    }
+
+    #[test]
+    fn test_build_filters_text_tags_only() {
+        let mut app = test_app();
+        app.filter_input = "linux".to_owned();
+        let filters = app.build_filters();
+        assert_eq!(filters.tag_list, Some(vec!["linux".to_owned()]));
+    }
+
+    #[test]
+    fn test_build_filters_no_tags_returns_none() {
+        let app = test_app();
+        let filters = app.build_filters();
+        assert!(filters.tag_list.is_none());
+    }
+
+    #[test]
+    fn test_build_filters_duplicate_tag_is_harmless() {
+        let mut app = test_app();
+        app.filter_input = "docker".to_owned();
+        app.selected_tags = vec!["docker".to_owned()];
+        let filters = app.build_filters();
+        let tags = filters.tag_list.unwrap();
+        assert_eq!(tags.iter().filter(|t| t.as_str() == "docker").count(), 2);
     }
 
     #[test]
