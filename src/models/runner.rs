@@ -38,9 +38,11 @@ pub struct RunnerFilters {
 pub enum RunnerSortKey {
     #[default]
     None,
-    AgeOldestFirst,
-    LastContactOldestFirst,
-    CreatedNewestFirst,
+    Status,
+    Version,
+    LastContact,
+    Tags,
+    Managers,
 }
 
 #[allow(dead_code)]
@@ -192,26 +194,37 @@ pub fn apply_runner_filters(
 pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTime<Utc>) {
     match sort_key {
         RunnerSortKey::None => {}
-        RunnerSortKey::AgeOldestFirst => runners.sort_by(|left, right| {
-            compare_option_datetimes(
-                parse_runner_created_at(left),
-                parse_runner_created_at(right),
+        RunnerSortKey::Status => runners.sort_by(|left, right| {
+            left.status
+                .cmp(&right.status)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        RunnerSortKey::Version => runners.sort_by(|left, right| {
+            compare_versions_desc(
+                left.version.as_deref().unwrap_or(""),
+                right.version.as_deref().unwrap_or(""),
             )
             .then_with(|| left.id.cmp(&right.id))
         }),
-        RunnerSortKey::LastContactOldestFirst => runners.sort_by(|left, right| {
+        RunnerSortKey::LastContact => runners.sort_by(|left, right| {
             compare_option_datetimes(
                 latest_runner_contact_at(left),
                 latest_runner_contact_at(right),
             )
             .then_with(|| left.id.cmp(&right.id))
         }),
-        RunnerSortKey::CreatedNewestFirst => runners.sort_by(|left, right| {
-            compare_option_datetimes(
-                parse_runner_created_at(right),
-                parse_runner_created_at(left),
-            )
-            .then_with(|| left.id.cmp(&right.id))
+        RunnerSortKey::Tags => runners.sort_by(|left, right| {
+            left.tag_list
+                .join(", ")
+                .cmp(&right.tag_list.join(", "))
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        RunnerSortKey::Managers => runners.sort_by(|left, right| {
+            right
+                .managers
+                .len()
+                .cmp(&left.managers.len())
+                .then_with(|| left.id.cmp(&right.id))
         }),
     }
 
@@ -309,8 +322,8 @@ fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
 
 fn compare_option_datetimes(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Ordering {
     match (left, right) {
-        (Some(left), Some(right)) => left.cmp(&right),
-        (None, Some(_)) => Ordering::Less,
+        (Some(left), Some(right)) => right.cmp(&left), // Newer first
+        (None, Some(_)) => Ordering::Less,             // None first
         (Some(_), None) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
@@ -624,21 +637,19 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_runners_by_age_oldest_first() {
+    fn test_sort_runners_by_status() {
         let now = Utc::now();
-        let mut older = create_test_runner(1, "online", Some("online"));
-        older.created_at = Some("2024-01-01T00:00:00Z".to_string());
-        let mut newer = create_test_runner(2, "online", Some("online"));
-        newer.created_at = Some("2024-02-01T00:00:00Z".to_string());
+        let offline = create_test_runner(1, "offline", Some("offline"));
+        let online = create_test_runner(2, "online", Some("online"));
 
-        let mut runners = vec![newer, older.clone()];
-        sort_runners(&mut runners, RunnerSortKey::AgeOldestFirst, now);
+        let mut runners = vec![online.clone(), offline.clone()];
+        sort_runners(&mut runners, RunnerSortKey::Status, now);
 
-        assert_eq!(runners[0].id, older.id);
+        assert_eq!(runners[0].id, offline.id);
     }
 
     #[test]
-    fn test_sort_runners_by_last_contact_oldest_first_handles_missing() {
+    fn test_sort_runners_by_last_contact_handles_missing() {
         let now = Utc::now();
         let mut stale = create_test_runner(1, "online", Some("online"));
         stale.managers[0].contacted_at = Some("2024-01-01T00:00:00Z".to_string());
@@ -649,23 +660,25 @@ mod tests {
         let mut recent = create_test_runner(3, "online", Some("online"));
         recent.managers[0].contacted_at = Some("2024-02-01T00:00:00Z".to_string());
 
-        let mut runners = vec![recent, stale.clone(), missing.clone()];
-        sort_runners(&mut runners, RunnerSortKey::LastContactOldestFirst, now);
+        let mut runners = vec![recent.clone(), stale.clone(), missing.clone()];
+        sort_runners(&mut runners, RunnerSortKey::LastContact, now);
 
+        // Expect: missing (None) first, then recent (Newer) second, then stale (Older) third
         assert_eq!(runners[0].id, missing.id);
-        assert_eq!(runners[1].id, stale.id);
+        assert_eq!(runners[1].id, recent.id);
+        assert_eq!(runners[2].id, stale.id);
     }
 
     #[test]
-    fn test_sort_runners_by_created_newest_first() {
+    fn test_sort_runners_by_version() {
         let now = Utc::now();
         let mut older = create_test_runner(1, "online", Some("online"));
-        older.created_at = Some("2024-01-01T00:00:00Z".to_string());
+        older.version = Some("17.4.0".to_string());
         let mut newer = create_test_runner(2, "online", Some("online"));
-        newer.created_at = Some("2024-02-01T00:00:00Z".to_string());
+        newer.version = Some("17.5.0".to_string());
 
-        let mut runners = vec![older, newer.clone()];
-        sort_runners(&mut runners, RunnerSortKey::CreatedNewestFirst, now);
+        let mut runners = vec![older.clone(), newer.clone()];
+        sort_runners(&mut runners, RunnerSortKey::Version, now);
 
         assert_eq!(runners[0].id, newer.id);
     }
@@ -705,7 +718,7 @@ mod tests {
         let snapshot = benchmark_runner_processing(
             &runners,
             &RunnerFilters::default(),
-            RunnerSortKey::AgeOldestFirst,
+            RunnerSortKey::Status,
             Utc::now(),
         );
 

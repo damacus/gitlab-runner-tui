@@ -506,9 +506,11 @@ impl App {
     pub fn sort_label(&self) -> &'static str {
         match self.effective_sort_key() {
             RunnerSortKey::None => "None",
-            RunnerSortKey::AgeOldestFirst => "Age",
-            RunnerSortKey::LastContactOldestFirst => "Last contact",
-            RunnerSortKey::CreatedNewestFirst => "Created",
+            RunnerSortKey::Status => "Status",
+            RunnerSortKey::Version => "Version",
+            RunnerSortKey::LastContact => "Last contact",
+            RunnerSortKey::Tags => "Tags",
+            RunnerSortKey::Managers => "Managers",
         }
     }
 
@@ -531,7 +533,8 @@ impl App {
     pub fn effective_sort_key(&self) -> RunnerSortKey {
         match self.current_results_view_type() {
             ResultsViewType::Workers => match self.sort_key {
-                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::LastContactOldestFirst,
+                RunnerSortKey::Status => RunnerSortKey::Status,
+                RunnerSortKey::LastContact => RunnerSortKey::LastContact,
                 _ => RunnerSortKey::None,
             },
             _ => self.sort_key,
@@ -751,19 +754,27 @@ impl App {
                         })
                     })
                     .collect();
-                if matches!(
-                    self.effective_sort_key(),
-                    RunnerSortKey::LastContactOldestFirst
-                ) {
+                let sort_key = self.effective_sort_key();
+                if sort_key == RunnerSortKey::LastContact {
                     manager_rows.sort_by(|left, right| {
                         let left_contact = parse_manager_contacted_at(&left.manager);
                         let right_contact = parse_manager_contacted_at(&right.manager);
                         match (left_contact, right_contact) {
-                            (Some(left), Some(right)) => left.cmp(&right),
+                            (Some(l), Some(r)) => l.cmp(&r),
                             (None, Some(_)) => std::cmp::Ordering::Less,
                             (Some(_), None) => std::cmp::Ordering::Greater,
-                            (None, None) => left.manager.id.cmp(&right.manager.id),
+                            (None, None) => std::cmp::Ordering::Equal,
                         }
+                        .then_with(|| left.runner_id.cmp(&right.runner_id))
+                        .then_with(|| left.manager.id.cmp(&right.manager.id))
+                    });
+                } else if sort_key == RunnerSortKey::Status {
+                    manager_rows.sort_by(|left, right| {
+                        left.manager
+                            .status
+                            .cmp(&right.manager.status)
+                            .then_with(|| left.runner_id.cmp(&right.runner_id))
+                            .then_with(|| left.manager.id.cmp(&right.manager.id))
                     });
                 }
                 self.manager_rows = manager_rows;
@@ -847,14 +858,17 @@ impl App {
     pub fn cycle_sort_key(&mut self) {
         self.sort_key = match self.current_results_view_type() {
             ResultsViewType::Workers => match self.sort_key {
-                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::None,
-                _ => RunnerSortKey::LastContactOldestFirst,
+                RunnerSortKey::None => RunnerSortKey::Status,
+                RunnerSortKey::Status => RunnerSortKey::LastContact,
+                _ => RunnerSortKey::None,
             },
             _ => match self.sort_key {
-                RunnerSortKey::None => RunnerSortKey::AgeOldestFirst,
-                RunnerSortKey::AgeOldestFirst => RunnerSortKey::LastContactOldestFirst,
-                RunnerSortKey::LastContactOldestFirst => RunnerSortKey::CreatedNewestFirst,
-                RunnerSortKey::CreatedNewestFirst => RunnerSortKey::None,
+                RunnerSortKey::None => RunnerSortKey::Status,
+                RunnerSortKey::Status => RunnerSortKey::Version,
+                RunnerSortKey::Version => RunnerSortKey::LastContact,
+                RunnerSortKey::LastContact => RunnerSortKey::Tags,
+                RunnerSortKey::Tags => RunnerSortKey::Managers,
+                RunnerSortKey::Managers => RunnerSortKey::None,
             },
         };
 

@@ -360,9 +360,9 @@ fn header_with_indicator(
 ) -> Cell<'static> {
     if active == target {
         let symbol = match active {
-            RunnerSortKey::AgeOldestFirst | RunnerSortKey::LastContactOldestFirst => "↑",
-            RunnerSortKey::CreatedNewestFirst => "↓",
+            RunnerSortKey::LastContact => "↑",
             RunnerSortKey::None => "",
+            _ => "↓",
         };
         Cell::from(format!("{label} {symbol}"))
     } else {
@@ -376,92 +376,46 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     let active_sort = app.effective_sort_key();
     let header = if rotating {
         Row::new(vec![
-            header_with_indicator("ID", RunnerSortKey::AgeOldestFirst, active_sort),
+            Cell::from("ID"),
             Cell::from("Old System"),
             Cell::from("New System"),
-            Cell::from("Status"),
+            header_with_indicator("Status", RunnerSortKey::Status, active_sort),
         ])
     } else {
         match active_tab {
             Tab::Runners => Row::new(vec![
-                if active_sort == RunnerSortKey::AgeOldestFirst
-                    || active_sort == RunnerSortKey::CreatedNewestFirst
-                {
-                    header_with_indicator("ID", active_sort, active_sort)
-                } else {
-                    Cell::from("ID")
-                },
-                Cell::from("Status"),
-                Cell::from("Version"),
-                header_with_indicator(
-                    "Last Contact",
-                    RunnerSortKey::LastContactOldestFirst,
-                    active_sort,
-                ),
-                Cell::from("Tags"),
-                Cell::from("Mgrs"),
+                Cell::from("ID"),
+                header_with_indicator("Status", RunnerSortKey::Status, active_sort),
+                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
+                header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
+                header_with_indicator("Tags", RunnerSortKey::Tags, active_sort),
+                header_with_indicator("Mgrs", RunnerSortKey::Managers, active_sort),
             ]),
             Tab::Health => Row::new(vec![
-                if active_sort == RunnerSortKey::AgeOldestFirst
-                    || active_sort == RunnerSortKey::CreatedNewestFirst
-                {
-                    header_with_indicator("ID", active_sort, active_sort)
-                } else {
-                    Cell::from("ID")
-                },
-                Cell::from("Status"),
-                Cell::from("Version"),
-                header_with_indicator(
-                    "Last Contact",
-                    RunnerSortKey::LastContactOldestFirst,
-                    active_sort,
-                ),
-                Cell::from("Mgrs"),
+                Cell::from("ID"),
+                header_with_indicator("Status", RunnerSortKey::Status, active_sort),
+                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
+                header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
+                header_with_indicator("Mgrs", RunnerSortKey::Managers, active_sort),
             ]),
             Tab::Offline | Tab::Uncontacted => Row::new(vec![
-                if active_sort == RunnerSortKey::AgeOldestFirst
-                    || active_sort == RunnerSortKey::CreatedNewestFirst
-                {
-                    header_with_indicator("ID", active_sort, active_sort)
-                } else {
-                    Cell::from("ID")
-                },
-                Cell::from("Version"),
-                header_with_indicator(
-                    "Last Contact",
-                    RunnerSortKey::LastContactOldestFirst,
-                    active_sort,
-                ),
-                Cell::from("Mgrs"),
+                Cell::from("ID"),
+                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
+                header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
+                header_with_indicator("Mgrs", RunnerSortKey::Managers, active_sort),
             ]),
             Tab::Empty => Row::new(vec![
-                if active_sort == RunnerSortKey::AgeOldestFirst
-                    || active_sort == RunnerSortKey::CreatedNewestFirst
-                {
-                    header_with_indicator("ID", active_sort, active_sort)
-                } else {
-                    Cell::from("ID")
-                },
-                Cell::from("Version"),
-                Cell::from("Status"),
+                Cell::from("ID"),
+                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
+                header_with_indicator("Status", RunnerSortKey::Status, active_sort),
             ]),
             _ => Row::new(vec![
-                if active_sort == RunnerSortKey::AgeOldestFirst
-                    || active_sort == RunnerSortKey::CreatedNewestFirst
-                {
-                    header_with_indicator("ID", active_sort, active_sort)
-                } else {
-                    Cell::from("ID")
-                },
-                Cell::from("Status"),
-                Cell::from("Version"),
-                header_with_indicator(
-                    "Last Contact",
-                    RunnerSortKey::LastContactOldestFirst,
-                    active_sort,
-                ),
-                Cell::from("Tags"),
-                Cell::from("Mgrs"),
+                Cell::from("ID"),
+                header_with_indicator("Status", RunnerSortKey::Status, active_sort),
+                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
+                header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
+                header_with_indicator("Tags", RunnerSortKey::Tags, active_sort),
+                header_with_indicator("Mgrs", RunnerSortKey::Managers, active_sort),
             ]),
         }
     }
@@ -640,12 +594,8 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
         Cell::from("Runner"),
         Cell::from("Worker"),
         Cell::from("System"),
-        Cell::from("Status"),
-        header_with_indicator(
-            "Contacted",
-            RunnerSortKey::LastContactOldestFirst,
-            active_sort,
-        ),
+        header_with_indicator("Status", RunnerSortKey::Status, active_sort),
+        header_with_indicator("Contacted", RunnerSortKey::LastContact, active_sort),
     ])
     .style(styles::table_header_style());
 

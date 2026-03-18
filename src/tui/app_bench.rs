@@ -51,12 +51,8 @@ mod tests {
             ..RunnerFilters::default()
         };
 
-        let snapshot = benchmark_runner_processing(
-            &runners,
-            &filters,
-            RunnerSortKey::LastContactOldestFirst,
-            Utc::now(),
-        );
+        let snapshot =
+            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, Utc::now());
 
         assert_eq!(
             snapshot
