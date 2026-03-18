@@ -4,7 +4,7 @@ use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_detail, latest_runner_contact_label,
         manager_contact_detail, manager_contact_label, App, AppMode, DetailLayoutMode,
-        PollDisplayState, ResultsViewType, SettingsField, Tab,
+        FilterPopupSection, PollDisplayState, ResultsViewType, SettingsField, Tab,
     },
     styles,
 };
@@ -57,7 +57,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     match app.mode {
         AppMode::AgeInput => render_age_filter_modal(app, frame),
         AppMode::Settings => render_settings_modal(app, frame),
-        AppMode::FilterPopup => render_version_filter_modal(app, frame),
+        AppMode::FilterPopup => render_filter_popup(app, frame),
         _ => {}
     }
 }
@@ -182,28 +182,40 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
 
 fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let title = if app.mode == AppMode::FilterInput {
-        "Filter Tags [/] (focused)"
+        "Filter Tags [t] (focused)"
     } else if app.mode == AppMode::AgeInput {
         "Age Filter [a] (focused)"
     } else {
-        "Filter Tags [/]"
+        "Filter Tags [t]"
     };
 
-    let (text, style) = if app.filter_input.is_empty() {
+    let has_text = !app.filter_input.is_empty();
+    let has_popup_tags = !app.selected_tags.is_empty();
+
+    let (text, style) = if !has_text && !has_popup_tags {
         (
             format!(
-                "Press / to edit tags. a: age {}. v: versions {}. s: sort {}. c: settings.",
+                "Press t to edit tags. a: age {}. f: filter. s: sort {}. c: settings.",
                 app.age_filter_summary(),
-                app.selected_versions_summary(),
                 app.sort_label()
             ),
             styles::muted_style(),
         )
     } else {
+        let tag_part = match (has_text, has_popup_tags) {
+            (true, true) => format!(
+                "{} +{} popup tags",
+                app.filter_input,
+                app.selected_tags.len()
+            ),
+            (true, false) => app.filter_input.clone(),
+            (false, true) => format!("{} popup tags", app.selected_tags.len()),
+            (false, false) => unreachable!(),
+        };
         (
             format!(
                 "{} | age {} | versions {} | sort {}",
-                app.filter_input,
+                tag_part,
                 app.age_filter_summary(),
                 app.selected_versions_summary(),
                 app.sort_label()
@@ -783,11 +795,62 @@ fn render_age_filter_modal(app: &App, frame: &mut Frame) {
     );
 }
 
-fn render_version_filter_modal(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(50, 60, frame.size());
+fn render_filter_popup(app: &mut App, frame: &mut Frame) {
+    let area = centered_rect(55, 65, frame.size());
     frame.render_widget(Clear, area);
 
-    let items: Vec<ListItem> = if app.version_options.is_empty() {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(47),
+            Constraint::Percentage(47),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    // --- Tags section ---
+    let tags_focused = app.filter_popup_section == FilterPopupSection::Tags;
+    let tags_title = if tags_focused { "▶ Tags" } else { "  Tags" };
+    let tag_items: Vec<ListItem> = if app.tag_options.is_empty() {
+        vec![ListItem::new("No tags discovered yet.")]
+    } else {
+        app.tag_options
+            .iter()
+            .map(|tag| {
+                let marker = if app.selected_tags.contains(tag) {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                ListItem::new(format!("{marker} {tag}"))
+            })
+            .collect()
+    };
+    let tags_list = List::new(tag_items)
+        .highlight_style(if tags_focused {
+            styles::selected_row_style()
+        } else {
+            styles::muted_style()
+        })
+        .block(if tags_focused {
+            styles::focused_block(tags_title)
+        } else {
+            styles::block(tags_title)
+        });
+    if tags_focused {
+        frame.render_stateful_widget(tags_list, sections[0], &mut app.tag_list_state);
+    } else {
+        frame.render_widget(tags_list, sections[0]);
+    }
+
+    // --- Versions section ---
+    let versions_focused = app.filter_popup_section == FilterPopupSection::Versions;
+    let versions_title = if versions_focused {
+        "▶ Versions"
+    } else {
+        "  Versions"
+    };
+    let version_items: Vec<ListItem> = if app.version_options.is_empty() {
         vec![ListItem::new("No versions loaded yet.")]
     } else {
         app.version_options
@@ -802,14 +865,27 @@ fn render_version_filter_modal(app: &mut App, frame: &mut Frame) {
             })
             .collect()
     };
+    let versions_list = List::new(version_items)
+        .highlight_style(if versions_focused {
+            styles::selected_row_style()
+        } else {
+            styles::muted_style()
+        })
+        .block(if versions_focused {
+            styles::focused_block(versions_title)
+        } else {
+            styles::block(versions_title)
+        });
+    if versions_focused {
+        frame.render_stateful_widget(versions_list, sections[1], &mut app.version_list_state);
+    } else {
+        frame.render_widget(versions_list, sections[1]);
+    }
 
-    let list = List::new(items)
-        .highlight_style(styles::selected_row_style())
-        .block(styles::focused_block(
-            "Version Filter [space toggle, a clear]",
-        ));
-
-    frame.render_stateful_widget(list, area, &mut app.version_list_state);
+    // --- Footer ---
+    let footer = Paragraph::new("space:toggle  tab:switch section  a:clear section  esc:close")
+        .style(styles::muted_style());
+    frame.render_widget(footer, sections[2]);
 }
 
 fn render_settings_modal(app: &mut App, frame: &mut Frame) {
@@ -1053,7 +1129,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     .map(|age| format!("last refresh {} ago", format_age(age)))
                     .unwrap_or_else(|| "not loaded yet".to_string());
                 format!(
-                    "{} {} loaded for {} | {} | / tags | a age | v versions | s sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
+                    "{} {} loaded for {} | {} | f filter | t tags | a age | s sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
                     app.active_result_len(),
                     result_label,
                     app.active_tab(),
@@ -1091,13 +1167,14 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  r                Refresh the active tab"),
         Line::from("  p                Toggle polling / auto-refresh"),
         Line::from("  a                Edit age filter (24h, 7d, 90m)"),
-        Line::from("  v                Open version multi-select filter"),
+        Line::from("  f or /           Open filter popup (tags + versions multi-select)"),
+        Line::from("  t                Edit tag text filter (comma-separated)"),
         Line::from("  s                Cycle sort mode"),
         Line::from("  c                Open settings and diagnostics"),
         Line::from("  q or Ctrl-C      Quit"),
         Line::from(""),
         Line::from("Filtering"),
-        Line::from("  / or f           Focus the filter bar"),
+        Line::from("  t                Focus the tag text filter bar"),
         Line::from("  Type tags        Edit comma-separated tag filters"),
         Line::from("  Enter            Apply tag filter to the active tab"),
         Line::from("  Esc              Exit filter editing"),
@@ -1254,13 +1331,13 @@ Dashboard Polling [p]
 GitLab Runner TUI Live (p to pause) last <age> next <age>
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [/]
+Filter Tags [t]
 prod,linux | age -h | versions All versions | sort None
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> ago | / tags | a age | v versions | s sort | c settings | r refresh | p");
+1 runners loaded for Runners | last refresh <age> ago | f filter | t tags | a age | s sort | c settings | r refresh | p p");
     }
 
     #[test]
@@ -1276,12 +1353,12 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [/]
+Filter Tags [t]
 alm | age -h | versions All versions | sort None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offline | not loaded yet | / tags | a age | v versions | s sort | c settings");
+0 runners loaded for Offline | not loaded yet | f filter | t tags | a age | s sort | c settings |");
     }
 
     #[test]
@@ -1306,13 +1383,13 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [/]
-Press / to edit tags. a: age -h. v: versions All versions. s: sort None. c: settings.
+Filter Tags [t]
+Press t to edit tags. a: age -h. f: filter. s: sort None. c: settings.
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Workers | not loaded yet | / tags | a age | v versions | s sort | c settings | r refresh | p poll");
+1 workers loaded for Workers | not loaded yet | f filter | t tags | a age | s sort | c settings | r refresh | p poll |");
     }
 
     #[test]
@@ -1343,15 +1420,15 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [/]
-Press / to edit tags. a: age -h. v: versions All versions. s: sort None. c: settings.
+Filter Tags [t]
+Press t to edit tags. a: age -h. f: filter. s: sort None. c: settings.
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | / tags | a age | v versions | s sort | c settings | r refresh | p poll");
+1 runners loaded for Health | not loaded yet | f filter | t tags | a age | s sort | c settings | r refresh | p poll |");
     }
 
     #[test]
