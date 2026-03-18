@@ -1,4 +1,5 @@
 use crate::config::RunnerDiscoveryMode;
+use crate::models::runner::RunnerSortKey;
 use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_detail, latest_runner_contact_label,
@@ -191,7 +192,7 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let (text, style) = if app.filter_input.is_empty() {
         (
             format!(
-                "Press / to edit tags. a: age {}. v: versions {}. o: sort {}. c: settings.",
+                "Press / to edit tags. a: age {}. v: versions {}. s: sort {}. c: settings.",
                 app.age_filter_summary(),
                 app.selected_versions_summary(),
                 app.sort_label()
@@ -352,12 +353,30 @@ fn render_runner_like_tab(app: &mut App, frame: &mut Frame, area: Rect, rotating
     }
 }
 
+fn header_with_indicator(
+    label: &str,
+    target: RunnerSortKey,
+    active: RunnerSortKey,
+) -> Cell<'static> {
+    if active == target {
+        let symbol = match active {
+            RunnerSortKey::AgeOldestFirst | RunnerSortKey::LastContactOldestFirst => "↑",
+            RunnerSortKey::CreatedNewestFirst => "↓",
+            RunnerSortKey::None => "",
+        };
+        Cell::from(format!("{label} {symbol}"))
+    } else {
+        Cell::from(label.to_string())
+    }
+}
+
 fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: bool) {
     let now = Utc::now();
     let active_tab = app.active_tab();
+    let active_sort = app.effective_sort_key();
     let header = if rotating {
         Row::new(vec![
-            Cell::from("ID"),
+            header_with_indicator("ID", RunnerSortKey::AgeOldestFirst, active_sort),
             Cell::from("Old System"),
             Cell::from("New System"),
             Cell::from("Status"),
@@ -365,36 +384,82 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     } else {
         match active_tab {
             Tab::Runners => Row::new(vec![
-                Cell::from("ID"),
+                if active_sort == RunnerSortKey::AgeOldestFirst
+                    || active_sort == RunnerSortKey::CreatedNewestFirst
+                {
+                    header_with_indicator("ID", active_sort, active_sort)
+                } else {
+                    Cell::from("ID")
+                },
                 Cell::from("Status"),
                 Cell::from("Version"),
-                Cell::from("Last Contact"),
+                header_with_indicator(
+                    "Last Contact",
+                    RunnerSortKey::LastContactOldestFirst,
+                    active_sort,
+                ),
                 Cell::from("Tags"),
                 Cell::from("Mgrs"),
             ]),
             Tab::Health => Row::new(vec![
-                Cell::from("ID"),
+                if active_sort == RunnerSortKey::AgeOldestFirst
+                    || active_sort == RunnerSortKey::CreatedNewestFirst
+                {
+                    header_with_indicator("ID", active_sort, active_sort)
+                } else {
+                    Cell::from("ID")
+                },
                 Cell::from("Status"),
                 Cell::from("Version"),
-                Cell::from("Last Contact"),
+                header_with_indicator(
+                    "Last Contact",
+                    RunnerSortKey::LastContactOldestFirst,
+                    active_sort,
+                ),
                 Cell::from("Mgrs"),
             ]),
             Tab::Offline | Tab::Uncontacted => Row::new(vec![
-                Cell::from("ID"),
+                if active_sort == RunnerSortKey::AgeOldestFirst
+                    || active_sort == RunnerSortKey::CreatedNewestFirst
+                {
+                    header_with_indicator("ID", active_sort, active_sort)
+                } else {
+                    Cell::from("ID")
+                },
                 Cell::from("Version"),
-                Cell::from("Last Contact"),
+                header_with_indicator(
+                    "Last Contact",
+                    RunnerSortKey::LastContactOldestFirst,
+                    active_sort,
+                ),
                 Cell::from("Mgrs"),
             ]),
             Tab::Empty => Row::new(vec![
-                Cell::from("ID"),
+                if active_sort == RunnerSortKey::AgeOldestFirst
+                    || active_sort == RunnerSortKey::CreatedNewestFirst
+                {
+                    header_with_indicator("ID", active_sort, active_sort)
+                } else {
+                    Cell::from("ID")
+                },
                 Cell::from("Version"),
                 Cell::from("Status"),
             ]),
             _ => Row::new(vec![
-                Cell::from("ID"),
+                if active_sort == RunnerSortKey::AgeOldestFirst
+                    || active_sort == RunnerSortKey::CreatedNewestFirst
+                {
+                    header_with_indicator("ID", active_sort, active_sort)
+                } else {
+                    Cell::from("ID")
+                },
                 Cell::from("Status"),
                 Cell::from("Version"),
-                Cell::from("Last Contact"),
+                header_with_indicator(
+                    "Last Contact",
+                    RunnerSortKey::LastContactOldestFirst,
+                    active_sort,
+                ),
                 Cell::from("Tags"),
                 Cell::from("Mgrs"),
             ]),
@@ -570,12 +635,17 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
 
 fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let now = Utc::now();
+    let active_sort = app.effective_sort_key();
     let header = Row::new(vec![
         Cell::from("Runner"),
         Cell::from("Worker"),
         Cell::from("System"),
         Cell::from("Status"),
-        Cell::from("Contacted"),
+        header_with_indicator(
+            "Contacted",
+            RunnerSortKey::LastContactOldestFirst,
+            active_sort,
+        ),
     ])
     .style(styles::table_header_style());
 
@@ -1019,7 +1089,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     .map(|age| format!("last refresh {} ago", format_age(age)))
                     .unwrap_or_else(|| "not loaded yet".to_string());
                 format!(
-                    "{} {} loaded for {} | {} | / tags | a age | v versions | o sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
+                    "{} {} loaded for {} | {} | / tags | a age | v versions | s sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
                     app.active_result_len(),
                     result_label,
                     app.active_tab(),
@@ -1226,7 +1296,7 @@ Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> ago | / tags | a age | v versions | o sort | c settings | r refresh | p");
+1 runners loaded for Runners | last refresh <age> ago | / tags | a age | v versions | s sort | c settings | r refresh | p");
     }
 
     #[test]
@@ -1247,7 +1317,7 @@ alm | age -h | versions All versions | sort None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offline | not loaded yet | / tags | a age | v versions | o sort | c settings");
+0 runners loaded for Offline | not loaded yet | / tags | a age | v versions | s sort | c settings");
     }
 
     #[test]
@@ -1273,12 +1343,12 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-Press / to edit tags. a: age -h. v: versions All versions. o: sort None. c: settings.
+Press / to edit tags. a: age -h. v: versions All versions. s: sort None. c: settings.
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Workers | not loaded yet | / tags | a age | v versions | o sort | c settings | r refresh | p poll");
+1 workers loaded for Workers | not loaded yet | / tags | a age | v versions | s sort | c settings | r refresh | p poll");
     }
 
     #[test]
@@ -1310,14 +1380,14 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [/]
-Press / to edit tags. a: age -h. v: versions All versions. o: sort None. c: settings.
+Press / to edit tags. a: age -h. v: versions All versions. s: sort None. c: settings.
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | / tags | a age | v versions | o sort | c settings | r refresh | p poll");
+1 runners loaded for Health | not loaded yet | / tags | a age | v versions | s sort | c settings | r refresh | p poll");
     }
 
     #[test]
