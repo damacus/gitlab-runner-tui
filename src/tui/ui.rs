@@ -57,7 +57,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     match app.mode {
         AppMode::AgeInput => render_age_filter_modal(app, frame),
         AppMode::Settings => render_settings_modal(app, frame),
-        AppMode::VersionFilter => render_version_filter_modal(app, frame),
+        AppMode::FilterPopup => render_version_filter_modal(app, frame),
         _ => {}
     }
 }
@@ -1016,8 +1016,8 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             "Type runner age like 24h, 7d, 90m | Enter: apply age filter | Esc: cancel"
                 .to_string()
         }
-        AppMode::VersionFilter => {
-            "Version filter | ↑/↓ move | Space toggle | a/Backspace clear | Enter/Esc close"
+        AppMode::FilterPopup => {
+            "Filter | f/esc close | tab switch section | space toggle | a clear section"
                 .to_string()
         }
         AppMode::Settings => {

@@ -132,9 +132,16 @@ pub enum AppMode {
     Dashboard,
     FilterInput,
     AgeInput,
-    VersionFilter,
+    FilterPopup,
     Settings,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterPopupSection {
+    #[default]
+    Tags,
+    Versions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -328,6 +335,10 @@ pub struct App {
     pub age_filter_input: String,
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
+    pub filter_popup_section: FilterPopupSection,
+    pub tag_options: Vec<String>,
+    pub selected_tags: Vec<String>,
+    pub tag_list_state: ListState,
     pub sort_key: RunnerSortKey,
     pub table_state: TableState,
     pub scroll_state: ScrollbarState,
@@ -370,6 +381,10 @@ impl App {
             age_filter_input: String::new(),
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
+            filter_popup_section: FilterPopupSection::default(),
+            tag_options: Vec::new(),
+            selected_tags: Vec::new(),
+            tag_list_state: ListState::default(),
             sort_key: RunnerSortKey::None,
             table_state: TableState::default(),
             scroll_state: ScrollbarState::default(),
@@ -472,7 +487,7 @@ impl App {
     }
 
     pub fn open_version_filter(&mut self) {
-        self.mode = AppMode::VersionFilter;
+        self.mode = AppMode::FilterPopup;
         if self.version_options.is_empty() {
             self.version_list_state.select(None);
         } else if self.version_list_state.selected().is_none() {
@@ -901,6 +916,26 @@ impl App {
         }
     }
 
+    pub fn toggle_selected_tag(&mut self) {
+        let Some(index) = self.tag_list_state.selected() else {
+            return;
+        };
+        let Some(tag) = self.tag_options.get(index).cloned() else {
+            return;
+        };
+
+        if let Some(existing_index) = self.selected_tags.iter().position(|t| t == &tag) {
+            self.selected_tags.remove(existing_index);
+        } else {
+            self.selected_tags.push(tag);
+            self.selected_tags.sort();
+        }
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
     pub fn refresh_local_benchmarks(&mut self) {
         self.local_benchmarks = Some(benchmark_runner_processing(
             &self.raw_runners,
@@ -1061,45 +1096,79 @@ impl App {
             return;
         }
 
-        if self.mode == AppMode::VersionFilter {
+        if self.mode == AppMode::FilterPopup {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('v') => {
+                KeyCode::Esc | KeyCode::Char('f') => {
                     self.mode = AppMode::Dashboard;
                 }
-                KeyCode::Char('a') => {
-                    self.selected_versions.clear();
-                    if self.has_loaded_active_tab() {
-                        self.apply_view_state(self.active_tab());
-                    }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.filter_popup_section = match self.filter_popup_section {
+                        FilterPopupSection::Tags => FilterPopupSection::Versions,
+                        FilterPopupSection::Versions => FilterPopupSection::Tags,
+                    };
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let len = self.version_options.len();
-                    if len > 0 {
-                        let next = match self.version_list_state.selected() {
-                            Some(0) | None => len - 1,
-                            Some(index) => index - 1,
-                        };
-                        self.version_list_state.select(Some(next));
+                KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
+                    FilterPopupSection::Tags => {
+                        let len = self.tag_options.len();
+                        if len > 0 {
+                            let next = match self.tag_list_state.selected() {
+                                Some(0) | None => len - 1,
+                                Some(i) => i - 1,
+                            };
+                            self.tag_list_state.select(Some(next));
+                        }
                     }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let len = self.version_options.len();
-                    if len > 0 {
-                        let next = match self.version_list_state.selected() {
-                            Some(index) if index + 1 < len => index + 1,
-                            _ => 0,
-                        };
-                        self.version_list_state.select(Some(next));
+                    FilterPopupSection::Versions => {
+                        let len = self.version_options.len();
+                        if len > 0 {
+                            let next = match self.version_list_state.selected() {
+                                Some(0) | None => len - 1,
+                                Some(i) => i - 1,
+                            };
+                            self.version_list_state.select(Some(next));
+                        }
                     }
-                }
-                KeyCode::Char(' ') => self.toggle_selected_version(),
-                KeyCode::Backspace => {
-                    self.selected_versions.clear();
-                    if self.has_loaded_active_tab() {
-                        self.apply_view_state(self.active_tab());
+                },
+                KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
+                    FilterPopupSection::Tags => {
+                        let len = self.tag_options.len();
+                        if len > 0 {
+                            let next = match self.tag_list_state.selected() {
+                                Some(i) if i + 1 < len => i + 1,
+                                _ => 0,
+                            };
+                            self.tag_list_state.select(Some(next));
+                        }
                     }
-                }
-                KeyCode::Enter => self.mode = AppMode::Dashboard,
+                    FilterPopupSection::Versions => {
+                        let len = self.version_options.len();
+                        if len > 0 {
+                            let next = match self.version_list_state.selected() {
+                                Some(i) if i + 1 < len => i + 1,
+                                _ => 0,
+                            };
+                            self.version_list_state.select(Some(next));
+                        }
+                    }
+                },
+                KeyCode::Char(' ') => match self.filter_popup_section {
+                    FilterPopupSection::Tags => self.toggle_selected_tag(),
+                    FilterPopupSection::Versions => self.toggle_selected_version(),
+                },
+                KeyCode::Char('a') | KeyCode::Backspace => match self.filter_popup_section {
+                    FilterPopupSection::Tags => {
+                        self.selected_tags.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        self.selected_versions.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                },
                 _ => {}
             }
             return;
@@ -1411,6 +1480,15 @@ mod tests {
             platform: None,
             architecture: None,
         }
+    }
+
+    #[test]
+    fn test_app_initial_filter_popup_fields() {
+        let app = test_app();
+        assert_eq!(app.filter_popup_section, FilterPopupSection::Tags);
+        assert!(app.tag_options.is_empty());
+        assert!(app.selected_tags.is_empty());
+        assert_eq!(app.tag_list_state.selected(), None);
     }
 
     #[test]
