@@ -131,7 +131,6 @@ pub enum AppMode {
     #[default]
     Dashboard,
     FilterInput,
-    AgeInput,
     FilterPopup,
     Settings,
     Help,
@@ -332,7 +331,6 @@ pub struct App {
     pub loaded_tab: Option<Tab>,
 
     pub filter_input: String,
-    pub age_filter_input: String,
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
     pub filter_popup_section: FilterPopupSection,
@@ -381,7 +379,6 @@ impl App {
             active_tab_index: 0,
             loaded_tab: None,
             filter_input: String::new(),
-            age_filter_input: String::new(),
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
             filter_popup_section: FilterPopupSection::default(),
@@ -440,10 +437,6 @@ impl App {
         }
     }
 
-    pub fn age_filter_secs(&self) -> Option<u64> {
-        parse_duration_input(&self.age_filter_input)
-    }
-
     pub fn next_tab(&mut self) -> bool {
         let next = (self.active_tab_index + 1) % self.tabs.len();
         self.set_active_tab_index(next)
@@ -483,11 +476,6 @@ impl App {
 
     pub fn focus_filter(&mut self) {
         self.mode = AppMode::FilterInput;
-        self.error_message = None;
-    }
-
-    pub fn focus_age_filter(&mut self) {
-        self.mode = AppMode::AgeInput;
         self.error_message = None;
     }
 
@@ -552,7 +540,6 @@ impl App {
             tag_list,
             selected_versions: (!self.selected_versions.is_empty())
                 .then_some(self.selected_versions.clone()),
-            older_than_secs: self.age_filter_secs(),
             ..RunnerFilters::default()
         }
     }
@@ -582,14 +569,6 @@ impl App {
             "all tags".to_string()
         } else {
             format!("{} selected", self.selected_tags.len())
-        }
-    }
-
-    pub fn age_filter_summary(&self) -> String {
-        if self.age_filter_input.trim().is_empty() {
-            "-h".to_string()
-        } else {
-            format!("{}h", self.age_filter_input.trim())
         }
     }
 
@@ -1207,31 +1186,6 @@ impl App {
             return;
         }
 
-        if self.mode == AppMode::AgeInput {
-            match key.code {
-                KeyCode::Enter => {
-                    self.mode = AppMode::Dashboard;
-                    if self.has_loaded_active_tab() {
-                        self.apply_view_state(self.active_tab());
-                    }
-                }
-                KeyCode::Esc => {
-                    self.mode = AppMode::Dashboard;
-                }
-                KeyCode::Backspace => {
-                    self.age_filter_input.pop();
-                }
-                KeyCode::Char(character)
-                    if character.is_ascii_digit()
-                        || matches!(character, 's' | 'm' | 'h' | 'd' | 'w') =>
-                {
-                    self.age_filter_input.push(character);
-                }
-                _ => {}
-            }
-            return;
-        }
-
         if self.mode == AppMode::FilterPopup {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('f') => {
@@ -1439,9 +1393,6 @@ impl App {
             KeyCode::Char('/') | KeyCode::Char('f') => {
                 self.open_filter_popup();
             }
-            KeyCode::Char('a') => {
-                self.focus_age_filter();
-            }
             KeyCode::Tab => {
                 if self.next_tab() {
                     self.start_search();
@@ -1503,6 +1454,7 @@ pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> Strin
         .unwrap_or_else(|| "Never".to_string())
 }
 
+#[cfg(test)]
 pub fn latest_runner_contact_detail(runner: &Runner) -> String {
     latest_runner_contact(runner)
         .map(format_absolute_timestamp)
@@ -1540,35 +1492,6 @@ fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Str
 
 fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-}
-
-fn parse_duration_input(input: &str) -> Option<u64> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let split_at = trimmed
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(trimmed.len());
-    let (number, suffix) = trimmed.split_at(split_at);
-    let value = number.parse::<u64>().ok()?;
-    let unit = if suffix.is_empty() {
-        "h"
-    } else {
-        suffix.trim()
-    };
-
-    let multiplier = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 60 * 60,
-        "d" => 60 * 60 * 24,
-        "w" => 60 * 60 * 24 * 7,
-        _ => return None,
-    };
-
-    Some(value.saturating_mul(multiplier))
 }
 
 #[cfg(test)]

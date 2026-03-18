@@ -2,9 +2,9 @@ use crate::config::RunnerDiscoveryMode;
 use crate::models::runner::RunnerSortKey;
 use crate::tui::{
     app::{
-        detail_layout_mode, latest_runner_contact_detail, latest_runner_contact_label,
-        manager_contact_detail, manager_contact_label, App, AppMode, DetailLayoutMode,
-        FilterPopupSection, PollDisplayState, ResultsViewType, SettingsField, Tab,
+        detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
+        manager_contact_label, App, AppMode, DetailLayoutMode, FilterPopupSection,
+        PollDisplayState, ResultsViewType, SettingsField, Tab,
     },
     styles,
 };
@@ -55,7 +55,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     render_status_bar(app, frame, chunks[4]);
 
     match app.mode {
-        AppMode::AgeInput => render_age_filter_modal(app, frame),
         AppMode::Settings => render_settings_modal(app, frame),
         AppMode::FilterPopup => render_filter_popup(app, frame),
         _ => {}
@@ -181,22 +180,22 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
+    let has_text = !app.filter_input.is_empty();
+    let has_popup_tags = !app.selected_tags.is_empty();
+    let has_active_filter = has_text || has_popup_tags;
+
     let title = if app.mode == AppMode::FilterInput {
         "Filter Tags [t] (focused)"
-    } else if app.mode == AppMode::AgeInput {
-        "Age Filter [a] (focused)"
+    } else if has_active_filter {
+        "Currently active filter"
     } else {
         "Filter Tags [t]"
     };
 
-    let has_text = !app.filter_input.is_empty();
-    let has_popup_tags = !app.selected_tags.is_empty();
-
-    let (text, style) = if !has_text && !has_popup_tags {
+    let (text, style) = if !has_active_filter {
         (
             format!(
-                "Press t to edit tags. a: age {}. f: filter. s: sort {}. c: settings.",
-                app.age_filter_summary(),
+                "Press t to edit tags. f: filter popup. s: sort {}. c: settings.",
                 app.sort_label()
             ),
             styles::muted_style(),
@@ -214,9 +213,8 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
         };
         (
             format!(
-                "{} | age {} | versions {} | sort {}",
+                "{} | versions {} | sort {}",
                 tag_part,
-                app.age_filter_summary(),
                 app.selected_versions_summary(),
                 app.sort_label()
             ),
@@ -236,11 +234,6 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     if app.mode == AppMode::FilterInput {
         frame.set_cursor(
             area.x + app.filter_input.chars().count() as u16 + 1,
-            area.y + 1,
-        );
-    } else if app.mode == AppMode::AgeInput {
-        frame.set_cursor(
-            area.x + app.age_filter_input.chars().count() as u16 + 1,
             area.y + 1,
         );
     }
@@ -392,6 +385,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
             Cell::from("Old System"),
             Cell::from("New System"),
             header_with_indicator("Status", RunnerSortKey::Status, active_sort),
+            header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
         ])
     } else {
         match active_tab {
@@ -466,6 +460,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
                         .unwrap_or("-"),
                 ),
                 Cell::from(overall_status).style(styles::status_style(overall_status)),
+                Cell::from(latest_runner_contact_label(runner, now)),
             ])
         } else {
             let status =
@@ -514,9 +509,10 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     let widths = if rotating {
         vec![
             Constraint::Length(8),
-            Constraint::Percentage(36),
-            Constraint::Percentage(36),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
             Constraint::Length(10),
+            Constraint::Length(14),
         ]
     } else {
         match active_tab {
@@ -671,11 +667,38 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         return;
     };
 
+    let now = Utc::now();
+
+    // Compute wrappable tags lines given available inner width (subtract 2 for border).
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let tag_items: Vec<ListItem> = if runner.tag_list.is_empty() {
+        vec![ListItem::new("Tags: -")]
+    } else {
+        let prefix = "Tags: ";
+        let prefix_len = prefix.len();
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        let mut current_line = prefix.to_string();
+        let mut first = true;
+        for tag in &runner.tag_list {
+            let sep = if first { "" } else { ", " };
+            let candidate = format!("{}{}{}", current_line, sep, tag);
+            if !first && candidate.len() > inner_width {
+                lines.push(ratatui::text::Line::from(current_line.clone()));
+                current_line = format!("{:prefix_len$}{}", "", tag);
+            } else {
+                current_line = candidate;
+            }
+            first = false;
+        }
+        lines.push(ratatui::text::Line::from(current_line));
+        vec![ListItem::new(ratatui::text::Text::from(lines))]
+    };
+
     let mut items = vec![
         ListItem::new(format!("ID: {}", runner.id)),
         ListItem::new(format!(
             "Last Contact: {}",
-            latest_runner_contact_detail(runner)
+            latest_runner_contact_label(runner, now)
         )),
         ListItem::new(format!(
             "Version: {}",
@@ -685,15 +708,9 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
             "Revision: {}",
             runner.revision.as_deref().unwrap_or("-")
         )),
-        ListItem::new(format!(
-            "Tags: {}",
-            if runner.tag_list.is_empty() {
-                "-".to_string()
-            } else {
-                runner.tag_list.join(", ")
-            }
-        )),
     ];
+
+    items.extend(tag_items);
 
     if !runner.runner_type.is_empty() {
         let display_type = match runner.runner_type.as_str() {
@@ -709,15 +726,6 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         items.push(ListItem::new(format!("IP: {}", ip_address)));
     }
 
-    {
-        let desc = runner
-            .description
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("-");
-        items.push(ListItem::new(format!("Description: {desc}")));
-    }
-
     if !runner.managers.is_empty() {
         items.push(ListItem::new(" "));
         items.push(ListItem::new("Managers:").style(styles::accent_style()));
@@ -726,7 +734,7 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
                 "{} [{}] {} {}",
                 manager.system_id,
                 manager.status,
-                manager_contact_label(manager, Utc::now()),
+                manager_contact_label(manager, now),
                 manager.version.as_deref().unwrap_or("-")
             )));
         }
@@ -769,35 +777,6 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
 
     let list = List::new(items).block(styles::block("Worker Detail"));
     frame.render_widget(list, area);
-}
-
-fn render_age_filter_modal(app: &App, frame: &mut Frame) {
-    let area = centered_rect(52, 22, frame.size());
-    frame.render_widget(Clear, area);
-    let block = styles::focused_block("Age Filter [a]");
-    let inner = block.inner(area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from("Type a minimum runner age like 24h, 7d, or 90m."),
-            Line::from(""),
-            Line::from(format!(
-                "Older than: {}",
-                if app.age_filter_input.trim().is_empty() {
-                    "any".to_string()
-                } else {
-                    app.age_filter_input.clone()
-                }
-            )),
-            Line::from(""),
-            Line::from("Enter: apply  Esc: cancel"),
-        ])
-        .block(block),
-        area,
-    );
-    frame.set_cursor(
-        inner.x + "Older than: ".len() as u16 + app.age_filter_input.len() as u16,
-        inner.y + 2,
-    );
 }
 
 fn render_filter_popup(app: &mut App, frame: &mut Frame) {
@@ -979,8 +958,7 @@ fn render_behavior_section(app: &App, frame: &mut Frame, area: Rect) {
             &format!("{}s", app.settings_draft.poll_timeout_input),
         ),
         Line::from(format!(
-            "Age filter: {} | Versions: {} | Sort: {}",
-            app.age_filter_summary(),
+            "Versions: {} | Sort: {}",
             app.selected_versions_summary(),
             app.sort_label()
         )),
@@ -1104,75 +1082,97 @@ fn field_line(selected: bool, label: &str, value: &str) -> Line<'static> {
 }
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
-    let mut status = match app.mode {
-        AppMode::Help => "Any key closes help".to_string(),
+    // For modal/overlay modes, render a simple centered hint.
+    let simple_hint: Option<&str> = match app.mode {
+        AppMode::Help => Some("Any key closes help"),
         AppMode::FilterInput => {
-            "Type tags | Enter: apply filter and refresh | Esc: stop editing | Ctrl-C: quit"
-                .to_string()
-        }
-        AppMode::AgeInput => {
-            "Type runner age like 24h, 7d, 90m | Enter: apply age filter | Esc: cancel"
-                .to_string()
+            Some("Type tags | Enter: apply filter and refresh | Esc: stop editing | Ctrl-C: quit")
         }
         AppMode::FilterPopup => {
-            "Filter | f/esc close | tab switch section | space toggle | a clear section"
-                .to_string()
+            Some("Filter | f/esc close | tab switch section | space toggle | a clear section")
         }
-        AppMode::Settings => {
-            "Settings | Tab/Shift+Tab move | Type edit | ←/→ discovery | Ctrl-S save | b benchmark | Esc close"
-                .to_string()
-        }
-        AppMode::Dashboard => {
-            if app.is_loading {
-                let filter = if app.filter_input.trim().is_empty() {
-                    "all runners".to_string()
-                } else {
-                    format!("tags [{}]", app.filter_input.trim())
-                };
-                format!(
-                    "{} Refreshing {} using {}",
-                    app.spinner_char(),
-                    app.active_tab(),
-                    filter
-                )
-            } else if let Some(error) = &app.error_message {
-                format!(
-                    "Last refresh failed for {}: {}",
-                    app.active_tab(),
-                    error.lines().next().unwrap_or("unknown error")
-                )
-            } else {
-                let result_label = match app.current_results_view_type() {
-                    ResultsViewType::Workers => "workers",
-                    _ => "runners",
-                };
-                let refreshed = app
-                    .last_refresh_age_secs()
-                    .map(|age| format!("last refresh {} ago", format_age(age)))
-                    .unwrap_or_else(|| "not loaded yet".to_string());
-                format!(
-                    "{} {} loaded for {} | {} | f filter | t tags | a age | s sort | d endpoint | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
-                    app.active_result_len(),
-                    result_label,
-                    app.active_tab(),
-                    refreshed,
-                )
-            }
-        }
+        AppMode::Settings => Some(
+            "Settings | Tab/Shift+Tab move | Type edit | ←/→ discovery | Ctrl-S save | b benchmark | Esc close",
+        ),
+        AppMode::Dashboard => None,
     };
 
-    if matches!(
-        detail_layout_mode(area.width, 24),
-        DetailLayoutMode::Compact
-    ) {
-        if let Some(summary) = app.compact_selection_summary() {
-            status.push_str(" | ");
-            status.push_str(&summary);
-        }
+    if let Some(hint) = simple_hint {
+        let paragraph = Paragraph::new(hint).block(styles::block("Status"));
+        frame.render_widget(paragraph, area);
+        return;
     }
 
-    let paragraph = Paragraph::new(status).block(styles::block("Status"));
-    frame.render_widget(paragraph, area);
+    // Dashboard mode: left = count/state, right = shortcuts.
+    let shortcuts = "p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit";
+
+    let left_text = if app.is_loading {
+        let filter = if app.filter_input.trim().is_empty() {
+            "all runners".to_string()
+        } else {
+            format!("tags [{}]", app.filter_input.trim())
+        };
+        format!(
+            "{} Refreshing {} using {}",
+            app.spinner_char(),
+            app.active_tab(),
+            filter
+        )
+    } else if let Some(error) = &app.error_message {
+        format!(
+            "Last refresh failed for {}: {}",
+            app.active_tab(),
+            error.lines().next().unwrap_or("unknown error")
+        )
+    } else {
+        let result_label = match app.current_results_view_type() {
+            ResultsViewType::Workers => "workers",
+            _ => "runners",
+        };
+        let refreshed = app
+            .last_refresh_age_secs()
+            .map(|age| format!("last refresh {} ago", format_age(age)))
+            .unwrap_or_else(|| "not loaded yet".to_string());
+        let mut left = format!(
+            "{} {} loaded for {} | {}",
+            app.active_result_len(),
+            result_label,
+            app.active_tab(),
+            refreshed,
+        );
+        if matches!(
+            detail_layout_mode(area.width, 24),
+            DetailLayoutMode::Compact
+        ) {
+            if let Some(summary) = app.compact_selection_summary() {
+                left.push_str(" | ");
+                left.push_str(&summary);
+            }
+        }
+        left
+    };
+
+    // Split the status area: left side expands, right side is fixed width for shortcuts.
+    let shortcuts_width = (shortcuts.len() as u16 + 2).min(area.width);
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(shortcuts_width)])
+        .split(inner);
+
+    let block = styles::block("Status");
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(left_text).alignment(Alignment::Left),
+        cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(shortcuts).alignment(Alignment::Right),
+        cols[1],
+    );
 }
 
 fn render_help_view(frame: &mut Frame, area: Rect) {
@@ -1188,7 +1188,6 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from("  Enter            Apply the current filter"),
         Line::from("  r                Refresh the active tab"),
         Line::from("  p                Toggle polling / auto-refresh"),
-        Line::from("  a                Edit age filter (24h, 7d, 90m)"),
         Line::from("  f or /           Open filter popup (tags + versions multi-select)"),
         Line::from("  t                Edit tag text filter (comma-separated)"),
         Line::from("  s                Cycle sort mode"),
@@ -1353,13 +1352,13 @@ Dashboard Polling [p]
 GitLab Runner TUI Live (p to pause) last <age> next <age>
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [t]
-prod,linux | age -h | versions All versions | sort None
+Currently active filter
+prod,linux | versions All versions | sort None
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> ago | f filter | t tags | a age | s sort | d endpoint | c settings | r");
+1 runners loaded for Run p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1375,12 +1374,12 @@ Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
-Filter Tags [t]
-alm | age -h | versions All versions | sort None
+Currently active filter
+alm | versions All versions | sort None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offline | not loaded yet | f filter | t tags | a age | s sort | d endpoint |");
+0 ru p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1406,12 +1405,12 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [t]
-Press t to edit tags. a: age -h. f: filter. s: sort None. c: settings.
+Press t to edit tags. f: filter popup. s: sort None. c: settings.
 Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Workers | not loaded yet | f filter | t tags | a age | s sort | d endpoint | c settings | r refre");
+1 workers loaded for Wor p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
@@ -1443,14 +1442,14 @@ GitLab Runner TUI Paused (p to resume) last never next -
 Views
 1 Runners | 2 Health | 3 Offline | 4 Uncontacted | 5 Empty | 6 Rotating | 7 Workers
 Filter Tags [t]
-Press t to edit tags. a: age -h. f: filter. s: sort None. c: settings.
+Press t to edit tags. f: filter popup. s: sort None. c: settings.
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | f filter | t tags | a age | s sort | d endpoint | c settings | r refres");
+1 runners loaded for Hea p poll | r refresh | f filter | t tags | s sort | d endpoint | c settings | ?: help | q quit");
     }
 
     #[test]
