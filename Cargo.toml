@@ -11,7 +11,7 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # TUI
-ratatui = "0.27"
+ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async & HTTP
