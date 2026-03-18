@@ -709,8 +709,13 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         items.push(ListItem::new(format!("IP: {}", ip_address)));
     }
 
-    if let Some(description) = &runner.description {
-        items.push(ListItem::new(format!("Description: {}", description)));
+    {
+        let desc = runner
+            .description
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-");
+        items.push(ListItem::new(format!("Description: {desc}")));
     }
 
     if !runner.managers.is_empty() {
@@ -909,17 +914,8 @@ fn render_settings_modal(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
-    let all_runners_label;
     let mode_label = match app.settings_draft.discovery_mode {
-        RunnerDiscoveryMode::AllRunners => {
-            if app.all_runners_fell_back {
-                all_runners_label =
-                    "All runners (/runners/all → fell back to /runners)".to_string();
-                all_runners_label.as_str()
-            } else {
-                "All runners (/runners/all)"
-            }
-        }
+        RunnerDiscoveryMode::AllRunners => "All runners (/runners/all)",
         RunnerDiscoveryMode::VisibleRunners => "Visible runners (/runners)",
         RunnerDiscoveryMode::ConfiguredTargets => "Targets",
     };
@@ -992,13 +988,7 @@ fn render_diagnostics_section(app: &App, frame: &mut Frame, area: Rect) {
 
     if let Some(metrics) = &app.live_query_metrics {
         let mode = match metrics.discovery_mode {
-            RunnerDiscoveryMode::AllRunners => {
-                if app.all_runners_fell_back {
-                    "/runners/all → /runners (fallback)"
-                } else {
-                    "/runners/all"
-                }
-            }
+            RunnerDiscoveryMode::AllRunners => "/runners/all",
             RunnerDiscoveryMode::VisibleRunners => "/runners",
             RunnerDiscoveryMode::ConfiguredTargets => "targets",
         };
@@ -1146,7 +1136,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
                     .map(|age| format!("last refresh {} ago", format_age(age)))
                     .unwrap_or_else(|| "not loaded yet".to_string());
                 format!(
-                    "{} {} loaded for {} | {} | f filter | t tags | a age | s sort | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
+                    "{} {} loaded for {} | {} | f filter | t tags | a age | s sort | d endpoint | c settings | r refresh | p poll | ?: help | q/Ctrl-C quit",
                     app.active_result_len(),
                     result_label,
                     app.active_tab(),
@@ -1354,7 +1344,7 @@ Runners (1)
 ID Status Version Last Contact Tags Mgrs
 326689 online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> ago | f filter | t tags | a age | s sort | c settings | r refresh | p p");
+1 runners loaded for Runners | last refresh <age> ago | f filter | t tags | a age | s sort | d endpoint | c settings | r");
     }
 
     #[test]
@@ -1375,7 +1365,7 @@ alm | age -h | versions All versions | sort None
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offline | not loaded yet | f filter | t tags | a age | s sort | c settings |");
+0 runners loaded for Offline | not loaded yet | f filter | t tags | a age | s sort | d endpoint |");
     }
 
     #[test]
@@ -1406,7 +1396,7 @@ Workers (1)
 Runner Worker System Status Contacted
 326759 256551 s_859060915507 online <age>
 Status
-1 workers loaded for Workers | not loaded yet | f filter | t tags | a age | s sort | c settings | r refresh | p poll |");
+1 workers loaded for Workers | not loaded yet | f filter | t tags | a age | s sort | d endpoint | c settings | r refre");
     }
 
     #[test]
@@ -1445,7 +1435,7 @@ Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 326812 online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | f filter | t tags | a age | s sort | c settings | r refresh | p poll |");
+1 runners loaded for Health | not loaded yet | f filter | t tags | a age | s sort | d endpoint | c settings | r refres");
     }
 
     #[test]

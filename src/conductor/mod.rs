@@ -17,17 +17,6 @@ pub struct Conductor {
 pub struct QueryOutcome {
     pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
-    /// True when AllRunners mode fell back from /runners/all to /runners due to 403.
-    pub all_runners_fell_back: bool,
-}
-
-fn is_forbidden(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .and_then(|e| e.status())
-            .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
-    })
 }
 
 impl Conductor {
@@ -60,6 +49,10 @@ impl Conductor {
         self.discovery_mode
     }
 
+    pub fn client(&self) -> &GitLabClient {
+        &self.client
+    }
+
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         Ok(self.fetch_runners_with_metrics(filters).await?.runners)
     }
@@ -67,8 +60,7 @@ impl Conductor {
     pub async fn fetch_runners_with_metrics(&self, filters: RunnerFilters) -> Result<QueryOutcome> {
         let started_at = Utc::now();
         let started = Instant::now();
-        let (runners, request_counts, all_runners_fell_back) =
-            self.fetch_runners_internal(filters).await?;
+        let (runners, request_counts) = self.fetch_runners_internal(filters).await?;
         let finished_at = Utc::now();
         let metrics = LiveQueryMetrics::success(
             started_at,
@@ -78,86 +70,39 @@ impl Conductor {
             self.discovery_mode,
             request_counts,
         );
-        Ok(QueryOutcome {
-            runners,
-            metrics,
-            all_runners_fell_back,
-        })
+        Ok(QueryOutcome { runners, metrics })
     }
 
     async fn fetch_runners_internal(
         &self,
         filters: RunnerFilters,
-    ) -> Result<(Vec<Runner>, QueryRequestCounts, bool)> {
+    ) -> Result<(Vec<Runner>, QueryRequestCounts)> {
         let mut runner_map = BTreeMap::new();
         let per_page = 100;
         let mut request_counts = QueryRequestCounts::default();
-        let mut all_runners_fell_back = false;
 
         match self.discovery_mode {
             RunnerDiscoveryMode::AllRunners => {
-                // Try /runners/all (admin-only); fall back to /runners on 403.
-                let first = self.client.fetch_all_runners(&filters, 1, per_page).await;
-
-                let use_admin = match &first {
-                    Ok(_) => true,
-                    Err(e) => {
-                        // 403 Forbidden means not an admin — fall back silently
-                        !is_forbidden(e)
-                    }
-                };
-
-                if use_admin {
-                    // First page already fetched; continue from page 2
-                    let first_page = first?;
+                // /runners/all — admin-only endpoint, returns all runners in the instance.
+                // If your token lacks admin access, this will error; switch to VisibleRunners.
+                let mut page = 1;
+                loop {
                     request_counts.list_requests += 1;
-                    let first_len = first_page.len();
-                    for runner in first_page {
+                    let runners = self
+                        .client
+                        .fetch_all_runners(&filters, page, per_page)
+                        .await?;
+                    if runners.is_empty() {
+                        break;
+                    }
+                    let count = runners.len();
+                    for runner in runners {
                         runner_map.entry(runner.id).or_insert(runner);
                     }
-                    if first_len >= per_page as usize {
-                        let mut page = 2;
-                        loop {
-                            request_counts.list_requests += 1;
-                            let runners = self
-                                .client
-                                .fetch_all_runners(&filters, page, per_page)
-                                .await?;
-                            if runners.is_empty() {
-                                break;
-                            }
-                            let count = runners.len();
-                            for runner in runners {
-                                runner_map.entry(runner.id).or_insert(runner);
-                            }
-                            if count < per_page as usize {
-                                break;
-                            }
-                            page += 1;
-                        }
+                    if count < per_page as usize {
+                        break;
                     }
-                } else {
-                    // Fallback: /runners (visible to current user)
-                    all_runners_fell_back = true;
-                    let mut page = 1;
-                    loop {
-                        request_counts.list_requests += 1;
-                        let runners = self
-                            .client
-                            .fetch_available_runners(&filters, page, per_page)
-                            .await?;
-                        if runners.is_empty() {
-                            break;
-                        }
-                        let count = runners.len();
-                        for runner in runners {
-                            runner_map.entry(runner.id).or_insert(runner);
-                        }
-                        if count < per_page as usize {
-                            break;
-                        }
-                        page += 1;
-                    }
+                    page += 1;
                 }
             }
             RunnerDiscoveryMode::VisibleRunners => {
@@ -260,7 +205,7 @@ impl Conductor {
         .collect()
         .await;
 
-        Ok((enriched, request_counts, all_runners_fell_back))
+        Ok((enriched, request_counts))
     }
 
     pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {

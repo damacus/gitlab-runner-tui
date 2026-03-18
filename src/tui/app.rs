@@ -352,8 +352,6 @@ pub struct App {
     pub last_poll_at: Option<Instant>,
     pub last_refresh_at: Option<Instant>,
     pub last_fetch_failed: bool,
-    /// True after a successful AllRunners fetch that fell back from /runners/all to /runners.
-    pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
     pub settings_message: Option<String>,
     pub live_query_metrics: Option<LiveQueryMetrics>,
@@ -398,7 +396,6 @@ impl App {
             last_poll_at: None,
             last_refresh_at: None,
             last_fetch_failed: false,
-            all_runners_fell_back: false,
             settings_draft,
             settings_message: None,
             live_query_metrics: None,
@@ -510,6 +507,22 @@ impl App {
         self.refresh_local_benchmarks();
         self.mode = AppMode::Settings;
         self.error_message = None;
+    }
+
+    pub fn cycle_discovery_mode(&mut self) {
+        let next = match self.config.discovery_mode {
+            RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
+            RunnerDiscoveryMode::VisibleRunners => RunnerDiscoveryMode::ConfiguredTargets,
+            RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
+        };
+        self.config.discovery_mode = next;
+        self.conductor = Conductor::new_with_mode(
+            self.conductor.client().clone(),
+            next,
+            self.config.runner_targets.clone(),
+        );
+        self.settings_draft.discovery_mode = next;
+        self.loaded_tab = None;
     }
 
     pub fn has_loaded_active_tab(&self) -> bool {
@@ -746,7 +759,6 @@ impl App {
                     self.last_poll_at = Some(now);
                 }
                 self.last_fetch_failed = false;
-                self.all_runners_fell_back = outcome.all_runners_fell_back;
                 self.live_query_metrics = Some(outcome.metrics);
                 self.renders_from_runners(tab, outcome.runners);
             }
@@ -1314,6 +1326,10 @@ impl App {
                 self.toggle_polling();
             }
             KeyCode::Char('r') => {
+                self.execute_search().await;
+            }
+            KeyCode::Char('d') => {
+                self.cycle_discovery_mode();
                 self.execute_search().await;
             }
             KeyCode::Char('s') => {
