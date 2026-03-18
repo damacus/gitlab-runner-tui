@@ -723,6 +723,14 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
             "Revision: {}",
             runner.revision.as_deref().unwrap_or("-")
         )),
+        ListItem::new(format!(
+            "Tags: {}",
+            if runner.tag_list.is_empty() {
+                "-".to_string()
+            } else {
+                runner.tag_list.join(", ")
+            }
+        )),
     ];
 
     if !runner.runner_type.is_empty() {
