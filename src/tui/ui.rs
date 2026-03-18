@@ -41,7 +41,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Min(1),
             Constraint::Length(3),
         ])
-        .split(frame.size());
+        .split(frame.area());
 
     render_header(app, frame, chunks[0]);
     render_tabs(app, frame, chunks[1]);
@@ -232,10 +232,10 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 
     if app.mode == AppMode::FilterInput {
-        frame.set_cursor(
+        frame.set_cursor_position((
             area.x + app.filter_input.chars().count() as u16 + 1,
             area.y + 1,
-        );
+        ));
     }
 }
 
@@ -555,7 +555,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
 
     let table = Table::new(rows, widths)
         .header(header)
-        .highlight_style(styles::selected_row_style())
+        .row_highlight_style(styles::selected_row_style())
         .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -629,7 +629,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
         ],
     )
     .header(header)
-    .highlight_style(styles::selected_row_style())
+    .row_highlight_style(styles::selected_row_style())
     .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -780,7 +780,7 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_filter_popup(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(55, 65, frame.size());
+    let area = centered_rect(55, 65, frame.area());
     frame.render_widget(Clear, area);
 
     let sections = Layout::default()
@@ -873,7 +873,7 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_settings_modal(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(72, 70, frame.size());
+    let area = centered_rect(72, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let sections = Layout::default()
@@ -1289,7 +1289,7 @@ mod tests {
         for y in 0..buffer.area.height {
             let mut line = String::new();
             for x in 0..buffer.area.width {
-                line.push_str(buffer.get(x, y).symbol());
+                line.push_str(buffer[(x, y)].symbol());
             }
             lines.push(line.trim_end().to_string());
         }
