@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.8](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.7...v0.1.8) (2026-03-18)
+
+
+### Features
+
+* 🎨 Palette: Add cursor to filter input ([#58](https://github.com/damacus/gitlab-runner-tui/issues/58)) ([4517a32](https://github.com/damacus/gitlab-runner-tui/commit/4517a322a7e862fde14cc202433cd332f5c3ff62))
+* 🎨 Palette: Add empty states for TUI tables ([#53](https://github.com/damacus/gitlab-runner-tui/issues/53)) ([c1b57e2](https://github.com/damacus/gitlab-runner-tui/commit/c1b57e227feccbc30c33547347a79c3d7d0a0bae))
+* 🎨 Palette: Improve filter input and rotation empty state UX ([#61](https://github.com/damacus/gitlab-runner-tui/issues/61)) ([12822ac](https://github.com/damacus/gitlab-runner-tui/commit/12822ac7d82a939e08c2924a5f86cc195e930103))
+* add AllRunners discovery mode using /runners/all with fallback to /runners ([a10beeb](https://github.com/damacus/gitlab-runner-tui/commit/a10beebafcc656b26f37a689b58b865d53003b2e))
+* add extract_runner_tags function ([b17f142](https://github.com/damacus/gitlab-runner-tui/commit/b17f142970fdaa65929e809aee7194aa7019d567))
+* add FilterPopup key handler, update dashboard bindings (f popup, t text, remove v) ([7d93c86](https://github.com/damacus/gitlab-runner-tui/commit/7d93c8696a171546a208eb3d78404002f801438a))
+* add FilterPopupSection type and filter popup state fields to App ([1b6a028](https://github.com/damacus/gitlab-runner-tui/commit/1b6a028d89a81b90f62233378528ab1666cf2bf2))
+* add open_filter_popup, toggle_selected_tag, selected_tags_summary ([a9cc283](https://github.com/damacus/gitlab-runner-tui/commit/a9cc283290ac3c4a20e49a1c9c1a14b53d7fb0f1))
+* add render_filter_popup, update filter bar, status bar, help view ([1be7edc](https://github.com/damacus/gitlab-runner-tui/commit/1be7edcae68032e761fc54ab9829c1aaafcec85c))
+* add Tags: to runner detail section ([978967c](https://github.com/damacus/gitlab-runner-tui/commit/978967cee14f732e9de93661459358e398c57d82))
+* improve token masking in settings modal ([897848b](https://github.com/damacus/gitlab-runner-tui/commit/897848b18faf0e3ea9fde4b02927a305a0777122))
+* merge popup and text tags in build_filters, retain selected_tags in apply_view_state ([f432b79](https://github.com/damacus/gitlab-runner-tui/commit/f432b796d6186b23ed06c4bbbb10bdf60c878a57))
+* non-blocking background search keeps TUI responsive during large queries ([d520f13](https://github.com/damacus/gitlab-runner-tui/commit/d520f136dd192b8478fa32e132e6320e1e8ba449))
+* overhaul sorting to cycle through columns from left to right ([a441cce](https://github.com/damacus/gitlab-runner-tui/commit/a441cce1484a67592cfc0213f16f93289a7fdc77))
+* polish runner detail pane, remove age filter, improve status bar ([8a5ca03](https://github.com/damacus/gitlab-runner-tui/commit/8a5ca03c55fdb0a898140c83a56945e27b72ffa4))
+* **security:** Fix credential leakage in debug output ([#38](https://github.com/damacus/gitlab-runner-tui/issues/38)) ([ed3ece1](https://github.com/damacus/gitlab-runner-tui/commit/ed3ece1629285397b4284443b44662e93f6ce57a))
+
+
+### Bug Fixes
+
+* 🔒 prevent panic on missing token by using anyhow Context ([#45](https://github.com/damacus/gitlab-runner-tui/issues/45)) ([737aedb](https://github.com/damacus/gitlab-runner-tui/commit/737aedb382d167a345f7f5ab5631993bf09d9c39))
+* correct 403 fallback detection and show actual endpoint in settings ([eac16f5](https://github.com/damacus/gitlab-runner-tui/commit/eac16f5c1e4c465a0148ef1462e30e4672161748))
+* correct sort shortcut label and add header indicators ([3ea2d61](https://github.com/damacus/gitlab-runner-tui/commit/3ea2d612ad818409e1f14034224d0b536921bb8f))
+* default to all-runners discovery, restore 403 fallback, show active endpoint ([f5352eb](https://github.com/damacus/gitlab-runner-tui/commit/f5352eb09224ea1058a33e63ed7cf82f5122ab94))
+* display human-readable runner type in detail panel (project/group/instance) ([08b72e1](https://github.com/damacus/gitlab-runner-tui/commit/08b72e1ab62b2ef8cafaa65650ec7cb69cbaf25e))
+* remove silent fallback, add d-key endpoint cycle, always show description ([e15132b](https://github.com/damacus/gitlab-runner-tui/commit/e15132b2ad0c68d3525570e292c9da5aa302850d))
+* **ui:** Add visible cursor to filter input ([#40](https://github.com/damacus/gitlab-runner-tui/issues/40)) ([aec3a02](https://github.com/damacus/gitlab-runner-tui/commit/aec3a0220fbd1457491e84016673e6791da0803e))
+
+
+### Performance Improvements
+
+* ⚡ Bolt: concurrent runner detail and manager fetch ([#51](https://github.com/damacus/gitlab-runner-tui/issues/51)) ([0396e87](https://github.com/damacus/gitlab-runner-tui/commit/0396e8730fe0926362d5beaaf4f2b6012b3a858b))
+* ⚡ Bolt: Remove redundant clone in worker map ([#47](https://github.com/damacus/gitlab-runner-tui/issues/47)) ([c6ac665](https://github.com/damacus/gitlab-runner-tui/commit/c6ac66515453afb992ce559fbcc55d607b7cb349))
+* ⚡ Bolt: Remove redundant string cloning in TUI render loop ([#62](https://github.com/damacus/gitlab-runner-tui/issues/62)) ([25cb6bf](https://github.com/damacus/gitlab-runner-tui/commit/25cb6bfec3e5e80e19adb9dcada1a11ec93ed4d2))
+* ⚡ Bolt: replace clone and sort in TUI render loop with min/max_by_key ([#57](https://github.com/damacus/gitlab-runner-tui/issues/57)) ([582bc1a](https://github.com/damacus/gitlab-runner-tui/commit/582bc1a85da17ea361344dcf844a95abb0d5861a))
+* ⚡ Bolt: Use const styles in render loop ([#43](https://github.com/damacus/gitlab-runner-tui/issues/43)) ([897c441](https://github.com/damacus/gitlab-runner-tui/commit/897c441423b5768fc8d7888816d842bd7b4ff390))
+
 ## [0.1.7](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.6...v0.1.7) (2026-03-03)
 
 
