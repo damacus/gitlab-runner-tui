@@ -122,7 +122,7 @@ pub fn demo_runners() -> Vec<Runner> {
             runner_type: "group_type".to_string(),
             active: true,
             paused: true,
-            description: Some("dps-core-runner-01".to_string()),
+            description: Some("platform-core-runner-01".to_string()),
             created_at: Some("2023-03-20T09:00:00.000Z".to_string()),
             ip_address: Some("10.0.3.1".to_string()),
             is_shared: false,
@@ -130,7 +130,7 @@ pub fn demo_runners() -> Vec<Runner> {
             version: Some("17.8.2".to_string()),
             revision: Some("f1e2d3c4".to_string()),
             tag_list: vec![
-                "dps:core:runner:type:local".to_string(),
+                "runner:type:local".to_string(),
                 "platform".to_string(),
                 "linux".to_string(),
             ],
@@ -148,8 +148,8 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
             groups: vec![RunnerGroup {
                 id: 2,
-                name: "dps".to_string(),
-                web_url: "https://demo.gitlab.example.com/dps".to_string(),
+                name: "platform".to_string(),
+                web_url: "https://demo.gitlab.example.com/platform".to_string(),
             }],
         },
         Runner {
@@ -278,17 +278,14 @@ pub fn demo_runners() -> Vec<Runner> {
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
-            description: Some("dps-runner-offline".to_string()),
+            description: Some("platform-runner-offline".to_string()),
             created_at: Some("2023-07-19T11:00:00.000Z".to_string()),
             ip_address: Some("10.0.3.5".to_string()),
             is_shared: false,
             status: "offline".to_string(),
             version: Some("17.2.1".to_string()),
             revision: Some("aabbddeeff".to_string()),
-            tag_list: vec![
-                "dps:core:runner:type:local".to_string(),
-                "linux".to_string(),
-            ],
+            tag_list: vec!["runner:type:local".to_string(), "linux".to_string()],
             managers: vec![RunnerManager {
                 id: 200010,
                 system_id: "s_334455001122".to_string(),
@@ -303,8 +300,8 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
             groups: vec![RunnerGroup {
                 id: 2,
-                name: "dps".to_string(),
-                web_url: "https://demo.gitlab.example.com/dps".to_string(),
+                name: "platform".to_string(),
+                web_url: "https://demo.gitlab.example.com/platform".to_string(),
             }],
         },
         // --- STALE runners (3) ---
