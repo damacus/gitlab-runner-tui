@@ -1,6 +1,7 @@
 mod client;
 mod conductor;
 mod config;
+mod fixtures;
 mod metrics;
 mod models;
 mod tui;
