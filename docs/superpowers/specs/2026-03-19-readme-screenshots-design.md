@@ -11,6 +11,10 @@ The README has no visual preview of the TUI. Potential users have no idea what t
 
 Add two animated GIFs to the README showing the TUI in action, generated from `--demo` mode so no GitLab credentials are required.
 
+## Prerequisites
+
+Demo mode (`--demo` flag, `fixtures::demo_runners()`, `App::demo_mode`, `App::seed_demo_data()`) must be fully implemented and passing tests before any recording is made.
+
 ## Approach
 
 Record two asciinema sessions using `cargo run -- --demo`, convert each to a GIF with `agg`, commit the GIFs and source `.cast` files to the repo, and embed them in a new **Preview** section in the README.
@@ -19,18 +23,21 @@ Record two asciinema sessions using `cargo run -- --demo`, convert each to a GIF
 
 ### 1. Recordings
 
-Two recordings, both using `--demo` mode at terminal size **220×50**:
+Two recordings, both using `--demo` mode at terminal size **130×40** (wide enough to show the split-pane layout; narrower than 220 so the embedded GIF renders legibly on GitHub at ~800px container width).
 
 | File | Content |
 |------|---------|
 | `docs/screenshots/overview.cast` → `overview.gif` | Navigate tabs `1`–`7`, pause ~2 seconds on each |
 | `docs/screenshots/detail.cast` → `detail.gif` | Stay on Runners tab, arrow through runners so the detail pane updates |
 
+**Recording requirement:** verify your terminal is exactly 130×40 before starting (`tput cols` / `tput lines`). The `--cols`/`--rows` flags record the declared dimensions in the cast file header but do not resize the terminal — if your window is smaller, the recording will be clipped.
+
 ### 2. Conversion script (`scripts/record-screenshots.sh`)
 
-Shell script that:
-- Prints instructions (resize terminal to 220×50, exact commands to record each cast file)
-- Runs `agg` to convert both `.cast` files to `.gif`
+The script has two modes:
+
+1. **`--instructions`** — prints what to record (no `agg` calls). Run this first.
+2. **`--convert`** — runs `agg` on both existing `.cast` files. Run this after both recordings are done.
 
 ```bash
 #!/usr/bin/env bash
@@ -39,28 +46,38 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCREENSHOTS_DIR="$SCRIPT_DIR/../docs/screenshots"
 
+if [[ "${1:-}" == "--convert" ]]; then
+    echo "Converting cast files to GIFs..."
+    mkdir -p "$SCREENSHOTS_DIR"
+    agg --idle-time-limit 1.5 "$SCREENSHOTS_DIR/overview.cast" "$SCREENSHOTS_DIR/overview.gif"
+    agg --idle-time-limit 1.5 "$SCREENSHOTS_DIR/detail.cast" "$SCREENSHOTS_DIR/detail.gif"
+    echo "Done. GIFs written to docs/screenshots/"
+    echo "Check file sizes — aim for under 3 MB each."
+    ls -lh "$SCREENSHOTS_DIR"/*.gif
+    exit 0
+fi
+
 echo "=== GitLab Runner TUI — Screenshot recorder ==="
 echo ""
-echo "Before recording, resize your terminal to 220 columns × 50 rows."
-echo "  macOS: drag the window, or run: printf '\\e[8;50;220t'"
+echo "FIRST: verify your terminal is 130 columns × 40 rows."
+echo "  Check: tput cols && tput lines"
+echo "  Resize manually to match before recording."
 echo ""
 echo "Step 1: Record the OVERVIEW gif (navigate through all 7 tabs)"
-echo "  Run: asciinema rec $SCREENSHOTS_DIR/overview.cast --cols 220 --rows 50"
-echo "  In the TUI: press 1, wait, 2, wait, 3, wait, 4, wait, 5, wait, 6, wait, 7, wait, then q"
+echo "  Run: asciinema rec $SCREENSHOTS_DIR/overview.cast --cols 130 --rows 40"
+echo "  In the TUI: press 1, wait 2s, 2, wait 2s, 3 ... 7, wait 2s, then q"
 echo ""
 echo "Step 2: Record the DETAIL gif (runner detail pane)"
-echo "  Run: asciinema rec $SCREENSHOTS_DIR/detail.cast --cols 220 --rows 50"
-echo "  In the TUI: use ↑/↓ to move through runners in the Runners tab, then q"
+echo "  Run: asciinema rec $SCREENSHOTS_DIR/detail.cast --cols 130 --rows 40"
+echo "  In the TUI: arrow through several runners on the Runners tab, then q"
 echo ""
-echo "Converting cast files to GIFs..."
-agg "$SCREENSHOTS_DIR/overview.cast" "$SCREENSHOTS_DIR/overview.gif"
-agg "$SCREENSHOTS_DIR/detail.cast" "$SCREENSHOTS_DIR/detail.gif"
-echo "Done. GIFs written to docs/screenshots/"
+echo "When both recordings are done, run:"
+echo "  $0 --convert"
 ```
 
 ### 3. README changes
 
-Insert a **Preview** section between the opening description paragraph and the Features section:
+Insert a **Preview** section after `## Overview` and before `## Features`:
 
 ```markdown
 ## Preview
@@ -76,28 +93,32 @@ Insert a **Preview** section between the opening description paragraph and the F
 
 ### 4. `.gitattributes`
 
-Add a line so GitHub treats the GIFs as binary (no diff noise):
+Add to the repo root `.gitattributes` (create if absent):
 
-```
+```gitattributes
+# Treat GIFs as binary — no text diffs, exclude from linguist stats
 docs/screenshots/*.gif binary
-docs/screenshots/*.cast binary
+docs/screenshots/*.gif linguist-generated=true
 ```
+
+The `.cast` files are JSON-lines text — do not mark them binary so Git can diff them meaningfully when recordings are updated.
 
 ## File Layout
 
 ```
 docs/screenshots/
-  overview.cast   # asciinema source (reproducible)
-  overview.gif    # generated by agg
-  detail.cast     # asciinema source
-  detail.gif      # generated by agg
+  overview.cast   # asciinema source (reproducible, text)
+  overview.gif    # generated by agg, target < 3 MB
+  detail.cast     # asciinema source (reproducible, text)
+  detail.gif      # generated by agg, target < 3 MB
 scripts/
   record-screenshots.sh
 ```
 
 ## Out of Scope
 
-- Automated CI recording (TUI requires a TTY)
+- Automated CI recording (TUI requires a real TTY)
 - Per-tab screenshots
 - Hosting on asciinema.com
 - Custom agg themes or fonts (defaults are fine)
+- GIF optimisation with gifsicle (use `--idle-time-limit` in agg instead)
