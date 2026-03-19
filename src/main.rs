@@ -6,6 +6,8 @@ mod metrics;
 mod models;
 mod tui;
 
+const DEMO_HOST: &str = "https://demo.gitlab.example.com";
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use client::GitLabClient;
@@ -150,13 +152,13 @@ async fn run_tui(mut app: App) -> Result<()> {
 
 async fn run_demo() -> Result<()> {
     let config = AppConfig {
-        gitlab_host: Some("https://demo.gitlab.example.com".to_string()),
+        gitlab_host: Some(DEMO_HOST.to_string()),
         ..AppConfig::default()
     };
-    let client = GitLabClient::new(
-        "https://demo.gitlab.example.com".to_string(),
-        "demo-token".to_string(),
-    )?;
+    // A real GitLabClient is constructed here so App::new() is satisfied, but it will never
+    // make network calls — app.demo_mode = true causes start_search() to return early at every
+    // call site, so the dummy credentials and host are never used.
+    let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
     let conductor =
         Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
     let mut app = App::new(conductor, config);
