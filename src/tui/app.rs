@@ -362,6 +362,7 @@ pub struct App {
     pub settings_message: Option<String>,
     pub live_query_metrics: Option<LiveQueryMetrics>,
     pub local_benchmarks: Option<LocalBenchmarkSnapshot>,
+    /// When true, all network operations are suppressed (used in --demo mode).
     pub demo_mode: bool,
 }
 
