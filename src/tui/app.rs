@@ -858,6 +858,14 @@ impl App {
         self.apply_view_state(tab);
     }
 
+    #[allow(dead_code)]
+    pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
+        self.renders_from_runners(Tab::Runners, runners);
+        self.loaded_tab = Some(Tab::Runners);
+        self.last_refresh_at = Some(Instant::now());
+        self.is_loading = false;
+    }
+
     fn apply_view_state(&mut self, tab: Tab) {
         self.runners.clear();
         self.manager_rows.clear();
@@ -2285,5 +2293,16 @@ mod tests {
         // is_loading must stay false — no background task was spawned
         assert!(!app.is_loading);
         assert!(app.pending_search.is_none());
+    }
+
+    #[test]
+    fn test_seed_demo_data_populates_runners() {
+        let mut app = test_app();
+        let runners = vec![test_runner(1, vec![]), test_runner(2, vec![])];
+        app.seed_demo_data(runners);
+        assert_eq!(app.raw_runners.len(), 2);
+        assert_eq!(app.loaded_tab, Some(Tab::Runners));
+        assert!(!app.is_loading);
+        assert!(app.last_refresh_at.is_some());
     }
 }
