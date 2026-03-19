@@ -3,7 +3,6 @@ use crate::models::{
     runner::{Runner, RunnerGroup},
 };
 
-#[allow(dead_code)]
 pub fn demo_runners() -> Vec<Runner> {
     vec![
         // --- ONLINE runners (6) ---
@@ -437,9 +436,10 @@ mod tests {
     #[test]
     fn demo_runners_covers_all_statuses() {
         let runners = demo_runners();
-        assert!(
-            runners.len() >= 14,
-            "need enough runners to populate all tabs"
+        assert_eq!(
+            runners.len(),
+            14,
+            "fixture set must contain exactly 14 runners"
         );
 
         let statuses: Vec<&str> = runners.iter().map(|r| r.status.as_str()).collect();

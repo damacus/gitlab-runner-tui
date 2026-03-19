@@ -858,7 +858,6 @@ impl App {
         self.apply_view_state(tab);
     }
 
-    #[allow(dead_code)]
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
         self.renders_from_runners(Tab::Runners, runners);
         self.loaded_tab = Some(Tab::Runners);

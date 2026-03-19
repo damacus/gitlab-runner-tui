@@ -59,6 +59,10 @@ struct Args {
     /// Comma-separated tags to filter runners
     #[arg(long)]
     tags: Option<String>,
+
+    /// Run with demo fixture data (no GitLab credentials required)
+    #[arg(long)]
+    demo: bool,
 }
 
 impl std::fmt::Debug for Args {
@@ -69,6 +73,7 @@ impl std::fmt::Debug for Args {
             .field("watch", &self.watch)
             .field("command", &self.command)
             .field("tags", &self.tags)
+            .field("demo", &self.demo)
             .finish()
     }
 }
@@ -87,6 +92,10 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    if args.demo {
+        return run_demo().await;
+    }
+
     let (host, token, config) = resolve_runtime_settings(&args, config)?;
 
     let conductor = if args.watch {
@@ -102,17 +111,17 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(conductor, config);
     app.start_search();
+    run_tui(app).await
+}
 
-    // Setup Terminal
+async fn run_tui(mut app: App) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-
     let mut event_handler = EventHandler::new(std::time::Duration::from_millis(250));
 
-    // Main Loop
     loop {
         terminal.draw(|frame| ui::render(&mut app, frame))?;
 
@@ -128,10 +137,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Stop event handler task
     event_handler.stop();
-
-    // Restore Terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -139,8 +145,24 @@ async fn main() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-
     Ok(())
+}
+
+async fn run_demo() -> Result<()> {
+    let config = AppConfig {
+        gitlab_host: Some("https://demo.gitlab.example.com".to_string()),
+        ..AppConfig::default()
+    };
+    let client = GitLabClient::new(
+        "https://demo.gitlab.example.com".to_string(),
+        "demo-token".to_string(),
+    )?;
+    let conductor =
+        Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
+    let mut app = App::new(conductor, config);
+    app.demo_mode = true;
+    app.seed_demo_data(fixtures::demo_runners());
+    run_tui(app).await
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -598,6 +620,7 @@ mod tests {
             watch: false,
             command: "rotate".to_string(),
             tags: None,
+            demo: false,
         };
         let config = AppConfig {
             gitlab_host: Some("https://gitlab.example.com".to_string()),
@@ -626,6 +649,7 @@ mod tests {
             watch: true,
             command: "rotate".to_string(),
             tags: None,
+            demo: false,
         };
 
         let error = resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None)
@@ -643,6 +667,7 @@ mod tests {
             watch: true,
             command: "rotate".to_string(),
             tags: None,
+            demo: false,
         };
 
         let (host, token, config) =
