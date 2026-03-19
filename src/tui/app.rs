@@ -864,6 +864,9 @@ impl App {
         self.loaded_tab = Some(Tab::Runners);
         self.last_refresh_at = Some(Instant::now());
         self.is_loading = false;
+        self.last_fetch_failed = false;
+        self.all_runners_fell_back = false;
+        self.live_query_metrics = None;
     }
 
     fn apply_view_state(&mut self, tab: Tab) {
@@ -2304,5 +2307,6 @@ mod tests {
         assert_eq!(app.loaded_tab, Some(Tab::Runners));
         assert!(!app.is_loading);
         assert!(app.last_refresh_at.is_some());
+        assert!(!app.runners.is_empty());
     }
 }
