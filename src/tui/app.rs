@@ -362,6 +362,7 @@ pub struct App {
     pub settings_message: Option<String>,
     pub live_query_metrics: Option<LiveQueryMetrics>,
     pub local_benchmarks: Option<LocalBenchmarkSnapshot>,
+    pub demo_mode: bool,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -410,6 +411,7 @@ impl App {
             settings_message: None,
             live_query_metrics: None,
             local_benchmarks: None,
+            demo_mode: false,
         }
     }
 
@@ -702,6 +704,9 @@ impl App {
     /// Spawn a background task to fetch runners; the UI stays responsive during the fetch.
     /// Call `poll_pending_search()` on each tick to collect the result.
     pub fn start_search(&mut self) {
+        if self.demo_mode {
+            return;
+        }
         if let Some(handle) = self.pending_search.take() {
             handle.abort();
         }
@@ -2269,5 +2274,15 @@ mod tests {
             "2h ago"
         );
         assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");
+    }
+
+    #[test]
+    fn test_demo_mode_suppresses_start_search() {
+        let mut app = test_app();
+        app.demo_mode = true;
+        app.start_search();
+        // is_loading must stay false — no background task was spawned
+        assert!(!app.is_loading);
+        assert!(app.pending_search.is_none());
     }
 }
