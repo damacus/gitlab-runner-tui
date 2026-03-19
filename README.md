@@ -6,6 +6,16 @@ A fast, beautiful Terminal User Interface (TUI) for querying and inspecting GitL
 
 GitLab Runner TUI provides DevOps engineers and GitLab administrators with an intuitive command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags—all from your terminal.
 
+## Preview
+
+![Overview — seven dashboard tabs](docs/screenshots/overview.gif)
+
+*Seven dashboard tabs — navigate with `1`–`7` or `Tab`*
+
+![Runner detail pane](docs/screenshots/detail.gif)
+
+*Runner detail pane — arrow through runners to inspect status, version, managers, and tags*
+
 ## Features
 
 - 🚀 **Interactive TUI** - Beautiful, keyboard-driven interface built with [ratatui](https://ratatui.rs/)

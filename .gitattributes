@@ -1,3 +1,7 @@
 
+# Screenshots — treat GIFs as binary, exclude from linguist stats
+docs/screenshots/*.gif binary
+docs/screenshots/*.gif linguist-generated=true
+
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads
