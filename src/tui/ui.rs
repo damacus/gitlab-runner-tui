@@ -1290,17 +1290,43 @@ fn field_line(selected: bool, label: &str, value: &str) -> Line<'static> {
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     // For modal/overlay modes, render a simple centered hint.
-    let simple_hint: Option<&str> = match app.mode {
-        AppMode::Help => Some("Any key closes help"),
-        AppMode::FilterInput => {
-            Some("Type tags | Enter: apply filter and refresh | Esc: stop editing | Ctrl-C: quit")
-        }
-        AppMode::FilterPopup => {
-            Some("Filter | f/esc close | tab switch section | space toggle | c clear section")
-        }
-        AppMode::Settings => Some(
-            "Settings | Tab/Shift+Tab move | Type edit | ←/→ discovery | Ctrl-S save | b benchmark | Esc close",
-        ),
+    let simple_hint: Option<Line> = match app.mode {
+        AppMode::Help => Some(Line::from("Any key closes help")),
+        AppMode::FilterInput => Some(Line::from(vec![
+            Span::raw("Type tags | "),
+            Span::styled("Enter", styles::accent_style()),
+            Span::raw(": apply | "),
+            Span::styled("Esc", styles::accent_style()),
+            Span::raw(": stop | "),
+            Span::styled("Ctrl-C", styles::accent_style()),
+            Span::raw(": quit"),
+        ])),
+        AppMode::FilterPopup => Some(Line::from(vec![
+            Span::raw("Filter | "),
+            Span::styled("f/esc", styles::accent_style()),
+            Span::raw(" close | "),
+            Span::styled("tab", styles::accent_style()),
+            Span::raw(" switch section | "),
+            Span::styled("space", styles::accent_style()),
+            Span::raw(" toggle | "),
+            Span::styled("c", styles::accent_style()),
+            Span::raw(" clear section"),
+        ])),
+        AppMode::Settings => Some(Line::from(vec![
+            Span::raw("Settings | "),
+            Span::styled("Tab", styles::accent_style()),
+            Span::raw(" move | "),
+            Span::styled("Type", styles::accent_style()),
+            Span::raw(" edit | "),
+            Span::styled("←/→", styles::accent_style()),
+            Span::raw(" discovery | "),
+            Span::styled("Ctrl-S", styles::accent_style()),
+            Span::raw(" save | "),
+            Span::styled("b", styles::accent_style()),
+            Span::raw(" benchmark | "),
+            Span::styled("Esc", styles::accent_style()),
+            Span::raw(" close"),
+        ])),
         AppMode::Dashboard => None,
     };
 
