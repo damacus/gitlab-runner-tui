@@ -90,6 +90,8 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
         "GitLab Runner TUI".to_string()
     };
 
+    let title_line = styles::gradient_text(&title, (125, 207, 255), (187, 154, 247));
+
     let host = app.config.gitlab_host.as_deref().unwrap_or("gitlab.com");
     let mode_label = match app.conductor.discovery_mode() {
         RunnerDiscoveryMode::AllRunners => "all runners",
@@ -99,7 +101,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     let subtitle = format!("{host} · {mode_label}");
 
     let header = Paragraph::new(vec![
-        Line::from(Span::styled(title, styles::app_title_style())),
+        title_line,
         Line::from(Span::styled(subtitle, styles::muted_style())),
     ])
     .block(styles::block("Dashboard"));
@@ -141,11 +143,10 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
         PollDisplayState::Error => styles::status_style("offline"),
     };
 
-    let gauge_style = match state {
-        PollDisplayState::Live | PollDisplayState::Refreshing => styles::accent_style(),
-        PollDisplayState::Paused => styles::muted_style(),
-        PollDisplayState::TimedOut => styles::status_style("stale"),
-        PollDisplayState::Error => styles::status_style("offline"),
+    let badge_line = if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
+        styles::gradient_text(&badge, (125, 207, 255), (187, 154, 247))
+    } else {
+        Line::from(Span::styled(&badge, status_style))
     };
 
     let ratio = match state {
@@ -153,24 +154,70 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
         _ => app.poll_progress_ratio(),
     };
 
-    if inner.height >= 2 {
-        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-        frame.render_widget(Paragraph::new(Span::styled(badge, status_style)), rows[0]);
-        frame.render_widget(
-            Gauge::default()
-                .label(format!("last {age}  next {next}"))
-                .gauge_style(gauge_style)
-                .ratio(ratio.clamp(0.0, 1.0)),
-            rows[1],
-        );
+    let label = format!("last {age}  next {next}");
+
+    if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
+        let width = inner.width as usize;
+        let filled_width = ((ratio.clamp(0.0, 1.0) * width as f64) as usize).min(width);
+        let empty_width = width.saturating_sub(filled_width);
+
+        let mut spans = Vec::new();
+        if filled_width > 0 {
+            let filled_str = "█".repeat(filled_width);
+            let gradient = styles::gradient_text(&filled_str, (125, 207, 255), (187, 154, 247));
+            spans.extend(gradient.spans);
+        }
+        if empty_width > 0 {
+            spans.push(Span::styled(" ".repeat(empty_width), styles::muted_style()));
+        }
+
+        let gauge_line = Line::from(spans);
+
+        if inner.height >= 2 {
+            let rows =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+            frame.render_widget(Paragraph::new(badge_line), rows[0]);
+            frame.render_widget(Paragraph::new(gauge_line), rows[1]);
+            // Centered label over gauge
+            let label_len = label.len() as u16;
+            if label_len < inner.width {
+                let label_x = inner.x + (inner.width - label_len) / 2;
+                frame.render_widget(
+                    Paragraph::new(Span::styled(label, styles::muted_style())),
+                    Rect::new(label_x, rows[1].y, label_len, 1),
+                );
+            }
+        } else {
+            frame.render_widget(Paragraph::new(badge_line), inner);
+        }
     } else {
-        frame.render_widget(
-            Gauge::default()
-                .label(format!("{badge}  last {age}  next {next}"))
-                .gauge_style(gauge_style)
-                .ratio(ratio.clamp(0.0, 1.0)),
-            inner,
-        );
+        let gauge_style = match state {
+            PollDisplayState::Paused => styles::muted_style(),
+            PollDisplayState::TimedOut => styles::status_style("stale"),
+            PollDisplayState::Error => styles::status_style("offline"),
+            _ => styles::accent_style(),
+        };
+
+        if inner.height >= 2 {
+            let rows =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+            frame.render_widget(Paragraph::new(badge_line), rows[0]);
+            frame.render_widget(
+                Gauge::default()
+                    .label(label)
+                    .gauge_style(gauge_style)
+                    .ratio(ratio.clamp(0.0, 1.0)),
+                rows[1],
+            );
+        } else {
+            frame.render_widget(
+                Gauge::default()
+                    .label(format!("{}  {}", badge, label))
+                    .gauge_style(gauge_style)
+                    .ratio(ratio.clamp(0.0, 1.0)),
+                inner,
+            );
+        }
     }
 }
 
@@ -1266,7 +1313,23 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     // Dashboard mode: left = count/state, right = shortcuts.
-    let shortcuts = "p poll | r refresh | f filter | s sort | c settings | ?: help | q quit";
+    let shortcuts_text = "p poll | r refresh | f filter | s sort | c settings | ?: help | q quit";
+    let shortcuts = Line::from(vec![
+        Span::styled("p", styles::accent_style()),
+        Span::raw(" poll | "),
+        Span::styled("r", styles::accent_style()),
+        Span::raw(" refresh | "),
+        Span::styled("f", styles::accent_style()),
+        Span::raw(" filter | "),
+        Span::styled("s", styles::accent_style()),
+        Span::raw(" sort | "),
+        Span::styled("c", styles::accent_style()),
+        Span::raw(" settings | "),
+        Span::styled("?", styles::accent_style()),
+        Span::raw(": help | "),
+        Span::styled("q", styles::accent_style()),
+        Span::raw(" quit"),
+    ]);
 
     let left_text = if app.is_loading {
         let filter = if app.filter_input.trim().is_empty() {
@@ -1315,7 +1378,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     // Split the status area: left side expands, right side is fixed width for shortcuts.
-    let shortcuts_width = (shortcuts.len() as u16 + 2).min(area.width);
+    let shortcuts_width = (shortcuts_text.len() as u16 + 2).min(area.width);
     let inner = area.inner(Margin {
         horizontal: 1,
         vertical: 1,
@@ -1337,32 +1400,93 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 fn render_help_view(frame: &mut Frame, area: Rect) {
     let help = vec![
-        Line::from("GitLab Runner TUI"),
+        styles::gradient_text("GitLab Runner TUI", (125, 207, 255), (187, 154, 247)),
         Line::from(""),
-        Line::from("Navigation"),
-        Line::from("  Tab / Shift+Tab  Switch top-level views and load them"),
-        Line::from("  1-7              Jump directly to a view and load it"),
-        Line::from("  ↑/↓ or j/k       Move table selection"),
+        Line::from(Span::styled("Navigation", styles::accent_style())),
+        Line::from(vec![
+            Span::styled("  Tab / Shift+Tab", styles::accent_style()),
+            Span::raw("  Switch top-level views and load them"),
+        ]),
+        Line::from(vec![
+            Span::styled("  1-7", styles::accent_style()),
+            Span::raw("              Jump directly to a view and load it"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ↑/↓ or j/k", styles::accent_style()),
+            Span::raw("       Move table selection"),
+        ]),
         Line::from(""),
-        Line::from("Actions"),
-        Line::from("  Enter            Open selected runner in browser (GitLab admin page)"),
-        Line::from("  r                Refresh the active tab"),
-        Line::from("  p                Toggle polling / auto-refresh"),
-        Line::from("  f or /           Open filter popup (tags + versions multi-select)"),
-        Line::from("  t                Edit tag text filter (comma-separated)"),
-        Line::from("  s                Cycle sort mode"),
-        Line::from("  c                Open settings and diagnostics"),
-        Line::from("  q or Ctrl-C      Quit"),
+        Line::from(Span::styled("Actions", styles::accent_style())),
+        Line::from(vec![
+            Span::styled("  Enter", styles::accent_style()),
+            Span::raw("            Open selected runner in browser (GitLab admin page)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r", styles::accent_style()),
+            Span::raw("                Refresh the active tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  p", styles::accent_style()),
+            Span::raw("                Toggle polling / auto-refresh"),
+        ]),
+        Line::from(vec![
+            Span::styled("  f or /", styles::accent_style()),
+            Span::raw("           Open filter popup (tags + versions multi-select)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  t", styles::accent_style()),
+            Span::raw("                Edit tag text filter (comma-separated)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  s", styles::accent_style()),
+            Span::raw("                Cycle sort mode"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c", styles::accent_style()),
+            Span::raw("                Open settings and diagnostics"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q or Ctrl-C", styles::accent_style()),
+            Span::raw("      Quit"),
+        ]),
         Line::from(""),
-        Line::from("Filtering"),
-        Line::from("  t                Focus the tag text filter bar"),
-        Line::from("  Type tags        Edit comma-separated tag filters"),
-        Line::from("  Enter            Apply tag filter to the active tab"),
-        Line::from("  Esc              Exit filter editing"),
+        Line::from(Span::styled("Filtering", styles::accent_style())),
+        Line::from(vec![
+            Span::styled("  t", styles::accent_style()),
+            Span::raw("                Focus the tag text filter bar"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Type tags", styles::accent_style()),
+            Span::raw("        Edit comma-separated tag filters"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter", styles::accent_style()),
+            Span::raw("            Apply tag filter to the active tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc", styles::accent_style()),
+            Span::raw("              Exit filter editing"),
+        ]),
         Line::from(""),
-        Line::from("Views"),
-        Line::from("  1 Runners   2 Health   3 Offline   4 Stale"),
-        Line::from("  5 Idle      6 Rotating 7 Workers"),
+        Line::from(Span::styled("Views", styles::accent_style())),
+        Line::from(vec![
+            Span::styled("  1", styles::accent_style()),
+            Span::raw(" Runners   "),
+            Span::styled("2", styles::accent_style()),
+            Span::raw(" Health   "),
+            Span::styled("3", styles::accent_style()),
+            Span::raw(" Offline   "),
+            Span::styled("4", styles::accent_style()),
+            Span::raw(" Stale"),
+        ]),
+        Line::from(vec![
+            Span::styled("  5", styles::accent_style()),
+            Span::raw(" Idle      "),
+            Span::styled("6", styles::accent_style()),
+            Span::raw(" Rotating "),
+            Span::styled("7", styles::accent_style()),
+            Span::raw(" Workers"),
+        ]),
     ];
 
     let paragraph = Paragraph::new(help)
