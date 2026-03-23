@@ -30,6 +30,20 @@ pub fn status_style(status: &str) -> Style {
     }
 }
 
+pub fn status_line(status: &str) -> Line<'static> {
+    let (symbol, style) = match status {
+        "online" => ("●", status_style("online")),
+        "offline" => ("✖", status_style("offline")),
+        "stale" => ("⚠", status_style("stale")),
+        _ => ("○", status_style("other")),
+    };
+
+    Line::from(vec![
+        Span::styled(format!("{} ", symbol), style),
+        Span::styled(status.to_string(), style),
+    ])
+}
+
 pub fn muted_style() -> Style {
     Style::default().fg(COLOR_MUTED)
 }

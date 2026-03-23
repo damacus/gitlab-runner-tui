@@ -581,12 +581,11 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
                         .map(|manager| manager.system_id.as_str())
                         .unwrap_or("-"),
                 ),
-                Cell::from(overall_status).style(styles::status_style(overall_status)),
+                Cell::from(styles::status_line(overall_status)),
                 Cell::from(latest_runner_contact_label(runner, now)),
             ])
         } else {
-            let status =
-                Cell::from(runner.status.as_str()).style(styles::status_style(&runner.status));
+            let status = Cell::from(styles::status_line(runner.status.as_str()));
             let last_contact = Cell::from(latest_runner_contact_label(runner, now));
 
             match active_tab {
@@ -734,8 +733,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Cell::from(row.runner_id.to_string()).style(styles::muted_style()),
             Cell::from(row.manager.id.to_string()).style(styles::muted_style()),
             Cell::from(row.manager.system_id.as_str()),
-            Cell::from(row.manager.status.as_str())
-                .style(styles::status_style(&row.manager.status)),
+            Cell::from(styles::status_line(row.manager.status.as_str())),
             Cell::from(manager_contact_label(&row.manager, now)),
         ])
     });
@@ -1640,7 +1638,7 @@ gitlab.com · visible runners last <age> next <age>
 tags: prod,linux | sort: None | f: popup | c: settings
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
-326689 online 18.8.0 <age> platform, prod 2
+326689 ● online 18.8.0 <age> platform, prod 2
 Status
 1 runners loaded for Runners | last refresh <age> p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
@@ -1690,7 +1688,7 @@ gitlab.com · visible runners last never next -
 t: tag filter f: filter popup s: sort None c: settings
 Workers (1)
 Runner Worker System Status Contacted
-326759 256551 s_859060915507 online <age>
+326759 256551 s_859060915507 ● online <age>
 Status
 1 workers loaded for Workers | not loaded yet p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
@@ -1728,7 +1726,7 @@ Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
-326812 online 18.8.0 <age> 1
+326812 ● online 18.8.0 <age> 1
 Status
 1 runners loaded for Health | not loaded yet | p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
