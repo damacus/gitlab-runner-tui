@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     fn sanitize_rendered_output(rendered: &str) -> String {
-        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█]").expect("border regex");
+        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█╭╮╯╰]").expect("border regex");
         let spaces = Regex::new(r"\s{2,}").expect("spaces regex");
 
         rendered
