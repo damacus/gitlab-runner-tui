@@ -1,9 +1,10 @@
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders},
+    widgets::{Block, BorderType, Borders},
 };
 
+pub const COLOR_FG: Color = Color::White;
 pub const COLOR_MUTED: Color = Color::DarkGray;
 pub const COLOR_BORDER: Color = Color::Gray;
 pub const COLOR_ACCENT: Color = Color::Cyan;
@@ -43,16 +44,26 @@ pub fn block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_BORDER))
-        .title(title)
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD),
+        ))
 }
 
 pub fn focused_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ACCENT))
-        .title(title)
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default()
+                .fg(COLOR_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ))
 }
 
 pub fn selected_row_style() -> Style {
@@ -75,8 +86,14 @@ pub fn error_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ERROR))
-        .title(title)
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default()
+                .fg(COLOR_ERROR)
+                .add_modifier(Modifier::BOLD),
+        ))
 }
 
 pub fn gradient_text(text: &str, start_rgb: (u8, u8, u8), end_rgb: (u8, u8, u8)) -> Line<'static> {

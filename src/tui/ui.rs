@@ -258,7 +258,7 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
 
         let name_style = if is_active {
             Style::default()
-                .fg(Color::White)
+                .fg(styles::COLOR_ACCENT)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             styles::muted_style()
@@ -570,7 +570,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
                 .unwrap_or("-");
 
             Row::new(vec![
-                Cell::from(runner.id.to_string()),
+                Cell::from(runner.id.to_string()).style(styles::muted_style()),
                 Cell::from(
                     oldest
                         .map(|manager| manager.system_id.as_str())
@@ -591,38 +591,38 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
 
             match active_tab {
                 Tab::Runners => Row::new(vec![
-                    Cell::from(runner.id.to_string()),
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
                     status,
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
                     Cell::from(runner.tag_list.join(", ")),
-                    Cell::from(runner.managers.len().to_string()),
+                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
                 Tab::Health => Row::new(vec![
-                    Cell::from(runner.id.to_string()),
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
                     status,
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
-                    Cell::from(runner.managers.len().to_string()),
+                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
                 Tab::Offline | Tab::Uncontacted => Row::new(vec![
-                    Cell::from(runner.id.to_string()),
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
-                    Cell::from(runner.managers.len().to_string()),
+                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
                 Tab::Empty => Row::new(vec![
-                    Cell::from(runner.id.to_string()),
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
                     Cell::from(dash_or(&runner.version)),
                     status,
                 ]),
                 _ => Row::new(vec![
-                    Cell::from(runner.id.to_string()),
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
                     status,
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
                     Cell::from(runner.tag_list.join(", ")),
-                    Cell::from(runner.managers.len().to_string()),
+                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
             }
         }
@@ -731,8 +731,8 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
 
     let rows = app.manager_rows.iter().map(|row| {
         Row::new(vec![
-            Cell::from(row.runner_id.to_string()),
-            Cell::from(row.manager.id.to_string()),
+            Cell::from(row.runner_id.to_string()).style(styles::muted_style()),
+            Cell::from(row.manager.id.to_string()).style(styles::muted_style()),
             Cell::from(row.manager.system_id.as_str()),
             Cell::from(row.manager.status.as_str())
                 .style(styles::status_style(&row.manager.status)),
