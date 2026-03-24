@@ -44,12 +44,12 @@ enum HeadlessCommand {
 }
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, disable_version_flag = true)]
 struct Args {
     #[arg(long, env("GITLAB_HOST"))]
     host: Option<String>,
 
-    #[arg(long, env("GITLAB_TOKEN"))]
+    #[arg(long, env("GITLAB_TOKEN"), hide_env_values = true)]
     token: Option<String>,
 
     /// Run in headless mode, polling until timeout
@@ -72,6 +72,10 @@ struct Args {
     #[arg(long)]
     tags: Option<String>,
 
+    /// Version prefix to filter runners (e.g. "16.11")
+    #[arg(long = "version")]
+    version_filter: Option<String>,
+
     /// Run with demo fixture data (no GitLab credentials required)
     #[arg(long)]
     demo: bool,
@@ -85,6 +89,7 @@ impl std::fmt::Debug for Args {
             .field("watch", &self.watch)
             .field("command", &self.command)
             .field("tags", &self.tags)
+            .field("version", &self.version_filter)
             .field("demo", &self.demo)
             .finish()
     }
@@ -129,6 +134,7 @@ async fn main() -> Result<()> {
             config,
             &args.command,
             args.tags.as_deref(),
+            args.version_filter.as_deref(),
             &args,
         )
         .await;
@@ -384,6 +390,7 @@ async fn run_headless(
     config: AppConfig,
     command: &str,
     tags: Option<&str>,
+    version: Option<&str>,
     args: &Args,
 ) -> Result<()> {
     let command = parse_headless_command(command)?;
@@ -395,7 +402,7 @@ async fn run_headless(
         iteration += 1;
         let elapsed = started_at.elapsed().as_secs();
 
-        let filters = build_runner_filters(tags);
+        let filters = build_runner_filters(tags, version);
 
         let outcome = conductor.fetch_runners_with_metrics(filters).await?;
 
@@ -545,7 +552,7 @@ fn parse_headless_command(command: &str) -> Result<HeadlessCommand> {
     }
 }
 
-fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
+fn build_runner_filters(tags: Option<&str>, version: Option<&str>) -> RunnerFilters {
     let tag_list = tags.and_then(|tag_str| {
         let tags: Vec<String> = tag_str
             .split(',')
@@ -563,6 +570,7 @@ fn build_runner_filters(tags: Option<&str>) -> RunnerFilters {
 
     RunnerFilters {
         tag_list,
+        version_prefix: version.map(|v| v.to_string()),
         ..RunnerFilters::default()
     }
 }
@@ -613,16 +621,16 @@ mod tests {
 
     #[test]
     fn builds_empty_filters_when_tags_missing_or_blank() {
-        assert_eq!(build_runner_filters(None), RunnerFilters::default());
+        assert_eq!(build_runner_filters(None, None), RunnerFilters::default());
         assert_eq!(
-            build_runner_filters(Some(" , , ")),
+            build_runner_filters(Some(" , , "), None),
             RunnerFilters::default()
         );
     }
 
     #[test]
     fn builds_trimmed_tag_filters() {
-        let filters = build_runner_filters(Some(" alm, production ,, linux "));
+        let filters = build_runner_filters(Some(" alm, production ,, linux "), None);
         assert_eq!(
             filters.tag_list,
             Some(vec![
@@ -639,7 +647,7 @@ mod tests {
 
     #[test]
     fn builds_tag_filters_preserving_order_and_duplicates() {
-        let filters = build_runner_filters(Some("prod, staging,prod,qa"));
+        let filters = build_runner_filters(Some("prod, staging,prod,qa"), None);
         assert_eq!(
             filters.tag_list,
             Some(vec![
@@ -653,7 +661,7 @@ mod tests {
 
     #[test]
     fn builds_tag_filters_with_tab_and_newline_whitespace() {
-        let filters = build_runner_filters(Some("\tprod,\nqa,  staging "));
+        let filters = build_runner_filters(Some("\tprod,\nqa,  staging "), None);
         assert_eq!(
             filters.tag_list,
             Some(vec![
@@ -662,6 +670,13 @@ mod tests {
                 "staging".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn builds_version_filter() {
+        let filters = build_runner_filters(None, Some("16.11"));
+        assert_eq!(filters.version_prefix, Some("16.11".to_string()));
+        assert_eq!(filters.tag_list, None);
     }
 
     #[test]
@@ -693,6 +708,7 @@ mod tests {
             json: false,
             command: "rotate".to_string(),
             tags: None,
+            version_filter: None,
             demo: false,
         };
         let config = AppConfig {
@@ -724,6 +740,7 @@ mod tests {
             json: false,
             command: "rotate".to_string(),
             tags: None,
+            version_filter: None,
             demo: false,
         };
 
@@ -744,6 +761,7 @@ mod tests {
             json: false,
             command: "rotate".to_string(),
             tags: None,
+            version_filter: None,
             demo: false,
         };
 
