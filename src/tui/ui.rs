@@ -36,7 +36,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let chunks = Layout::vertical([
         Constraint::Length(4),
         Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
@@ -44,14 +43,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     render_header(app, frame, chunks[0]);
     render_tabs(app, frame, chunks[1]);
-    render_filter_bar(app, frame, chunks[2]);
 
     match app.mode {
-        AppMode::Help => render_help_view(frame, chunks[3]),
-        _ => render_content(app, frame, chunks[3]),
+        AppMode::Help => render_help_view(frame, chunks[2]),
+        _ => render_content(app, frame, chunks[2]),
     }
 
-    render_status_bar(app, frame, chunks[4]);
+    render_status_bar(app, frame, chunks[3]);
 
     match app.mode {
         AppMode::Settings => render_settings_modal(app, frame),
@@ -77,8 +75,7 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
-    use crate::config::RunnerDiscoveryMode;
-    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(42)]).split(area);
+    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(24)]).split(area);
 
     let title = if app.is_loading {
         format!(
@@ -92,18 +89,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
 
     let title_line = styles::gradient_text(&title, (125, 207, 255), (187, 154, 247));
 
-    let mode_label = match app.conductor.discovery_mode() {
-        RunnerDiscoveryMode::AllRunners => "All runners",
-        RunnerDiscoveryMode::VisibleRunners => "Visible runners",
-        RunnerDiscoveryMode::ConfiguredTargets => "Target runners",
-    };
-    let subtitle = mode_label.to_string();
-
-    let header = Paragraph::new(vec![
-        title_line,
-        Line::from(Span::styled(subtitle, styles::muted_style())),
-    ])
-    .block(styles::block("Dashboard"));
+    let header = Paragraph::new(vec![title_line]).block(styles::block("Dashboard"));
     frame.render_widget(header, chunks[0]);
     render_polling_widget(app, frame, chunks[1]);
 }
@@ -153,7 +139,18 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
         _ => app.poll_progress_ratio(),
     };
 
-    let label = format!("last {age}  next {next}");
+    let label = format!("last {age} next {next}");
+    let compact_label = format!("L {age}  N {next}");
+
+    if inner.width < 24 {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+        frame.render_widget(Paragraph::new(badge_line), rows[0]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(compact_label, styles::muted_style())),
+            rows[1],
+        );
+        return;
+    }
 
     if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
         let width = inner.width as usize;
@@ -323,65 +320,6 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
-    let has_text = !app.filter_input.is_empty();
-    let has_popup_tags = !app.selected_tags.is_empty();
-    let has_active_filter = has_text || has_popup_tags;
-    let is_editing = app.mode == AppMode::FilterInput;
-
-    let line = if !has_active_filter {
-        let mut spans = Vec::new();
-        push_hotkey_hint(&mut spans, "t", "tag filter", is_editing);
-        push_hotkey_hint(&mut spans, "f", "popup", true);
-        push_hotkey_hint(
-            &mut spans,
-            "s",
-            &format!("sort {}", app.sort_label()),
-            false,
-        );
-        push_hotkey_hint(&mut spans, "c", "settings", false);
-        Line::from(spans)
-    } else {
-        let tag_summary = match (has_text, has_popup_tags) {
-            (true, true) => format!("{}, {}", app.filter_input, app.selected_tags.join(", ")),
-            (true, false) => app.filter_input.clone(),
-            (false, true) => app.selected_tags.join(", "),
-            (false, false) => unreachable!(),
-        };
-        let mut spans = vec![styles::status_chip("FILTERS", "live"), Span::raw(" ")];
-        spans.push(Span::styled(
-            format!("tags {}", tag_summary),
-            styles::accent_style(),
-        ));
-        let versions = app.selected_versions_summary();
-        if versions != "All versions" {
-            push_separator(&mut spans);
-            spans.push(styles::muted_chip("v"));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                format!("versions {versions}"),
-                styles::muted_style(),
-            ));
-        }
-        push_separator(&mut spans);
-        spans.push(styles::muted_chip("s"));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("sort {}", app.sort_label()),
-            styles::muted_style(),
-        ));
-        push_hotkey_hint(&mut spans, "f", "popup", true);
-        push_hotkey_hint(&mut spans, "c", "settings", false);
-        Line::from(spans)
-    };
-
-    frame.render_widget(Paragraph::new(line), area);
-
-    if is_editing {
-        frame.set_cursor_position((area.x + app.filter_input.chars().count() as u16, area.y));
-    }
 }
 
 fn render_content(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -1710,9 +1648,8 @@ mod tests {
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI ● Live (p to pause)
-Visible runners last <age> next <age>
+L <age> N <age>
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-FILTERS tags prod,linux · s sort None · f popup · c settings
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 ▶ 326689 ● online 18.8.0 <age> platform, prod 2
@@ -1731,9 +1668,8 @@ READY 1 runners for Runners · Runner 326689 [online] p poll · r refresh · f f
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-Visible runners last never next -
+L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-FILTERS tags alm · s sort None · f popup · c settings
 Offline (0)
 No offline runners matched the current tag filter.
 Status
@@ -1760,9 +1696,8 @@ READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-Visible runners last never next -
+L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-t tag filter · f popup · s sort None · c settings
 Workers (1)
 Runner Worker System Status Contacted
 ▶ 326759 256551 s_859060915507 ● online <age>
@@ -1796,9 +1731,8 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-Visible runners last never next -
+L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-t tag filter · f popup · s sort None · c settings
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
@@ -1817,18 +1751,6 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         let rendered = render_to_string(&mut app, 220, 18);
         assert!(rendered.contains("Refreshing Runners"));
         assert!(rendered.contains("prod,linux"));
-    }
-
-    #[test]
-    fn filter_bar_shows_popup_only_filters() {
-        let mut app = test_app();
-        app.loaded_tab = Some(Tab::Runners);
-        app.selected_tags = vec!["prod".to_string(), "linux".to_string()];
-
-        let rendered = render_to_string(&mut app, 120, 18);
-        assert!(rendered.contains("FILTERS"));
-        assert!(rendered.contains("tags prod, linux"));
-        assert!(rendered.contains("popup"));
     }
 
     #[test]
