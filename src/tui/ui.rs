@@ -14,7 +14,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Cell, Clear, Gauge, HighlightSpacing, List, ListItem, Paragraph, Row, Scrollbar,
+        Cell, Clear, HighlightSpacing, List, ListItem, Paragraph, Row, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Table, Wrap,
     },
     Frame,
@@ -34,7 +34,7 @@ fn display_or_dash(value: &str) -> &str {
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let chunks = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(3),
@@ -105,11 +105,11 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
 
     let state = app.poll_display_state();
     let badge = match state {
-        PollDisplayState::Refreshing => format!("{} Refreshing", app.spinner_char()),
-        PollDisplayState::Live => "● Live (p to pause)".to_string(),
-        PollDisplayState::Paused => "Paused (p to resume)".to_string(),
-        PollDisplayState::TimedOut => "Timed out (p to resume)".to_string(),
-        PollDisplayState::Error => "Error (p to retry)".to_string(),
+        PollDisplayState::Refreshing => format!("{} Refresh", app.spinner_char()),
+        PollDisplayState::Live => "● Live".to_string(),
+        PollDisplayState::Paused => "Paused".to_string(),
+        PollDisplayState::TimedOut => "Timed out".to_string(),
+        PollDisplayState::Error => "Error".to_string(),
     };
 
     let age = app
@@ -128,93 +128,18 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
         PollDisplayState::Error => styles::status_style("offline"),
     };
 
-    let badge_line = if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
+    let mut line = if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
         styles::gradient_text(&badge, (125, 207, 255), (187, 154, 247))
     } else {
         Line::from(Span::styled(&badge, status_style))
     };
+    line.spans.push(Span::styled(" · ", styles::muted_style()));
+    line.spans.push(Span::styled(
+        format!("L {age} N {next}"),
+        styles::muted_style(),
+    ));
 
-    let ratio = match state {
-        PollDisplayState::Paused => 0.0,
-        _ => app.poll_progress_ratio(),
-    };
-
-    let label = format!("last {age} next {next}");
-    let compact_label = format!("L {age}  N {next}");
-
-    if inner.width < 24 {
-        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-        frame.render_widget(Paragraph::new(badge_line), rows[0]);
-        frame.render_widget(
-            Paragraph::new(Span::styled(compact_label, styles::muted_style())),
-            rows[1],
-        );
-        return;
-    }
-
-    if matches!(state, PollDisplayState::Live | PollDisplayState::Refreshing) {
-        let width = inner.width as usize;
-        let filled_width = ((ratio.clamp(0.0, 1.0) * width as f64) as usize).min(width);
-        let empty_width = width.saturating_sub(filled_width);
-
-        let mut spans = Vec::new();
-        if filled_width > 0 {
-            let filled_str = "█".repeat(filled_width);
-            let gradient = styles::gradient_text(&filled_str, (125, 207, 255), (187, 154, 247));
-            spans.extend(gradient.spans);
-        }
-        if empty_width > 0 {
-            spans.push(Span::styled(" ".repeat(empty_width), styles::muted_style()));
-        }
-
-        let gauge_line = Line::from(spans);
-
-        if inner.height >= 2 {
-            let rows =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-            frame.render_widget(Paragraph::new(badge_line), rows[0]);
-            frame.render_widget(Paragraph::new(gauge_line), rows[1]);
-            // Centered label over gauge
-            let label_len = label.len() as u16;
-            if label_len < inner.width {
-                let label_x = inner.x + (inner.width - label_len) / 2;
-                frame.render_widget(
-                    Paragraph::new(Span::styled(label, styles::muted_style())),
-                    Rect::new(label_x, rows[1].y, label_len, 1),
-                );
-            }
-        } else {
-            frame.render_widget(Paragraph::new(badge_line), inner);
-        }
-    } else {
-        let gauge_style = match state {
-            PollDisplayState::Paused => styles::muted_style(),
-            PollDisplayState::TimedOut => styles::status_style("stale"),
-            PollDisplayState::Error => styles::status_style("offline"),
-            _ => styles::accent_style(),
-        };
-
-        if inner.height >= 2 {
-            let rows =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-            frame.render_widget(Paragraph::new(badge_line), rows[0]);
-            frame.render_widget(
-                Gauge::default()
-                    .label(label)
-                    .gauge_style(gauge_style)
-                    .ratio(ratio.clamp(0.0, 1.0)),
-                rows[1],
-            );
-        } else {
-            frame.render_widget(
-                Gauge::default()
-                    .label(format!("{}  {}", badge, label))
-                    .gauge_style(gauge_style)
-                    .ratio(ratio.clamp(0.0, 1.0)),
-                inner,
-            );
-        }
-    }
+    frame.render_widget(Paragraph::new(line), inner);
 }
 
 fn format_age(seconds: u64) -> String {
@@ -282,6 +207,7 @@ fn simple_status_hint(items: &[(&str, &str)]) -> Line<'static> {
 
 fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
 
     for (i, tab) in app.tabs.iter().enumerate() {
         let is_active = i == app.active_tab_index;
@@ -949,13 +875,15 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_filter_popup(app: &mut App, frame: &mut Frame) {
-    let area = centered_rect(55, 65, frame.area());
+    let area = centered_rect(60, 78, frame.area());
     frame.render_widget(Clear, area);
 
     let sections = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(0),
-        Constraint::Percentage(35),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Min(6),
+        Constraint::Length(7),
         Constraint::Length(1),
     ])
     .split(area);
@@ -989,6 +917,91 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(search_title)
         });
     frame.render_widget(search_widget, sections[0]);
+
+    // --- Tags section ---
+    let selected_focused = app.filter_popup_section == FilterPopupSection::Selected;
+    let selected_title = if selected_focused {
+        "▶ Selected Filters"
+    } else {
+        "  Selected Filters"
+    };
+    let selected_items_raw = app.selected_filter_items();
+    let selected_items: Vec<ListItem> = if selected_items_raw.is_empty() {
+        vec![ListItem::new("No filters selected.")]
+    } else {
+        selected_items_raw
+            .iter()
+            .map(|item| match item {
+                crate::tui::app::SelectedFilterItem::TextTag(tag) => {
+                    ListItem::new(format!("[x] text:{tag}"))
+                }
+                crate::tui::app::SelectedFilterItem::PopupTag(tag) => {
+                    ListItem::new(format!("[x] tag:{tag}"))
+                }
+                crate::tui::app::SelectedFilterItem::Version(version) => {
+                    ListItem::new(format!("[x] version:{version}"))
+                }
+                crate::tui::app::SelectedFilterItem::Status(status) => {
+                    ListItem::new(format!("[x] status:{status}"))
+                }
+            })
+            .collect()
+    };
+    let selected_list = List::new(selected_items)
+        .highlight_style(if selected_focused {
+            styles::selected_row_style()
+        } else {
+            styles::muted_style()
+        })
+        .block(if selected_focused {
+            styles::focused_block(selected_title)
+        } else {
+            styles::block(selected_title)
+        });
+    if selected_focused {
+        frame.render_stateful_widget(
+            selected_list,
+            sections[1],
+            &mut app.selected_filter_list_state,
+        );
+    } else {
+        frame.render_widget(selected_list, sections[1]);
+    }
+
+    let status_focused = app.filter_popup_section == FilterPopupSection::Status;
+    let status_title = if status_focused {
+        "▶ Status"
+    } else {
+        "  Status"
+    };
+    let status_items: Vec<ListItem> = app
+        .status_options
+        .iter()
+        .map(|status| {
+            let marker = if app.selected_status.as_deref() == Some(status.as_str()) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            ListItem::new(format!("{marker} {status}"))
+        })
+        .collect();
+    let status_list = List::new(status_items)
+        .highlight_style(if status_focused {
+            styles::selected_row_style()
+        } else {
+            styles::muted_style()
+        })
+        .block(if status_focused {
+            styles::focused_block(status_title)
+        } else {
+            styles::block(status_title)
+        });
+    if status_focused {
+        frame.render_stateful_widget(status_list, sections[2], &mut app.status_list_state);
+    } else {
+        frame.render_widget(status_list, sections[2]);
+    }
 
     // --- Tags section ---
     let tags_focused = app.filter_popup_section == FilterPopupSection::Tags;
@@ -1034,9 +1047,9 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(tags_title)
         });
     if tags_focused {
-        frame.render_stateful_widget(tags_list, sections[1], &mut app.tag_list_state);
+        frame.render_stateful_widget(tags_list, sections[3], &mut app.tag_list_state);
     } else {
-        frame.render_widget(tags_list, sections[1]);
+        frame.render_widget(tags_list, sections[3]);
     }
 
     // --- Versions section ---
@@ -1073,17 +1086,17 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(versions_title)
         });
     if versions_focused {
-        frame.render_stateful_widget(versions_list, sections[2], &mut app.version_list_state);
+        frame.render_stateful_widget(versions_list, sections[4], &mut app.version_list_state);
     } else {
-        frame.render_widget(versions_list, sections[2]);
+        frame.render_widget(versions_list, sections[4]);
     }
 
     // --- Footer ---
     let footer = Paragraph::new(
-        "type:search  space:toggle  m:AND/OR  tab:switch  c:clear section  esc:close",
+        "type:search  space:toggle/remove  m:AND/OR  c:clear section  a:clear all  tab:switch  esc:close",
     )
     .style(styles::muted_style());
-    frame.render_widget(footer, sections[3]);
+    frame.render_widget(footer, sections[5]);
 }
 
 fn render_settings_modal(app: &mut App, frame: &mut Frame) {
@@ -1307,6 +1320,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             ("tab", "switch"),
             ("space", "toggle"),
             ("c", "clear"),
+            ("a", "clear all"),
         ])),
         AppMode::Settings => Some(simple_status_hint(&[
             ("Tab", "move"),
@@ -1647,8 +1661,7 @@ mod tests {
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI ● Live (p to pause)
-L <age> N <age>
+GitLab Runner TUI ● Live · L <age> N <age>
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
@@ -1667,8 +1680,7 @@ READY 1 runners for Runners · Runner 326689 [online] p poll · r refresh · f f
         let rendered = render_to_string(&mut app, 100, 20);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume)
-L never N -
+GitLab Runner TUI Paused · L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Offline (0)
 No offline runners matched the current tag filter.
@@ -1695,8 +1707,7 @@ READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume)
-L never N -
+GitLab Runner TUI Paused · L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Workers (1)
 Runner Worker System Status Contacted
@@ -1730,8 +1741,7 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused (p to resume)
-L never N -
+GitLab Runner TUI Paused · L never N -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Health Summary
 ✓ 1 of 1 runners online (100.0%)

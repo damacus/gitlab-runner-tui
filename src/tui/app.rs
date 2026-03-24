@@ -141,8 +141,18 @@ pub enum AppMode {
 pub enum FilterPopupSection {
     #[default]
     TagSearch,
+    Selected,
+    Status,
     Tags,
     Versions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectedFilterItem {
+    TextTag(String),
+    PopupTag(String),
+    Version(String),
+    Status(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -337,11 +347,15 @@ pub struct App {
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
     pub filter_popup_section: FilterPopupSection,
+    pub selected_filter_list_state: ListState,
     pub tag_search_input: String,
     pub tag_filter_mode: TagFilterMode,
     pub tag_options: Vec<String>,
     pub selected_tags: Vec<String>,
     pub tag_list_state: ListState,
+    pub status_options: Vec<String>,
+    pub selected_status: Option<String>,
+    pub status_list_state: ListState,
     pub sort_key: RunnerSortKey,
     pub table_state: TableState,
     pub scroll_state: ScrollbarState,
@@ -390,11 +404,20 @@ impl App {
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
             filter_popup_section: FilterPopupSection::default(),
+            selected_filter_list_state: ListState::default(),
             tag_search_input: String::new(),
             tag_filter_mode: TagFilterMode::default(),
             tag_options: Vec::new(),
             selected_tags: Vec::new(),
             tag_list_state: ListState::default(),
+            status_options: vec![
+                "online".to_string(),
+                "offline".to_string(),
+                "stale".to_string(),
+                "never_contacted".to_string(),
+            ],
+            selected_status: None,
+            status_list_state: ListState::default(),
             sort_key: RunnerSortKey::None,
             table_state: TableState::default(),
             scroll_state: ScrollbarState::default(),
@@ -493,6 +516,24 @@ impl App {
     pub fn open_filter_popup(&mut self) {
         self.mode = AppMode::FilterPopup;
         self.filter_popup_section = FilterPopupSection::TagSearch;
+        let selected_count = self.selected_filter_items().len();
+        if selected_count == 0 {
+            self.selected_filter_list_state.select(None);
+        } else if self.selected_filter_list_state.selected().is_none() {
+            self.selected_filter_list_state.select(Some(0));
+        }
+        if self.status_options.is_empty() {
+            self.status_list_state.select(None);
+        } else if let Some(current_status) = &self.selected_status {
+            let selected = self
+                .status_options
+                .iter()
+                .position(|status| status == current_status)
+                .unwrap_or(0);
+            self.status_list_state.select(Some(selected));
+        } else if self.status_list_state.selected().is_none() {
+            self.status_list_state.select(Some(0));
+        }
         let filtered_count = self.filtered_tag_options().count();
         if filtered_count == 0 {
             self.tag_list_state.select(None);
@@ -540,6 +581,7 @@ impl App {
             tag_list: self.filter_tags(),
             popup_tags: (!self.selected_tags.is_empty()).then_some(self.selected_tags.clone()),
             popup_tag_mode: self.tag_filter_mode,
+            status: self.selected_status.clone(),
             selected_versions: (!self.selected_versions.is_empty())
                 .then_some(self.selected_versions.clone()),
             ..RunnerFilters::default()
@@ -685,21 +727,6 @@ impl App {
             .elapsed()
             .as_secs();
         Some(interval.saturating_sub(elapsed.min(interval)))
-    }
-
-    pub fn poll_progress_ratio(&self) -> f64 {
-        if !self.polling_active {
-            return 0.0;
-        }
-
-        let interval = self.config.poll_interval_secs.max(1);
-        let elapsed = self
-            .last_refresh_at
-            .or(self.last_poll_at)
-            .map(|last| last.elapsed().as_secs().min(interval))
-            .unwrap_or(0);
-
-        elapsed as f64 / interval as f64
     }
 
     /// Spawn a background task to fetch runners; the UI stays responsive during the fetch.
@@ -1044,6 +1071,29 @@ impl App {
             .filter(move |t| query.is_empty() || t.to_lowercase().contains(&query))
     }
 
+    pub fn selected_filter_items(&self) -> Vec<SelectedFilterItem> {
+        let mut items = Vec::new();
+        if let Some(text_tags) = self.filter_tags() {
+            items.extend(text_tags.into_iter().map(SelectedFilterItem::TextTag));
+        }
+        items.extend(
+            self.selected_tags
+                .iter()
+                .cloned()
+                .map(SelectedFilterItem::PopupTag),
+        );
+        items.extend(
+            self.selected_versions
+                .iter()
+                .cloned()
+                .map(SelectedFilterItem::Version),
+        );
+        if let Some(status) = &self.selected_status {
+            items.push(SelectedFilterItem::Status(status.clone()));
+        }
+        items
+    }
+
     pub fn toggle_selected_tag(&mut self) {
         let Some(index) = self.tag_list_state.selected() else {
             return;
@@ -1065,6 +1115,96 @@ impl App {
             self.selected_tags.push(tag);
             self.selected_tags.sort();
         }
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
+    pub fn toggle_selected_status(&mut self) {
+        let Some(index) = self.status_list_state.selected() else {
+            return;
+        };
+        let Some(status) = self.status_options.get(index).cloned() else {
+            return;
+        };
+
+        if self.selected_status.as_deref() == Some(status.as_str()) {
+            self.selected_status = None;
+        } else {
+            self.selected_status = Some(status);
+        }
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
+    pub fn remove_selected_filter(&mut self) {
+        let Some(index) = self.selected_filter_list_state.selected() else {
+            return;
+        };
+        let items = self.selected_filter_items();
+        let Some(item) = items.get(index).cloned() else {
+            return;
+        };
+
+        match item {
+            SelectedFilterItem::TextTag(tag) => {
+                let mut tags = self.filter_tags().unwrap_or_default();
+                if let Some(position) = tags.iter().position(|candidate| candidate == &tag) {
+                    tags.remove(position);
+                }
+                self.filter_input = tags.join(",");
+            }
+            SelectedFilterItem::PopupTag(tag) => {
+                self.selected_tags.retain(|candidate| candidate != &tag);
+            }
+            SelectedFilterItem::Version(version) => {
+                self.selected_versions
+                    .retain(|candidate| candidate != &version);
+            }
+            SelectedFilterItem::Status(_) => {
+                self.selected_status = None;
+            }
+        }
+
+        let remaining = self.selected_filter_items().len();
+        if remaining == 0 {
+            self.selected_filter_list_state.select(None);
+        } else if index >= remaining {
+            self.selected_filter_list_state.select(Some(remaining - 1));
+        }
+
+        if self.has_loaded_active_tab() {
+            self.apply_view_state(self.active_tab());
+        }
+    }
+
+    pub fn clear_all_filters(&mut self) {
+        self.filter_input.clear();
+        self.selected_tags.clear();
+        self.selected_versions.clear();
+        self.selected_status = None;
+        self.tag_search_input.clear();
+        self.tag_list_state.select(if self.tag_options.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
+        self.version_list_state
+            .select(if self.version_options.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        self.selected_filter_list_state.select(None);
+        self.status_list_state
+            .select(if self.status_options.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
 
         if self.has_loaded_active_tab() {
             self.apply_view_state(self.active_tab());
@@ -1120,6 +1260,7 @@ impl App {
                 self.selected_versions.clear();
                 self.tag_options.clear();
                 self.selected_tags.clear();
+                self.selected_status = None;
                 self.table_state.select(None);
                 self.update_scroll_state();
                 self.start_search();
@@ -1229,14 +1370,17 @@ impl App {
                     KeyCode::Char('f') if key.modifiers.is_empty() => {
                         self.mode = AppMode::Dashboard;
                     }
+                    KeyCode::Char('a') => {
+                        self.clear_all_filters();
+                    }
                     KeyCode::Tab => {
-                        self.filter_popup_section = FilterPopupSection::Tags;
+                        self.filter_popup_section = FilterPopupSection::Selected;
                     }
                     KeyCode::BackTab => {
                         self.filter_popup_section = FilterPopupSection::Versions;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        self.filter_popup_section = FilterPopupSection::Tags;
+                        self.filter_popup_section = FilterPopupSection::Selected;
                     }
                     KeyCode::Backspace => {
                         self.tag_search_input.pop();
@@ -1258,12 +1402,17 @@ impl App {
                     }
                     _ => {}
                 },
-                FilterPopupSection::Tags | FilterPopupSection::Versions => match key.code {
+                FilterPopupSection::Selected
+                | FilterPopupSection::Status
+                | FilterPopupSection::Tags
+                | FilterPopupSection::Versions => match key.code {
                     KeyCode::Esc | KeyCode::Char('f') => {
                         self.mode = AppMode::Dashboard;
                     }
                     KeyCode::Tab => {
                         self.filter_popup_section = match self.filter_popup_section {
+                            FilterPopupSection::Selected => FilterPopupSection::Status,
+                            FilterPopupSection::Status => FilterPopupSection::Tags,
                             FilterPopupSection::Tags => FilterPopupSection::Versions,
                             FilterPopupSection::Versions => FilterPopupSection::TagSearch,
                             FilterPopupSection::TagSearch => unreachable!(),
@@ -1271,12 +1420,24 @@ impl App {
                     }
                     KeyCode::BackTab => {
                         self.filter_popup_section = match self.filter_popup_section {
-                            FilterPopupSection::Tags => FilterPopupSection::TagSearch,
+                            FilterPopupSection::Selected => FilterPopupSection::TagSearch,
+                            FilterPopupSection::Status => FilterPopupSection::Selected,
+                            FilterPopupSection::Tags => FilterPopupSection::Status,
                             FilterPopupSection::Versions => FilterPopupSection::Tags,
                             FilterPopupSection::TagSearch => unreachable!(),
                         };
                     }
                     KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
+                        FilterPopupSection::Selected => {
+                            if !self.selected_filter_items().is_empty() {
+                                self.selected_filter_list_state.select_previous();
+                            }
+                        }
+                        FilterPopupSection::Status => {
+                            if !self.status_options.is_empty() {
+                                self.status_list_state.select_previous();
+                            }
+                        }
                         FilterPopupSection::Tags => {
                             if self.filtered_tag_options().count() > 0 {
                                 self.tag_list_state.select_previous();
@@ -1290,6 +1451,16 @@ impl App {
                         FilterPopupSection::TagSearch => unreachable!(),
                     },
                     KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
+                        FilterPopupSection::Selected => {
+                            if !self.selected_filter_items().is_empty() {
+                                self.selected_filter_list_state.select_next();
+                            }
+                        }
+                        FilterPopupSection::Status => {
+                            if !self.status_options.is_empty() {
+                                self.status_list_state.select_next();
+                            }
+                        }
                         FilterPopupSection::Tags => {
                             if self.filtered_tag_options().count() > 0 {
                                 self.tag_list_state.select_next();
@@ -1303,6 +1474,8 @@ impl App {
                         FilterPopupSection::TagSearch => unreachable!(),
                     },
                     KeyCode::Char(' ') => match self.filter_popup_section {
+                        FilterPopupSection::Selected => self.remove_selected_filter(),
+                        FilterPopupSection::Status => self.toggle_selected_status(),
                         FilterPopupSection::Tags => self.toggle_selected_tag(),
                         FilterPopupSection::Versions => self.toggle_selected_version(),
                         FilterPopupSection::TagSearch => unreachable!(),
@@ -1314,6 +1487,13 @@ impl App {
                         }
                     }
                     KeyCode::Char('c') => match self.filter_popup_section {
+                        FilterPopupSection::Selected => {}
+                        FilterPopupSection::Status => {
+                            self.selected_status = None;
+                            if self.has_loaded_active_tab() {
+                                self.apply_view_state(self.active_tab());
+                            }
+                        }
                         FilterPopupSection::Tags => {
                             self.selected_tags.clear();
                             if self.has_loaded_active_tab() {
@@ -1328,6 +1508,9 @@ impl App {
                         }
                         FilterPopupSection::TagSearch => unreachable!(),
                     },
+                    KeyCode::Char('a') => {
+                        self.clear_all_filters();
+                    }
                     _ => {}
                 },
             }
@@ -1727,10 +1910,12 @@ mod tests {
     #[test]
     fn test_open_filter_popup_selects_first_item_when_tags_available() {
         let mut app = test_app();
+        app.filter_input = "prod".to_owned();
         app.tag_options = vec!["docker".to_owned(), "linux".to_owned()];
         app.tag_list_state.select(None);
         app.open_filter_popup();
         assert_eq!(app.mode, AppMode::FilterPopup);
+        assert_eq!(app.selected_filter_list_state.selected(), Some(0));
         assert_eq!(app.tag_list_state.selected(), Some(0));
     }
 
@@ -1751,6 +1936,49 @@ mod tests {
         assert_eq!(app.selected_tags, vec!["docker"]);
         app.toggle_selected_tag();
         assert!(app.selected_tags.is_empty());
+    }
+
+    #[test]
+    fn test_build_filters_includes_status() {
+        let mut app = test_app();
+        app.selected_status = Some("offline".to_owned());
+        let filters = app.build_filters();
+        assert_eq!(filters.status, Some("offline".to_owned()));
+    }
+
+    #[test]
+    fn test_toggle_selected_status_adds_and_removes() {
+        let mut app = test_app();
+        app.status_list_state.select(Some(1));
+        app.toggle_selected_status();
+        assert_eq!(app.selected_status, Some("offline".to_owned()));
+        app.toggle_selected_status();
+        assert_eq!(app.selected_status, None);
+    }
+
+    #[test]
+    fn test_remove_selected_filter_removes_text_tag() {
+        let mut app = test_app();
+        app.filter_input = "prod,linux".to_owned();
+        app.selected_filter_list_state.select(Some(0));
+        app.remove_selected_filter();
+        assert_eq!(app.filter_input, "linux");
+    }
+
+    #[test]
+    fn test_clear_all_filters_resets_everything() {
+        let mut app = test_app();
+        app.filter_input = "prod".to_owned();
+        app.selected_tags = vec!["docker".to_owned()];
+        app.selected_versions = vec!["17.5.0".to_owned()];
+        app.selected_status = Some("online".to_owned());
+        app.tag_search_input = "dock".to_owned();
+        app.clear_all_filters();
+        assert!(app.filter_input.is_empty());
+        assert!(app.selected_tags.is_empty());
+        assert!(app.selected_versions.is_empty());
+        assert!(app.selected_status.is_none());
+        assert!(app.tag_search_input.is_empty());
     }
 
     #[test]
@@ -1988,6 +2216,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tab_switches_section_selected_to_status() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Selected;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.filter_popup_section, FilterPopupSection::Status);
+    }
+
+    #[tokio::test]
     async fn test_tab_switches_section_versions_to_tags() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
@@ -2021,6 +2259,36 @@ mod tests {
             .await;
         assert!(app.selected_versions.is_empty());
         assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn test_c_clears_focused_status_only() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Status;
+        app.selected_status = Some("online".to_owned());
+        app.selected_tags = vec!["docker".to_owned()];
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+            .await;
+        assert!(app.selected_status.is_none());
+        assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn test_a_clears_all_filters_in_popup() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::Tags;
+        app.filter_input = "prod".to_owned();
+        app.selected_tags = vec!["docker".to_owned()];
+        app.selected_versions = vec!["17.5.0".to_owned()];
+        app.selected_status = Some("online".to_owned());
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+            .await;
+        assert!(app.filter_input.is_empty());
+        assert!(app.selected_tags.is_empty());
+        assert!(app.selected_versions.is_empty());
+        assert!(app.selected_status.is_none());
     }
 
     #[tokio::test]
