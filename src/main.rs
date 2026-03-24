@@ -8,7 +8,9 @@ mod tui;
 
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
+use crate::models::runner::Runner;
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
@@ -54,7 +56,15 @@ struct Args {
     #[arg(long)]
     watch: bool,
 
-    /// Command to run in headless mode (fetch, lights, switch, workers, flames, empty, rotate)
+    /// Run once and exit (for CLI/automation use)
+    #[arg(long)]
+    once: bool,
+
+    /// Output results in JSON format
+    #[arg(long)]
+    json: bool,
+
+    /// Command to run in headless mode (fetch, switch, flames, empty, rotate)
     #[arg(long, default_value = "rotate")]
     command: String,
 
@@ -84,7 +94,7 @@ impl std::fmt::Debug for Args {
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
-    let config = AppConfig::load().unwrap_or_default();
+    let mut config = AppConfig::load().unwrap_or_default();
 
     // Setup logging
     let file_appender = tracing_appender::rolling::daily("logs", "gitlab-runner-tui.log");
@@ -94,25 +104,43 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    if args.demo {
-        return run_demo().await;
-    }
+    let is_headless = args.watch || args.once;
 
-    let (host, token, config) = resolve_runtime_settings(&args, config)?;
-
-    let conductor = if args.watch {
-        let client = GitLabClient::new(host, token)?;
-        Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone())
+    let conductor = if args.demo {
+        let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
+        let mut c =
+            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
+        c.demo_mode = true;
+        c
     } else {
-        bootstrap_interactive_conductor(host, token, config.clone()).await?
+        let (host, token, resolved_config) = resolve_runtime_settings(&args, config.clone())?;
+        config = resolved_config;
+        if is_headless {
+            let client = GitLabClient::new(host, token)?;
+            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone())
+        } else {
+            bootstrap_interactive_conductor(host, token, config.clone()).await?
+        }
     };
 
-    if args.watch {
-        return run_headless(conductor, config, &args.command, args.tags.as_deref()).await;
+    if is_headless {
+        return run_headless(
+            conductor,
+            config,
+            &args.command,
+            args.tags.as_deref(),
+            &args,
+        )
+        .await;
     }
 
     let mut app = App::new(conductor, config);
-    app.start_search();
+    if args.demo {
+        app.demo_mode = true;
+        app.seed_demo_data(fixtures::demo_runners());
+    } else {
+        app.start_search();
+    }
     run_tui(app).await
 }
 
@@ -148,23 +176,6 @@ async fn run_tui(mut app: App) -> Result<()> {
     )?;
     terminal.show_cursor()?;
     Ok(())
-}
-
-async fn run_demo() -> Result<()> {
-    let config = AppConfig {
-        gitlab_host: Some(DEMO_HOST.to_string()),
-        ..AppConfig::default()
-    };
-    // A real GitLabClient is constructed here so App::new() is satisfied, but it will never
-    // make network calls — app.demo_mode = true causes start_search() to return early at every
-    // call site, so the dummy credentials and host are never used.
-    let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
-    let conductor =
-        Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
-    let mut app = App::new(conductor, config);
-    app.demo_mode = true;
-    app.seed_demo_data(fixtures::demo_runners());
-    run_tui(app).await
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -373,6 +384,7 @@ async fn run_headless(
     config: AppConfig,
     command: &str,
     tags: Option<&str>,
+    args: &Args,
 ) -> Result<()> {
     let command = parse_headless_command(command)?;
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
@@ -385,62 +397,70 @@ async fn run_headless(
 
         let filters = build_runner_filters(tags);
 
-        let result = match command {
-            HeadlessCommand::Fetch => conductor.fetch_runners(filters).await,
-            HeadlessCommand::Switch => conductor.list_offline_runners(filters).await,
-            HeadlessCommand::Flames => conductor.list_uncontacted_runners(filters, 3600).await,
-            HeadlessCommand::Empty => conductor.list_runners_without_managers(filters).await,
-            HeadlessCommand::Rotate => conductor.detect_rotating_runners(filters).await,
+        let outcome = conductor.fetch_runners_with_metrics(filters).await?;
+
+        let runners = match command {
+            HeadlessCommand::Fetch => outcome.runners.clone(),
+            HeadlessCommand::Switch => filter_offline_runners(outcome.runners.clone()),
+            HeadlessCommand::Flames => {
+                filter_uncontacted_runners(outcome.runners.clone(), Utc::now(), 3600)
+            }
+            HeadlessCommand::Empty => filter_runners_without_managers(outcome.runners.clone()),
+            HeadlessCommand::Rotate => filter_rotating_runners(outcome.runners.clone()),
         };
 
-        match result {
-            Ok(runners) => {
+        if args.json {
+            let output = serde_json::to_string_pretty(&outcome)?;
+            println!("{}", output);
+        } else {
+            println!(
+                "[{:02}:{:02}] Poll #{} — {} runners matched (command: {})",
+                elapsed / 60,
+                elapsed % 60,
+                iteration,
+                runners.len(),
+                command.as_str(),
+            );
+
+            for runner in &runners {
+                let mgr_info: Vec<String> = runner
+                    .managers
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "{}({}/{})",
+                            m.system_id,
+                            m.status,
+                            m.version.as_deref().unwrap_or("-")
+                        )
+                    })
+                    .collect();
+
                 println!(
-                    "[{:02}:{:02}] Poll #{} — {} runners matched (command: {})",
-                    elapsed / 60,
-                    elapsed % 60,
-                    iteration,
-                    runners.len(),
-                    command.as_str(),
+                    "  Runner {} [{}] managers=[{}]",
+                    runner.id,
+                    runner.tag_list.join(","),
+                    mgr_info.join(", ")
                 );
-
-                for runner in &runners {
-                    let mgr_info: Vec<String> = runner
-                        .managers
-                        .iter()
-                        .map(|m| {
-                            format!(
-                                "{}({}/{})",
-                                m.system_id,
-                                m.status,
-                                m.version.as_deref().unwrap_or("-")
-                            )
-                        })
-                        .collect();
-
-                    println!(
-                        "  Runner {} [{}] managers=[{}]",
-                        runner.id,
-                        runner.tag_list.join(","),
-                        mgr_info.join(", ")
-                    );
-                }
-
-                if runners.is_empty() && command == HeadlessCommand::Rotate {
-                    println!("  ✓ No rotation detected — all runners have single managers");
-                }
             }
-            Err(e) => {
-                eprintln!("Error: {:#}", e);
+
+            if runners.is_empty() && command == HeadlessCommand::Rotate {
+                println!("  ✓ No rotation detected — all runners have single managers");
             }
+        }
+
+        if args.once {
+            break;
         }
 
         // Check timeout
         if started_at.elapsed().as_secs() >= config.poll_timeout_secs {
-            println!(
-                "\nPoll timeout reached ({} seconds). Exiting.",
-                config.poll_timeout_secs
-            );
+            if !args.json {
+                println!(
+                    "\nPoll timeout reached ({} seconds). Exiting.",
+                    config.poll_timeout_secs
+                );
+            }
             break;
         }
 
@@ -448,6 +468,55 @@ async fn run_headless(
     }
 
     Ok(())
+}
+
+fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|runner| {
+            !runner.managers.is_empty()
+                && runner
+                    .managers
+                    .iter()
+                    .all(|manager| manager.status == "offline")
+        })
+        .collect()
+}
+
+fn filter_uncontacted_runners(
+    runners: Vec<Runner>,
+    now: DateTime<Utc>,
+    threshold_secs: u64,
+) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|runner| {
+            !runner.managers.is_empty()
+                && runner.managers.iter().all(|manager| {
+                    match crate::models::runner::parse_manager_contacted_at(manager) {
+                        Some(contacted_at) => {
+                            let age = now.signed_duration_since(contacted_at).num_seconds();
+                            age >= threshold_secs as i64
+                        }
+                        None => true,
+                    }
+                })
+        })
+        .collect()
+}
+
+fn filter_runners_without_managers(runners: Vec<Runner>) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|runner| runner.managers.is_empty())
+        .collect()
+}
+
+fn filter_rotating_runners(runners: Vec<Runner>) -> Vec<Runner> {
+    runners
+        .into_iter()
+        .filter(|runner| runner.managers.len() > 1)
+        .collect()
 }
 
 impl HeadlessCommand {
@@ -620,6 +689,8 @@ mod tests {
             host: None,
             token: None,
             watch: false,
+            once: false,
+            json: false,
             command: "rotate".to_string(),
             tags: None,
             demo: false,
@@ -649,6 +720,8 @@ mod tests {
             host: None,
             token: None,
             watch: true,
+            once: false,
+            json: false,
             command: "rotate".to_string(),
             tags: None,
             demo: false,
@@ -667,6 +740,8 @@ mod tests {
             host: None,
             token: Some("glpat-test".to_string()),
             watch: true,
+            once: false,
+            json: false,
             command: "rotate".to_string(),
             tags: None,
             demo: false,

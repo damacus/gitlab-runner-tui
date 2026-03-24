@@ -5,6 +5,7 @@ use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -12,8 +13,10 @@ pub struct Conductor {
     client: GitLabClient,
     discovery_mode: RunnerDiscoveryMode,
     runner_targets: Vec<RunnerTarget>,
+    pub demo_mode: bool,
 }
 
+#[derive(Serialize)]
 pub struct QueryOutcome {
     pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
@@ -50,10 +53,14 @@ impl Conductor {
             client,
             discovery_mode,
             runner_targets,
+            demo_mode: false,
         }
     }
 
     pub async fn validate_token(&self) -> Result<()> {
+        if self.demo_mode {
+            return Ok(());
+        }
         self.client.validate_token().await
     }
 
@@ -94,6 +101,14 @@ impl Conductor {
         &self,
         filters: RunnerFilters,
     ) -> Result<(Vec<Runner>, QueryRequestCounts, bool)> {
+        if self.demo_mode {
+            return Ok((
+                crate::fixtures::demo_runners(),
+                QueryRequestCounts::default(),
+                false,
+            ));
+        }
+
         let mut runner_map = BTreeMap::new();
         let per_page = 100;
         let mut request_counts = QueryRequestCounts::default();
@@ -264,13 +279,6 @@ impl Conductor {
         Ok((enriched, request_counts, all_runners_fell_back))
     }
 
-    pub async fn list_offline_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
-        Ok(self
-            .list_offline_runners_with_metrics(filters)
-            .await?
-            .runners)
-    }
-
     pub async fn list_offline_runners_with_metrics(
         &self,
         filters: RunnerFilters,
@@ -279,17 +287,6 @@ impl Conductor {
         outcome.runners = filter_offline_runners(outcome.runners);
         outcome.metrics.result_count = outcome.runners.len();
         Ok(outcome)
-    }
-
-    pub async fn list_uncontacted_runners(
-        &self,
-        filters: RunnerFilters,
-        threshold_secs: u64,
-    ) -> Result<Vec<Runner>> {
-        Ok(self
-            .list_uncontacted_runners_with_metrics(filters, threshold_secs)
-            .await?
-            .runners)
     }
 
     pub async fn list_uncontacted_runners_with_metrics(
@@ -315,16 +312,6 @@ impl Conductor {
         Ok((online, total))
     }
 
-    pub async fn list_runners_without_managers(
-        &self,
-        filters: RunnerFilters,
-    ) -> Result<Vec<Runner>> {
-        Ok(self
-            .list_runners_without_managers_with_metrics(filters)
-            .await?
-            .runners)
-    }
-
     pub async fn list_runners_without_managers_with_metrics(
         &self,
         filters: RunnerFilters,
@@ -333,13 +320,6 @@ impl Conductor {
         outcome.runners = filter_runners_without_managers(outcome.runners);
         outcome.metrics.result_count = outcome.runners.len();
         Ok(outcome)
-    }
-
-    pub async fn detect_rotating_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
-        Ok(self
-            .detect_rotating_runners_with_metrics(filters)
-            .await?
-            .runners)
     }
 
     pub async fn detect_rotating_runners_with_metrics(
@@ -900,9 +880,10 @@ mod tests {
         );
 
         let offline = conductor
-            .list_offline_runners(RunnerFilters::default())
+            .list_offline_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         // Only runner 2 has an offline manager
         assert_eq!(offline.len(), 1);
@@ -942,9 +923,10 @@ mod tests {
         );
 
         let offline = conductor
-            .list_offline_runners(RunnerFilters::default())
+            .list_offline_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         // Only runner 2 should be offline (all managers offline)
         assert_eq!(offline.len(), 1);
@@ -975,9 +957,10 @@ mod tests {
         );
 
         let empty = conductor
-            .list_runners_without_managers(RunnerFilters::default())
+            .list_runners_without_managers_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         // Only runner 2 has no managers
         assert_eq!(empty.len(), 1);
@@ -1010,9 +993,10 @@ mod tests {
         );
 
         let rotating = conductor
-            .detect_rotating_runners(RunnerFilters::default())
+            .detect_rotating_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert_eq!(rotating.len(), 1);
         assert_eq!(rotating[0].id, 1);
@@ -1043,9 +1027,10 @@ mod tests {
         );
 
         let rotating = conductor
-            .detect_rotating_runners(RunnerFilters::default())
+            .detect_rotating_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert!(rotating.is_empty());
 
@@ -1079,9 +1064,10 @@ mod tests {
         );
 
         let rotating = conductor
-            .detect_rotating_runners(RunnerFilters::default())
+            .detect_rotating_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert_eq!(rotating.len(), 1);
         assert_eq!(rotating[0].id, 2);
@@ -1113,9 +1099,10 @@ mod tests {
         );
 
         let rotating = conductor
-            .detect_rotating_runners(RunnerFilters::default())
+            .detect_rotating_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert_eq!(rotating.len(), 1);
         assert_eq!(rotating[0].managers.len(), 3);
@@ -1189,9 +1176,10 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert_eq!(uncontacted.len(), 1);
         assert_eq!(uncontacted[0].id, 1);
@@ -1266,9 +1254,10 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
             .await
-            .unwrap();
+            .unwrap()
+            .runners;
 
         assert_eq!(uncontacted.len(), 1);
         assert_eq!(uncontacted[0].id, 3);

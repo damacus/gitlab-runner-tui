@@ -170,19 +170,62 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 
 `runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal and are persisted back to the canonical config file.
 
+## CLI & Automation
+
+In addition to the interactive TUI, `gitlab-runner-tui` can function as a powerful CLI tool for automation and LLM-based workflows.
+
+### One-shot JSON Output
+
+Use the `--once` and `--json` flags to fetch data once and exit with a JSON response:
+
+```bash
+# Fetch all runners as JSON
+gitlab-runner-tui --once --json --command fetch
+
+# List only rotating runners as JSON
+gitlab-runner-tui --once --json --command rotate
+```
+
+### Integration with `jq`
+
+The JSON output includes both the `runners` data and `metrics` about the query. You can easily process this with `jq`:
+
+**List all runner IDs:**
+```bash
+gitlab-runner-tui --once --json --command fetch | jq '.runners[].id'
+```
+
+**Find runners with offline managers:**
+```bash
+gitlab-runner-tui --once --json --command fetch | \
+  jq '.runners[] | select(.managers[].status == "offline") | {id: .id, description: .description}'
+```
+
+**Get query performance metrics:**
+```bash
+gitlab-runner-tui --once --json --command fetch | jq '.metrics'
+```
+
 ### CLI Flags
 
 ```bash
 # Override host and token
 gitlab-runner-tui --host <URL> --token <TOKEN>
 
-# Headless watch mode (non-interactive)
+# Headless mode (non-interactive)
 gitlab-runner-tui --watch --command rotate --tags production
+gitlab-runner-tui --once --json --command fetch
+
+# Use demo data for any mode (no credentials required)
+gitlab-runner-tui --demo
+gitlab-runner-tui --demo --once --json
 ```
 
-- `--watch`: Enable headless mode; polls and logs to stdout instead of starting the TUI.
-- `--command <CMD>`: Which query to run in watch mode (`fetch`, `switch`, `flames`, `empty`, `rotate`). Defaults to `rotate`.
-- `--tags <TAGS>`: Comma-separated list of tags for filtering in watch mode.
+- `--watch`: Enable headless mode; polls and logs to stdout until timeout.
+- `--once`: Run once and exit (ideal for scripts and automation).
+- `--json`: Output results in JSON format (best combined with `--once`).
+- `--command <CMD>`: Which query to run (`fetch`, `switch`, `flames`, `empty`, `rotate`). Defaults to `rotate`.
+- `--tags <TAGS>`: Comma-separated list of tags for filtering.
 
 ## Examples
 

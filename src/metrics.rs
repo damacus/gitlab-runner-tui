@@ -1,14 +1,15 @@
 use crate::config::RunnerDiscoveryMode;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct QueryRequestCounts {
     pub list_requests: usize,
     pub detail_requests: usize,
     pub manager_requests: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveQueryMetrics {
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,

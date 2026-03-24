@@ -1,6 +1,10 @@
 /target
 .env
 logs/
-conductor
+/conductor
 .claude
 .superpowers
+tmp/
+output/
+.gemini/
+*.pending-snap
