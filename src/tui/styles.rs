@@ -4,6 +4,15 @@ use ratatui::{
     widgets::{Block, BorderType, Borders},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    Hotkey,
+    Muted,
+    StatusOnline,
+    StatusWarning,
+    StatusError,
+}
+
 pub const COLOR_FG: Color = Color::White;
 pub const COLOR_MUTED: Color = Color::DarkGray;
 pub const COLOR_BORDER: Color = Color::Gray;
@@ -52,6 +61,64 @@ pub fn accent_style() -> Style {
     Style::default()
         .fg(COLOR_ACCENT)
         .add_modifier(Modifier::BOLD)
+}
+
+fn chip_style(kind: ChipKind) -> Style {
+    match kind {
+        ChipKind::Hotkey => Style::default()
+            .fg(Color::Black)
+            .bg(COLOR_ACCENT)
+            .add_modifier(Modifier::BOLD),
+        ChipKind::Muted => Style::default().fg(COLOR_FG).bg(Color::DarkGray),
+        ChipKind::StatusOnline => Style::default()
+            .fg(Color::Black)
+            .bg(COLOR_SUCCESS)
+            .add_modifier(Modifier::BOLD),
+        ChipKind::StatusWarning => Style::default()
+            .fg(Color::Black)
+            .bg(COLOR_WARNING)
+            .add_modifier(Modifier::BOLD),
+        ChipKind::StatusError => Style::default()
+            .fg(COLOR_FG)
+            .bg(COLOR_ERROR)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+pub fn chip(label: impl Into<String>, kind: ChipKind) -> Span<'static> {
+    Span::styled(format!(" {} ", label.into()), chip_style(kind))
+}
+
+pub fn hotkey_chip(label: impl Into<String>) -> Span<'static> {
+    chip(label, ChipKind::Hotkey)
+}
+
+pub fn muted_chip(label: impl Into<String>) -> Span<'static> {
+    chip(label, ChipKind::Muted)
+}
+
+pub fn status_chip(label: impl Into<String>, status: &str) -> Span<'static> {
+    let kind = match status {
+        "online" | "live" | "ok" => ChipKind::StatusOnline,
+        "stale" | "paused" | "warning" => ChipKind::StatusWarning,
+        "offline" | "error" => ChipKind::StatusError,
+        _ => ChipKind::Muted,
+    };
+    chip(label, kind)
+}
+
+pub fn soft_badge(
+    label: impl Into<String>,
+    fg: Color,
+    bg: Color,
+    emphasized: bool,
+) -> Span<'static> {
+    let style = if emphasized {
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(fg).bg(bg)
+    };
+    Span::styled(format!(" {} ", label.into()), style)
 }
 
 pub fn block(title: impl Into<String>) -> Block<'static> {

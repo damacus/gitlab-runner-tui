@@ -92,13 +92,12 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
 
     let title_line = styles::gradient_text(&title, (125, 207, 255), (187, 154, 247));
 
-    let host = app.config.gitlab_host.as_deref().unwrap_or("gitlab.com");
     let mode_label = match app.conductor.discovery_mode() {
-        RunnerDiscoveryMode::AllRunners => "all runners",
-        RunnerDiscoveryMode::VisibleRunners => "visible runners",
-        RunnerDiscoveryMode::ConfiguredTargets => "target runners",
+        RunnerDiscoveryMode::AllRunners => "All runners",
+        RunnerDiscoveryMode::VisibleRunners => "Visible runners",
+        RunnerDiscoveryMode::ConfiguredTargets => "Target runners",
     };
-    let subtitle = format!("{host} · {mode_label}");
+    let subtitle = mode_label.to_string();
 
     let header = Paragraph::new(vec![
         title_line,
@@ -241,6 +240,49 @@ fn tab_chip_colors(tab: Tab) -> (Color, Color) {
     }
 }
 
+fn push_separator(spans: &mut Vec<Span<'static>>) {
+    if !spans.is_empty() {
+        spans.push(Span::styled(" · ", styles::muted_style()));
+    }
+}
+
+fn push_hotkey_hint(spans: &mut Vec<Span<'static>>, key: &str, label: &str, emphasized: bool) {
+    push_separator(spans);
+    spans.push(if emphasized {
+        styles::hotkey_chip(key)
+    } else {
+        styles::muted_chip(key)
+    });
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(label.to_string(), styles::muted_style()));
+}
+
+fn build_dashboard_shortcuts_line(compact: bool) -> Line<'static> {
+    let mut spans = Vec::new();
+    if compact {
+        push_hotkey_hint(&mut spans, "r", "refresh", true);
+        push_hotkey_hint(&mut spans, "f", "filter", true);
+        push_hotkey_hint(&mut spans, "q", "quit", true);
+    } else {
+        push_hotkey_hint(&mut spans, "p", "poll", true);
+        push_hotkey_hint(&mut spans, "r", "refresh", true);
+        push_hotkey_hint(&mut spans, "f", "filter", true);
+        push_hotkey_hint(&mut spans, "s", "sort", false);
+        push_hotkey_hint(&mut spans, "c", "settings", false);
+        push_hotkey_hint(&mut spans, "?", "help", false);
+        push_hotkey_hint(&mut spans, "q", "quit", true);
+    }
+    Line::from(spans)
+}
+
+fn simple_status_hint(items: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (key, label) in items {
+        push_hotkey_hint(&mut spans, key, label, true);
+    }
+    Line::from(spans)
+}
+
 fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
 
@@ -248,29 +290,34 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
         let is_active = i == app.active_tab_index;
 
         if i > 0 {
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", styles::muted_style()));
         }
 
-        spans.push(Span::styled(
-            format!("{} ", tab.shortcut()),
-            styles::muted_style(),
-        ));
+        spans.push(if is_active {
+            styles::hotkey_chip(tab.shortcut().to_string())
+        } else {
+            styles::muted_chip(tab.shortcut().to_string())
+        });
+        spans.push(Span::raw(" "));
 
         let name_style = if is_active {
             Style::default()
-                .fg(styles::COLOR_ACCENT)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                .fg(Color::White)
+                .bg(tab_chip_colors(*tab).1)
+                .add_modifier(Modifier::BOLD)
         } else {
             styles::muted_style()
         };
-        spans.push(Span::styled(tab.title(), name_style));
+        spans.push(Span::styled(format!(" {} ", tab.title()), name_style));
 
         if let Some(&count) = app.tab_counts.get(tab) {
             let (chip_fg, chip_bg) = tab_chip_colors(*tab);
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                format!(" {count} "),
-                Style::default().fg(chip_fg).bg(chip_bg),
+            spans.push(styles::soft_badge(
+                count.to_string(),
+                chip_fg,
+                chip_bg,
+                is_active,
             ));
         }
     }
@@ -284,37 +331,53 @@ fn render_filter_bar(app: &App, frame: &mut Frame, area: Rect) {
     let has_active_filter = has_text || has_popup_tags;
     let is_editing = app.mode == AppMode::FilterInput;
 
-    let (text, style) = if !has_active_filter {
-        (
-            format!(
-                "t: tag filter  f: filter popup  s: sort {}  c: settings",
-                app.sort_label()
-            ),
-            if is_editing {
-                styles::accent_style()
-            } else {
-                styles::muted_style()
-            },
-        )
+    let line = if !has_active_filter {
+        let mut spans = Vec::new();
+        push_hotkey_hint(&mut spans, "t", "tag filter", is_editing);
+        push_hotkey_hint(&mut spans, "f", "popup", true);
+        push_hotkey_hint(
+            &mut spans,
+            "s",
+            &format!("sort {}", app.sort_label()),
+            false,
+        );
+        push_hotkey_hint(&mut spans, "c", "settings", false);
+        Line::from(spans)
     } else {
-        let tag_part = match (has_text, has_popup_tags) {
+        let tag_summary = match (has_text, has_popup_tags) {
             (true, true) => format!("{}, {}", app.filter_input, app.selected_tags.join(", ")),
             (true, false) => app.filter_input.clone(),
             (false, true) => app.selected_tags.join(", "),
             (false, false) => unreachable!(),
         };
-        let mut parts = vec![format!("tags: {tag_part}")];
+        let mut spans = vec![styles::status_chip("FILTERS", "live"), Span::raw(" ")];
+        spans.push(Span::styled(
+            format!("tags {}", tag_summary),
+            styles::accent_style(),
+        ));
         let versions = app.selected_versions_summary();
         if versions != "All versions" {
-            parts.push(format!("versions: {versions}"));
+            push_separator(&mut spans);
+            spans.push(styles::muted_chip("v"));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("versions {versions}"),
+                styles::muted_style(),
+            ));
         }
-        parts.push(format!("sort: {}", app.sort_label()));
-        parts.push("f: popup".to_string());
-        parts.push("c: settings".to_string());
-        (parts.join(" | "), styles::accent_style())
+        push_separator(&mut spans);
+        spans.push(styles::muted_chip("s"));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("sort {}", app.sort_label()),
+            styles::muted_style(),
+        ));
+        push_hotkey_hint(&mut spans, "f", "popup", true);
+        push_hotkey_hint(&mut spans, "c", "settings", false);
+        Line::from(spans)
     };
 
-    frame.render_widget(Paragraph::new(text).style(style), area);
+    frame.render_widget(Paragraph::new(line), area);
 
     if is_editing {
         frame.set_cursor_position((area.x + app.filter_input.chars().count() as u16, area.y));
@@ -1295,41 +1358,25 @@ fn field_line(selected: bool, label: &str, value: &str) -> Line<'static> {
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
     // For modal/overlay modes, render a simple centered hint.
     let simple_hint: Option<Line> = match app.mode {
-        AppMode::Help => Some(Line::from("Any key closes help")),
-        AppMode::FilterInput => Some(Line::from(vec![
-            Span::raw("Type tags | "),
-            Span::styled("Enter", styles::accent_style()),
-            Span::raw(": apply | "),
-            Span::styled("Esc", styles::accent_style()),
-            Span::raw(": stop | "),
-            Span::styled("Ctrl-C", styles::accent_style()),
-            Span::raw(": quit"),
+        AppMode::Help => Some(simple_status_hint(&[("any", "close help")])),
+        AppMode::FilterInput => Some(simple_status_hint(&[
+            ("Enter", "apply"),
+            ("Esc", "stop"),
+            ("Ctrl-C", "quit"),
         ])),
-        AppMode::FilterPopup => Some(Line::from(vec![
-            Span::raw("Filter | "),
-            Span::styled("f/esc", styles::accent_style()),
-            Span::raw(" close | "),
-            Span::styled("tab", styles::accent_style()),
-            Span::raw(" switch section | "),
-            Span::styled("space", styles::accent_style()),
-            Span::raw(" toggle | "),
-            Span::styled("c", styles::accent_style()),
-            Span::raw(" clear section"),
+        AppMode::FilterPopup => Some(simple_status_hint(&[
+            ("f/esc", "close"),
+            ("tab", "switch"),
+            ("space", "toggle"),
+            ("c", "clear"),
         ])),
-        AppMode::Settings => Some(Line::from(vec![
-            Span::raw("Settings | "),
-            Span::styled("Tab", styles::accent_style()),
-            Span::raw(" move | "),
-            Span::styled("Type", styles::accent_style()),
-            Span::raw(" edit | "),
-            Span::styled("←/→", styles::accent_style()),
-            Span::raw(" discovery | "),
-            Span::styled("Ctrl-S", styles::accent_style()),
-            Span::raw(" save | "),
-            Span::styled("b", styles::accent_style()),
-            Span::raw(" benchmark | "),
-            Span::styled("Esc", styles::accent_style()),
-            Span::raw(" close"),
+        AppMode::Settings => Some(simple_status_hint(&[
+            ("Tab", "move"),
+            ("Type", "edit"),
+            ("←/→", "discovery"),
+            ("Ctrl-S", "save"),
+            ("b", "bench"),
+            ("Esc", "close"),
         ])),
         AppMode::Dashboard => None,
     };
@@ -1340,43 +1387,33 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    // Dashboard mode: left = count/state, right = shortcuts.
-    let shortcuts_text = "p poll | r refresh | f filter | s sort | c settings | ?: help | q quit";
-    let shortcuts = Line::from(vec![
-        Span::styled("p", styles::accent_style()),
-        Span::raw(" poll | "),
-        Span::styled("r", styles::accent_style()),
-        Span::raw(" refresh | "),
-        Span::styled("f", styles::accent_style()),
-        Span::raw(" filter | "),
-        Span::styled("s", styles::accent_style()),
-        Span::raw(" sort | "),
-        Span::styled("c", styles::accent_style()),
-        Span::raw(" settings | "),
-        Span::styled("?", styles::accent_style()),
-        Span::raw(": help | "),
-        Span::styled("q", styles::accent_style()),
-        Span::raw(" quit"),
-    ]);
-
     let left_text = if app.is_loading {
         let filter = if app.filter_input.trim().is_empty() {
             "all runners".to_string()
         } else {
             format!("tags [{}]", app.filter_input.trim())
         };
-        format!(
-            "{} Refreshing {} using {}",
-            app.spinner_char(),
-            app.active_tab(),
-            filter
-        )
+        Line::from(vec![
+            styles::status_chip(format!("{} LIVE", app.spinner_char()), "live"),
+            Span::raw(" "),
+            Span::styled(
+                format!("Refreshing {} with {}", app.active_tab(), filter),
+                styles::accent_style(),
+            ),
+        ])
     } else if let Some(error) = &app.error_message {
-        format!(
-            "Last refresh failed for {}: {}",
-            app.active_tab(),
-            error.lines().next().unwrap_or("unknown error")
-        )
+        Line::from(vec![
+            styles::status_chip("ERROR", "error"),
+            Span::raw(" "),
+            Span::styled(
+                format!(
+                    "{}: {}",
+                    app.active_tab(),
+                    error.lines().next().unwrap_or("unknown error")
+                ),
+                styles::status_style("offline"),
+            ),
+        ])
     } else {
         let result_label = match app.current_results_view_type() {
             ResultsViewType::Workers => "workers",
@@ -1386,36 +1423,46 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             .last_refresh_age_secs()
             .map(|age| format!("last refresh {} ago", format_age(age)))
             .unwrap_or_else(|| "not loaded yet".to_string());
-        let mut left = format!(
-            "{} {} loaded for {} | {}",
+        let mut left_summary = format!(
+            "{} {} for {}",
             app.active_result_len(),
             result_label,
             app.active_tab(),
-            refreshed,
         );
         if matches!(
             detail_layout_mode(area.width, 24),
             DetailLayoutMode::Compact
         ) {
-            if let Some(summary) = app.compact_selection_summary() {
-                left.push_str(" | ");
-                left.push_str(&summary);
+            if let Some(compact_summary) = app.compact_selection_summary() {
+                left_summary.push_str(" · ");
+                left_summary.push_str(&compact_summary);
             }
         }
-        left
+        Line::from(vec![
+            styles::status_chip("READY", "ok"),
+            Span::raw(" "),
+            Span::styled(left_summary, styles::accent_style()),
+            Span::styled(" · ", styles::muted_style()),
+            Span::styled(refreshed, styles::muted_style()),
+        ])
     };
 
-    // Split the status area: left side expands, right side is fixed width for shortcuts.
-    let shortcuts_width = (shortcuts_text.len() as u16 + 2).min(area.width);
     let inner = area.inner(Margin {
         horizontal: 1,
         vertical: 1,
     });
+    let compact_shortcuts = inner.width < 92;
+    let shortcuts = build_dashboard_shortcuts_line(compact_shortcuts);
+    let shortcut_width = if compact_shortcuts { 28 } else { 64 }.min(inner.width);
     let cols =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcuts_width)]).split(inner);
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcut_width)]).split(inner);
 
     let block = styles::block("Status");
     frame.render_widget(block, area);
+    if cols[0].width < 20 {
+        frame.render_widget(Paragraph::new(shortcuts).alignment(Alignment::Left), inner);
+        return;
+    }
     frame.render_widget(
         Paragraph::new(left_text).alignment(Alignment::Left),
         cols[0],
@@ -1663,14 +1710,14 @@ mod tests {
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI ● Live (p to pause)
-gitlab.com · visible runners last <age> next <age>
+Visible runners last <age> next <age>
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-tags: prod,linux | sort: None | f: popup | c: settings
+FILTERS tags prod,linux · s sort None · f popup · c settings
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
 ▶ 326689 ● online 18.8.0 <age> platform, prod 2
 Status
-1 runners loaded for Runners | last refresh <age> p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
+READY 1 runners for Runners · Runner 326689 [online] p poll · r refresh · f filter · s sort · c settings ·");
     }
 
     #[test]
@@ -1684,13 +1731,13 @@ Status
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-gitlab.com · visible runners last never next -
+Visible runners last never next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-tags: alm | sort: None | f: popup | c: settings
+FILTERS tags alm · s sort None · f popup · c settings
 Offline (0)
 No offline runners matched the current tag filter.
 Status
-0 runners loaded for Offli p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
+READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c settings ·");
     }
 
     #[test]
@@ -1713,14 +1760,14 @@ Status
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-gitlab.com · visible runners last never next -
+Visible runners last never next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-t: tag filter f: filter popup s: sort None c: settings
+t tag filter · f popup · s sort None · c settings
 Workers (1)
 Runner Worker System Status Contacted
 ▶ 326759 256551 s_859060915507 ● online <age>
 Status
-1 workers loaded for Workers | not loaded yet p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
+READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f filter · s sort · c settings ·");
     }
 
     #[test]
@@ -1749,16 +1796,16 @@ Status
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
 GitLab Runner TUI Paused (p to resume)
-gitlab.com · visible runners last never next -
+Visible runners last never next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
-t: tag filter f: filter popup s: sort None c: settings
+t tag filter · f popup · s sort None · c settings
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
 ▶ 326812 ● online 18.8.0 <age> 1
 Status
-1 runners loaded for Health | not loaded yet | p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
+READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f filter · s sort · c settings ·");
     }
 
     #[test]
@@ -1770,5 +1817,51 @@ Status
         let rendered = render_to_string(&mut app, 220, 18);
         assert!(rendered.contains("Refreshing Runners"));
         assert!(rendered.contains("prod,linux"));
+    }
+
+    #[test]
+    fn filter_bar_shows_popup_only_filters() {
+        let mut app = test_app();
+        app.loaded_tab = Some(Tab::Runners);
+        app.selected_tags = vec!["prod".to_string(), "linux".to_string()];
+
+        let rendered = render_to_string(&mut app, 120, 18);
+        assert!(rendered.contains("FILTERS"));
+        assert!(rendered.contains("tags prod, linux"));
+        assert!(rendered.contains("popup"));
+    }
+
+    #[test]
+    fn tabs_render_active_tab_counts() {
+        let mut app = test_app();
+        app.loaded_tab = Some(Tab::Runners);
+        app.tab_counts.insert(Tab::Runners, 12);
+        app.tab_counts.insert(Tab::Offline, 3);
+
+        let rendered = render_to_string(&mut app, 120, 18);
+        assert!(rendered.contains("1 Runners 12"));
+        assert!(rendered.contains("3 Offline 3"));
+    }
+
+    #[test]
+    fn narrow_status_bar_keeps_essential_shortcuts() {
+        let mut app = test_app();
+        app.loaded_tab = Some(Tab::Runners);
+        app.runners = vec![test_runner(
+            326689,
+            "online",
+            &["platform"],
+            vec![test_manager(
+                255550,
+                "s_new",
+                "online",
+                Some("2024-01-21T09:15:00.000Z"),
+            )],
+        )];
+
+        let rendered = render_to_string(&mut app, 72, 18);
+        assert!(rendered.contains("refresh"));
+        assert!(rendered.contains("filter"));
+        assert!(rendered.contains("READY") || rendered.contains("runners for"));
     }
 }
