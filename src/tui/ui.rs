@@ -75,7 +75,7 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(24)]).split(area);
+    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(32)]).split(area);
 
     let title = if app.is_loading {
         format!(
@@ -135,7 +135,7 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
     };
     line.spans.push(Span::styled(" · ", styles::muted_style()));
     line.spans.push(Span::styled(
-        format!("L {age} N {next}"),
+        format!("Prev {age} Next {next}"),
         styles::muted_style(),
     ));
 
@@ -1661,7 +1661,7 @@ mod tests {
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI ● Live · L <age> N <age>
+GitLab Runner TUI ● Live · Prev <age> Next <age>
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
@@ -1680,7 +1680,7 @@ READY 1 runners for Runners · Runner 326689 [online] p poll · r refresh · f f
         let rendered = render_to_string(&mut app, 100, 20);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused · L never N -
+GitLab Runner TUI Paused · Prev never Next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Offline (0)
 No offline runners matched the current tag filter.
@@ -1707,7 +1707,7 @@ READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused · L never N -
+GitLab Runner TUI Paused · Prev never Next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Workers (1)
 Runner Worker System Status Contacted
@@ -1741,7 +1741,7 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         let rendered = render_to_string(&mut app, 120, 24);
         assert_snapshot!(rendered, @r"
 Dashboard Polling [p]
-GitLab Runner TUI Paused · L never N -
+GitLab Runner TUI Paused · Prev never Next -
 1 Runners 2 Health 3 Offline 4 Stale 5 Idle 6 Rotating 7 Workers
 Health Summary
 ✓ 1 of 1 runners online (100.0%)
