@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.9](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.8...v0.1.9) (2026-03-24)
+
+
+### Features
+
+* add --demo flag, extract run_tui(), wire up run_demo() ([b8455f2](https://github.com/damacus/gitlab-runner-tui/commit/b8455f28f62d9effe12d0dce5451df9e43bdc516))
+* add AND/OR toggle for popup tag filtering, rename filter bar ([0192961](https://github.com/damacus/gitlab-runner-tui/commit/01929616530680fd20bb1b739db55a9b622a77dd))
+* add App::seed_demo_data() for injecting fixture runners ([cf7aad5](https://github.com/damacus/gitlab-runner-tui/commit/cf7aad5268c0068690bd9f7e8f55a9f3ea072b6b))
+* add CLI JSON output, one-shot mode, and fix build warnings ([db38359](https://github.com/damacus/gitlab-runner-tui/commit/db383597bb96994398e55c597495ce5868e5aee2))
+* Add colours ([7d199d1](https://github.com/damacus/gitlab-runner-tui/commit/7d199d1de70634045cc238fe289683c8a397c9d9))
+* add demo_mode flag to App, guard start_search ([de1f54d](https://github.com/damacus/gitlab-runner-tui/commit/de1f54d2134af36ba98d4f56c440b40fc781b7d4))
+* add fixtures module with demo_runners() ([fc8a457](https://github.com/damacus/gitlab-runner-tui/commit/fc8a45719859f9dcfdd5631facd024289910455a))
+* add screenshot recording script and README Preview section ([8c8e06d](https://github.com/damacus/gitlab-runner-tui/commit/8c8e06dab719d59ee1ebc27dc469455a13587965))
+* add tag search filter to filter popup, drop igor compat ([8d1528f](https://github.com/damacus/gitlab-runner-tui/commit/8d1528f506c539ac3d3a7bde7f166f2716b30170))
+* adopt ratatui 0.28-0.30 API improvements ([d5702f1](https://github.com/damacus/gitlab-runner-tui/commit/d5702f1b78f25b61f5d2f9856073a87cc9f7a270))
+* compact top bar with semantic tab chips and subtitle ([0e8ce21](https://github.com/damacus/gitlab-runner-tui/commit/0e8ce2181c55928da07b1caa6cb15485a3282883))
+* enrich runner detail panel with group, URL, paused state, and registration date ([03d7536](https://github.com/damacus/gitlab-runner-tui/commit/03d7536c509c466338f535df55ff1b947cab8465))
+* Enter expands runner detail drawer on all tabs ([a1c8d46](https://github.com/damacus/gitlab-runner-tui/commit/a1c8d46ec0f6035d67c358fa3940a20f5211b60c))
+* open selected runner in browser on Enter (↵ open in status bar) ([b23258c](https://github.com/damacus/gitlab-runner-tui/commit/b23258c8463c43861ea48720c13bd40dfd20b95f))
+* **tui:** add highlight symbol and spacing to tables to prevent layout jump and improve row selection visibility ([9fbfba8](https://github.com/damacus/gitlab-runner-tui/commit/9fbfba8d573b6e33db03703ceebc16db49fb837b))
+* **tui:** add visual status symbols to tables for better signal density ([7b1335e](https://github.com/damacus/gitlab-runner-tui/commit/7b1335ef1990631c34d2bb950026d35925c3bb94))
+* **tui:** elevate UI with rounded borders, styled titles, and Gemini-style gradients ([29cd11a](https://github.com/damacus/gitlab-runner-tui/commit/29cd11ad68ca416bcf47a5880d51a36b4be2d3d9))
+* **tui:** elevate UI with rounded borders, styled titles, and Gemini-style gradients ([2fd1671](https://github.com/damacus/gitlab-runner-tui/commit/2fd1671932746607bb3310664e528b259259442b))
+* **tui:** improve status visibility and standardize mode-specific help hints ([83cbce2](https://github.com/damacus/gitlab-runner-tui/commit/83cbce2af4a53480d1cfba6938a3576b0105bcd8))
+
+
+### Bug Fixes
+
+* **security:** hide GITLAB_TOKEN value in help output and add regression test ([2c9b5ef](https://github.com/damacus/gitlab-runner-tui/commit/2c9b5ef581c15038ab397551975bdfc2621c0a21))
+* seed_demo_data resets fetch state fields, test asserts runners populated ([e856485](https://github.com/damacus/gitlab-runner-tui/commit/e85648580d80dfa07e5d23d74d3e6fda1d47191a))
+
 ## [0.1.8](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.7...v0.1.8) (2026-03-18)
 
 
