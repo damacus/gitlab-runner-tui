@@ -14,8 +14,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Cell, Clear, Gauge, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Table, Wrap,
+        Cell, Clear, Gauge, HighlightSpacing, List, ListItem, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, Wrap,
     },
     Frame,
 };
@@ -681,6 +681,8 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         .header(header)
         .row_highlight_style(styles::selected_row_style())
         .column_highlight_style(styles::sort_column_style())
+        .highlight_symbol("▶ ")
+        .highlight_spacing(HighlightSpacing::Always)
         .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -756,6 +758,8 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
         .header(header)
         .row_highlight_style(styles::selected_row_style())
         .column_highlight_style(styles::sort_column_style())
+        .highlight_symbol("▶ ")
+        .highlight_spacing(HighlightSpacing::Always)
         .block(styles::block(app.current_tab_title()));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -1664,7 +1668,7 @@ gitlab.com · visible runners last <age> next <age>
 tags: prod,linux | sort: None | f: popup | c: settings
 Runners (1)
 ID Status Version Last Contact Tags Mgrs
-326689 ● online 18.8.0 <age> platform, prod 2
+▶ 326689 ● online 18.8.0 <age> platform, prod 2
 Status
 1 runners loaded for Runners | last refresh <age> p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
@@ -1714,7 +1718,7 @@ gitlab.com · visible runners last never next -
 t: tag filter f: filter popup s: sort None c: settings
 Workers (1)
 Runner Worker System Status Contacted
-326759 256551 s_859060915507 ● online <age>
+▶ 326759 256551 s_859060915507 ● online <age>
 Status
 1 workers loaded for Workers | not loaded yet p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
@@ -1752,7 +1756,7 @@ Health Summary
 ✓ 1 of 1 runners online (100.0%)
 Health (1/1 online, 100.0%)
 ID Status Version Last Contact Mgrs
-326812 ● online 18.8.0 <age> 1
+▶ 326812 ● online 18.8.0 <age> 1
 Status
 1 runners loaded for Health | not loaded yet | p poll | r refresh | f filter | s sort | c settings | ?: help | q quit");
     }
