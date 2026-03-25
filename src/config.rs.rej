@@ -1,0 +1,21 @@
+--- config.rs
++++ config.rs
+@@ -6,16 +6,11 @@
+ use url::Url;
+
+-#[derive(Debug, Clone, PartialEq)]
++#[derive(Debug, Clone, PartialEq, Default)]
+ pub enum RunnerDiscoveryMode {
+     ConfiguredTargets,
+     VisibleRunners,
+     /// Calls /api/v4/runners/all (admin only); falls back to /api/v4/runners on 403.
++    #[default]
+     AllRunners,
+ }
+
+-impl Default for RunnerDiscoveryMode {
+-    fn default() -> Self {
+-        Self::AllRunners
+-    }
+-}
+-
