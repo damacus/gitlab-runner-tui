@@ -272,9 +272,10 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
             .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
+            // Compare Vec<String> directly instead of allocating joined strings.
+            // Avoids O(N log N) heap allocations on the hot path during rendering.
             left.tag_list
-                .join(", ")
-                .cmp(&right.tag_list.join(", "))
+                .cmp(&right.tag_list)
                 .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Managers => runners.sort_by(|left, right| {

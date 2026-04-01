@@ -10,3 +10,7 @@
 ## 2024-05-25 - Avoid cloning and sorting in TUI render loop
 **Learning:** When computing values within a hot render loop (like TUI rendering), avoid performing allocations or complex calculations (like `clone()`, `sort_by()` etc.).
 **Action:** We can find min and max values by scanning the slice without cloning in O(N) using `Iterator::min_by_key` and `Iterator::max_by_key`. Pre-compute these where possible or avoid allocations to ensure a smooth framerate.
+
+## 2026-04-01 - Avoid allocating strings during sorting
+**Learning:** Joining collections into strings inside a `sort_by` closure causes O(N log N) expensive heap allocations, significantly slowing down sorting operations.
+**Action:** Compare collections like `Vec` or slices directly using `.cmp()` (which performs lexicographical comparison) rather than allocating joined strings.
