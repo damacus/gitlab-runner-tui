@@ -272,9 +272,10 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
             .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
+            // OPTIMIZATION: Compare `Vec`s directly using lexicographical comparison
+            // rather than `.join(", ")` to avoid expensive O(N log N) heap allocations.
             left.tag_list
-                .join(", ")
-                .cmp(&right.tag_list.join(", "))
+                .cmp(&right.tag_list)
                 .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Managers => runners.sort_by(|left, right| {
