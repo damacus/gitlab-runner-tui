@@ -13,7 +13,6 @@ pub enum RunnerDiscoveryMode {
     AllRunners,
 }
 
-
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RunnerTargetKind {
