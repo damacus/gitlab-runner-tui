@@ -273,8 +273,7 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
         }),
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
             left.tag_list
-                .join(", ")
-                .cmp(&right.tag_list.join(", "))
+                .cmp(&right.tag_list)
                 .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Managers => runners.sort_by(|left, right| {

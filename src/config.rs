@@ -4,18 +4,15 @@ use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RunnerDiscoveryMode {
     ConfiguredTargets,
     VisibleRunners,
     /// Calls /api/v4/runners/all (admin only); falls back to /api/v4/runners on 403.
+    #[default]
     AllRunners,
 }
 
-impl Default for RunnerDiscoveryMode {
-    fn default() -> Self {
-        Self::AllRunners
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

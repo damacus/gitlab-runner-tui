@@ -10,3 +10,7 @@
 ## 2024-05-25 - Avoid cloning and sorting in TUI render loop
 **Learning:** When computing values within a hot render loop (like TUI rendering), avoid performing allocations or complex calculations (like `clone()`, `sort_by()` etc.).
 **Action:** We can find min and max values by scanning the slice without cloning in O(N) using `Iterator::min_by_key` and `Iterator::max_by_key`. Pre-compute these where possible or avoid allocations to ensure a smooth framerate.
+
+## 2024-05-26 - O(N log N) Heap Allocations in Sorting Closures
+**Learning:** When sorting a collection of structs by a joined string property, calling `.join(", ")` inside the `sort_by` closure results in allocations for *every* comparison. Because `sort_by` takes O(N log N) time, this approach creates an enormous number of unnecessary `String` objects, causing significant garbage and performance degradation.
+**Action:** Always compare `Vec<String>` directly using `.cmp()`, which correctly performs a lexicographical comparison without requiring intermediate string allocations.
