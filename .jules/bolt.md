@@ -14,3 +14,7 @@
 ## 2024-05-27 - O(N log N) Heap Allocations in Sorting Closures
 **Learning:** Comparing collections (like `Vec<String>`) by converting them to strings via `.join(", ")` inside a `sort_by` closure results in severe performance degradation. Because the closure is called $O(N \log N)$ times, this causes continuous memory allocation and deallocation.
 **Action:** Always compare vectors or slices directly using `.cmp()`, which delegates to lexicographical comparison of the elements without any heap allocations.
+
+## 2024-05-27 - CI Lint Failures and Clippy Enforcement
+**Learning:** The GitHub CI pipeline is configured to enforce Clippy linting strictly by treating warnings as errors (equivalent to `cargo clippy -- -D warnings`). The CI failure encountered (`clippy::derivable_impls`) was caused by a manual implementation of the `Default` trait that could be auto-derived.
+**Action:** Always run `cargo clippy -- -D warnings` and `cargo clippy --tests -- -D warnings` locally before considering a change complete to catch and resolve any lint warnings before they break the CI.
