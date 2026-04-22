@@ -1646,16 +1646,14 @@ impl App {
             KeyCode::Char('/') | KeyCode::Char('f') => {
                 self.open_filter_popup();
             }
-            KeyCode::Tab => {
-                if self.next_tab() {
-                    self.start_search();
-                }
+            KeyCode::Tab if self.next_tab() => {
+                self.start_search();
             }
-            KeyCode::BackTab => {
-                if self.previous_tab() {
-                    self.start_search();
-                }
+            KeyCode::Tab => {}
+            KeyCode::BackTab if self.previous_tab() => {
+                self.start_search();
             }
+            KeyCode::BackTab => {}
             KeyCode::Char(shortcut @ '1'..='7') => {
                 if let Some(tab) = Tab::from_shortcut(shortcut) {
                     if self.select_tab(tab) {
@@ -1686,12 +1684,11 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.next_result();
             }
-            KeyCode::Home | KeyCode::Char('g') => {
-                if self.active_result_len() > 0 {
-                    self.table_state.select_first();
-                    self.update_scroll_state();
-                }
+            KeyCode::Home | KeyCode::Char('g') if self.active_result_len() > 0 => {
+                self.table_state.select_first();
+                self.update_scroll_state();
             }
+            KeyCode::Home | KeyCode::Char('g') => {}
             KeyCode::End | KeyCode::Char('G') => {
                 let len = self.active_result_len();
                 if len > 0 {
@@ -1699,18 +1696,16 @@ impl App {
                     self.update_scroll_state();
                 }
             }
-            KeyCode::PageDown => {
-                if self.active_result_len() > 0 {
-                    self.table_state.scroll_down_by(10);
-                    self.update_scroll_state();
-                }
+            KeyCode::PageDown if self.active_result_len() > 0 => {
+                self.table_state.scroll_down_by(10);
+                self.update_scroll_state();
             }
-            KeyCode::PageUp => {
-                if self.active_result_len() > 0 {
-                    self.table_state.scroll_up_by(10);
-                    self.update_scroll_state();
-                }
+            KeyCode::PageDown => {}
+            KeyCode::PageUp if self.active_result_len() > 0 => {
+                self.table_state.scroll_up_by(10);
+                self.update_scroll_state();
             }
+            KeyCode::PageUp => {}
             KeyCode::Backspace => {
                 self.error_message = None;
             }
