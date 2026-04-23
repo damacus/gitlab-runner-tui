@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.9...v0.1.10) (2026-04-23)
+
+
+### Performance Improvements
+
+* ⚡ Bolt: Optimize tag sorting by comparing slices directly ([#114](https://github.com/damacus/gitlab-runner-tui/issues/114)) ([21527f8](https://github.com/damacus/gitlab-runner-tui/commit/21527f82877929425cde0698b0072101b5bfbc7a))
+
 ## [0.1.9](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.8...v0.1.9) (2026-03-24)
 
 
