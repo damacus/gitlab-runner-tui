@@ -272,9 +272,10 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
             .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
+            // Compare tag_list vectors directly to avoid expensive allocations
+            // caused by calling .join() within the O(N log N) sorting closure.
             left.tag_list
-                .join(", ")
-                .cmp(&right.tag_list.join(", "))
+                .cmp(&right.tag_list)
                 .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::Managers => runners.sort_by(|left, right| {
