@@ -327,13 +327,22 @@ impl HealthSummary {
     }
 }
 
+/// Wrapper struct used for TUI rendering to prevent expensive heap allocations.
+/// Pre-computes and caches expensive string operations (like joining tags)
+/// so they do not need to be recalculated on every render loop tick.
+#[derive(Debug, Clone)]
+pub struct UIRunner {
+    pub runner: Runner,
+    pub formatted_tags: String,
+}
+
 pub struct App {
     pub conductor: Conductor,
     pub config: AppConfig,
     pub mode: AppMode,
     pub should_quit: bool,
     pub raw_runners: Vec<Runner>,
-    pub runners: Vec<Runner>,
+    pub runners: Vec<UIRunner>,
     pub manager_rows: Vec<ManagerRow>,
     pub health_summary: Option<HealthSummary>,
     pub version_options: Vec<String>,
@@ -637,7 +646,7 @@ impl App {
             _ => self
                 .table_state
                 .selected()
-                .and_then(|index| self.runners.get(index)),
+                .and_then(|index| self.runners.get(index).map(|u| &u.runner)),
         }
     }
 
@@ -962,11 +971,29 @@ impl App {
                     online_count,
                     total_count: filtered.len(),
                 });
-                self.runners = filtered;
+                self.runners = filtered
+                    .into_iter()
+                    .map(|runner| {
+                        let formatted_tags = runner.tag_list.join(", ");
+                        UIRunner {
+                            runner,
+                            formatted_tags,
+                        }
+                    })
+                    .collect();
             }
             _ => {
                 sort_runners(&mut filtered, self.effective_sort_key(), now);
-                self.runners = filtered;
+                self.runners = filtered
+                    .into_iter()
+                    .map(|runner| {
+                        let formatted_tags = runner.tag_list.join(", ");
+                        UIRunner {
+                            runner,
+                            formatted_tags,
+                        }
+                    })
+                    .collect();
             }
         }
 
@@ -2416,7 +2443,11 @@ mod tests {
     fn test_selected_runner_for_runner_tabs() {
         let mut app = test_app();
         app.loaded_tab = Some(Tab::Runners);
-        app.runners = vec![test_runner(42, vec![test_manager(1, "online")])];
+        let runner = test_runner(42, vec![test_manager(1, "online")]);
+        app.runners = vec![UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            runner,
+        }];
         app.table_state.select(Some(0));
 
         let runner = app.selected_runner().expect("selected runner");
@@ -2444,7 +2475,11 @@ mod tests {
     fn test_compact_selection_summary_uses_active_tab_shape() {
         let mut app = test_app();
         app.loaded_tab = Some(Tab::Runners);
-        app.runners = vec![test_runner(42, vec![test_manager(1, "online")])];
+        let runner = test_runner(42, vec![test_manager(1, "online")]);
+        app.runners = vec![UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            runner,
+        }];
         app.table_state.select(Some(0));
         assert!(app
             .compact_selection_summary()
