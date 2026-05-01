@@ -476,7 +476,8 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     }
     .style(styles::table_header_style());
 
-    let rows = app.runners.iter().map(|runner| {
+    let rows = app.runners.iter().map(|uirunner| {
+        let runner = &uirunner.runner;
         if rotating {
             let oldest = runner
                 .managers
@@ -521,7 +522,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
                     status,
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
-                    Cell::from(runner.tag_list.join(", ")),
+                    Cell::from(uirunner.formatted_tags.as_str()),
                     Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
                 Tab::Health => Row::new(vec![
@@ -547,7 +548,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
                     status,
                     Cell::from(dash_or(&runner.version)),
                     last_contact,
-                    Cell::from(runner.tag_list.join(", ")),
+                    Cell::from(uirunner.formatted_tags.as_str()),
                     Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
                 ]),
             }
@@ -1647,7 +1648,7 @@ mod tests {
         app.filter_input = "prod,linux".to_string();
         app.polling_active = true;
         app.last_refresh_at = Some(Instant::now());
-        app.runners = vec![test_runner(
+        let runner = test_runner(
             326689,
             "online",
             &["platform", "prod"],
@@ -1655,7 +1656,11 @@ mod tests {
                 test_manager(255550, "s_new", "online", Some("2024-01-21T09:15:00.000Z")),
                 test_manager(255373, "s_old", "offline", Some("2024-01-20T08:15:00.000Z")),
             ],
-        )];
+        );
+        app.runners = vec![crate::tui::app::UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            runner,
+        }];
         app.table_state.select(Some(0));
 
         let rendered = render_to_string(&mut app, 120, 24);
@@ -1721,7 +1726,7 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         let mut app = test_app();
         app.select_tab(Tab::Health);
         app.loaded_tab = Some(Tab::Health);
-        app.runners = vec![test_runner(
+        let runner = test_runner(
             326812,
             "online",
             &["platform", "alm"],
@@ -1731,7 +1736,11 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
             )],
-        )];
+        );
+        app.runners = vec![crate::tui::app::UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            runner,
+        }];
         app.health_summary = Some(HealthSummary {
             online_count: 1,
             total_count: 1,
@@ -1779,7 +1788,7 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
     fn narrow_status_bar_keeps_essential_shortcuts() {
         let mut app = test_app();
         app.loaded_tab = Some(Tab::Runners);
-        app.runners = vec![test_runner(
+        let runner = test_runner(
             326689,
             "online",
             &["platform"],
@@ -1789,7 +1798,11 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
             )],
-        )];
+        );
+        app.runners = vec![crate::tui::app::UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            runner,
+        }];
 
         let rendered = render_to_string(&mut app, 72, 18);
         assert!(rendered.contains("refresh"));
