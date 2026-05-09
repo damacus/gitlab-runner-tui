@@ -6,7 +6,8 @@ use crate::models::{
 pub fn demo_runners() -> Vec<Runner> {
     let now = chrono::Utc::now();
     let minutes_ago = |minutes: i64| {
-        (now - chrono::Duration::minutes(minutes)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        (now - chrono::Duration::minutes(minutes))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     };
 
     vec![
@@ -479,7 +480,10 @@ mod tests {
             .iter()
             .filter_map(|manager| manager.contacted_at.as_deref())
             .filter_map(|contacted_at| DateTime::parse_from_rfc3339(contacted_at).ok())
-            .map(|contacted_at| now.signed_duration_since(contacted_at.with_timezone(&Utc)).num_seconds())
+            .map(|contacted_at| {
+                now.signed_duration_since(contacted_at.with_timezone(&Utc))
+                    .num_seconds()
+            })
             .collect();
 
         assert!(
