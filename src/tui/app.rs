@@ -841,16 +841,14 @@ impl App {
                     .list_offline_runners_with_metrics(filters)
                     .await
             }
-            TabQueryMode::Uncontacted => {
-                match uncontacted_cutoff_at {
-                    Ok(cutoff) => {
-                        self.conductor
-                            .list_uncontacted_runners_with_metrics(filters, cutoff)
-                            .await
-                    }
-                    Err(error) => Err(error),
+            TabQueryMode::Uncontacted => match uncontacted_cutoff_at {
+                Ok(cutoff) => {
+                    self.conductor
+                        .list_uncontacted_runners_with_metrics(filters, cutoff)
+                        .await
                 }
-            }
+                Err(error) => Err(error),
+            },
             TabQueryMode::Empty => {
                 self.conductor
                     .list_runners_without_managers_with_metrics(filters)
