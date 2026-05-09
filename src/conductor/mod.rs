@@ -292,10 +292,10 @@ impl Conductor {
     pub async fn list_uncontacted_runners_with_metrics(
         &self,
         filters: RunnerFilters,
-        threshold_secs: u64,
+        cutoff_at: DateTime<Utc>,
     ) -> Result<QueryOutcome> {
         let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_uncontacted_runners(outcome.runners, Utc::now(), threshold_secs);
+        outcome.runners = filter_uncontacted_runners(outcome.runners, cutoff_at);
         outcome.metrics.result_count = outcome.runners.len();
         Ok(outcome)
     }
@@ -337,28 +337,25 @@ fn is_runner_offline(runner: &Runner) -> bool {
     !runner.managers.is_empty() && !runner.managers.iter().any(|m| m.status == "online")
 }
 
-fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold_secs: u64) -> bool {
+fn is_runner_uncontacted(runner: &Runner, cutoff_at: DateTime<Utc>) -> bool {
     if runner.managers.is_empty() {
         return false;
     }
 
-    // Runner is uncontacted if all managers are missing/stale/invalid relative to threshold.
+    // Runner is uncontacted if all managers are missing/invalid or before the cutoff.
     runner
         .managers
         .iter()
-        .all(|m| is_manager_stale(m.contacted_at.as_deref(), now, threshold_secs))
+        .all(|m| is_manager_uncontacted(m.contacted_at.as_deref(), cutoff_at))
 }
 
-fn is_manager_stale(contacted_at: Option<&str>, now: DateTime<Utc>, threshold_secs: u64) -> bool {
+fn is_manager_uncontacted(contacted_at: Option<&str>, cutoff_at: DateTime<Utc>) -> bool {
     match contacted_at {
         Some(contacted_at_str) => match DateTime::parse_from_rfc3339(contacted_at_str) {
-            Ok(contacted_at) => {
-                let duration = now.signed_duration_since(contacted_at);
-                duration.num_seconds() > threshold_secs as i64
-            }
-            Err(_) => true, // Unparseable timestamp treated as stale
+            Ok(contacted_at) => contacted_at.with_timezone(&Utc) < cutoff_at,
+            Err(_) => true, // Unparseable timestamp treated as uncontacted
         },
-        None => true, // Missing contacted_at treated as stale
+        None => true, // Missing contacted_at treated as uncontacted
     }
 }
 
@@ -366,14 +363,10 @@ fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
     runners.into_iter().filter(is_runner_offline).collect()
 }
 
-fn filter_uncontacted_runners(
-    runners: Vec<Runner>,
-    now: DateTime<Utc>,
-    threshold_secs: u64,
-) -> Vec<Runner> {
+fn filter_uncontacted_runners(runners: Vec<Runner>, cutoff_at: DateTime<Utc>) -> Vec<Runner> {
     runners
         .into_iter()
-        .filter(|r| is_runner_uncontacted(r, now, threshold_secs))
+        .filter(|r| is_runner_uncontacted(r, cutoff_at))
         .collect()
 }
 
@@ -1113,11 +1106,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_uncontacted_runners_respects_threshold_and_all_manager_rule() {
+    async fn test_list_uncontacted_runners_respects_cutoff_and_all_manager_rule() {
         let mut server = Server::new_async().await;
 
-        let stale_contact = (Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
-        let recent_contact = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        let now = Utc::now();
+        let stale_contact = (now - chrono::Duration::seconds(120)).to_rfc3339();
+        let recent_contact = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        let cutoff = now - chrono::Duration::seconds(60);
 
         let list_mock = server
             .mock("GET", "/api/v4/groups/123/runners")
@@ -1176,7 +1171,7 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), cutoff)
             .await
             .unwrap()
             .runners;
@@ -1195,7 +1190,9 @@ mod tests {
     async fn test_list_uncontacted_runners_treats_missing_or_invalid_timestamps_as_uncontacted() {
         let mut server = Server::new_async().await;
 
-        let recent_contact = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+        let now = Utc::now();
+        let recent_contact = (now - chrono::Duration::seconds(5)).to_rfc3339();
+        let cutoff = now - chrono::Duration::seconds(60);
 
         let list_mock = server
             .mock("GET", "/api/v4/groups/123/runners")
@@ -1254,7 +1251,7 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), cutoff)
             .await
             .unwrap()
             .runners;
@@ -1331,6 +1328,7 @@ mod tests {
         let now = Utc::now();
         let stale = (now - chrono::Duration::seconds(120)).to_rfc3339();
         let recent = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        let cutoff = now - chrono::Duration::seconds(60);
 
         let runners = vec![
             // all stale -> uncontacted
@@ -1339,11 +1337,11 @@ mod tests {
             test_runner(2, &[("online", Some(&recent)), ("offline", Some(&stale))]),
             // empty managers -> not uncontacted
             test_runner(3, &[]),
-            // invalid timestamp treated as stale -> uncontacted
+            // invalid timestamp treated as uncontacted
             test_runner(4, &[("offline", Some("not-a-time"))]),
         ];
 
-        let filtered = filter_uncontacted_runners(runners, now, 60);
+        let filtered = filter_uncontacted_runners(runners, cutoff);
         let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
 
         assert_eq!(ids, vec![1, 4]);

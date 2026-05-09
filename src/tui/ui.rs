@@ -1184,9 +1184,9 @@ fn render_behavior_section(app: &App, frame: &mut Frame, area: Rect) {
             &format!("{}s", app.settings_draft.poll_timeout_input),
         ),
         field_line(
-            app.settings_draft.selected_field == SettingsField::UncontactedThreshold,
-            "Stale threshold",
-            &format!("{}s", app.settings_draft.uncontacted_threshold_input),
+            app.settings_draft.selected_field == SettingsField::UncontactedSince,
+            "Uncontacted since (UTC)",
+            &app.settings_draft.uncontacted_since_input,
         ),
         Line::from(format!(
             "Versions: {} | Sort: {}",
@@ -1816,12 +1816,12 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
     }
 
     #[test]
-    fn settings_view_shows_stale_threshold_field() {
+    fn settings_view_shows_uncontacted_since_field() {
         let mut app = test_app();
         app.mode = AppMode::Settings;
 
         let rendered = render_to_string(&mut app, 120, 32);
 
-        assert!(rendered.contains("Stale threshold"));
+        assert!(rendered.contains("Uncontacted since (UTC)"));
     }
 }

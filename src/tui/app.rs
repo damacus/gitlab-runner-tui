@@ -186,7 +186,7 @@ pub enum SettingsField {
     Targets,
     PollInterval,
     PollTimeout,
-    UncontactedThreshold,
+    UncontactedSince,
     Save,
     Cancel,
 }
@@ -199,7 +199,7 @@ impl SettingsField {
         SettingsField::Targets,
         SettingsField::PollInterval,
         SettingsField::PollTimeout,
-        SettingsField::UncontactedThreshold,
+        SettingsField::UncontactedSince,
         SettingsField::Save,
         SettingsField::Cancel,
     ];
@@ -229,7 +229,7 @@ pub struct SettingsDraft {
     pub runner_targets_input: String,
     pub poll_interval_input: String,
     pub poll_timeout_input: String,
-    pub uncontacted_threshold_input: String,
+    pub uncontacted_since_input: String,
     pub selected_field: SettingsField,
 }
 
@@ -245,7 +245,7 @@ impl SettingsDraft {
             runner_targets_input: format_runner_targets(&config.runner_targets),
             poll_interval_input: config.poll_interval_secs.to_string(),
             poll_timeout_input: config.poll_timeout_secs.to_string(),
-            uncontacted_threshold_input: config.uncontacted_threshold_secs.to_string(),
+            uncontacted_since_input: config.uncontacted_since.clone(),
             selected_field: SettingsField::Host,
         }
     }
@@ -261,11 +261,7 @@ impl SettingsDraft {
             .trim()
             .parse::<u64>()
             .context("Poll timeout must be a whole number of seconds")?;
-        let uncontacted_threshold_secs = self
-            .uncontacted_threshold_input
-            .trim()
-            .parse::<u64>()
-            .context("Uncontacted threshold must be a whole number of seconds")?;
+        let uncontacted_since = self.uncontacted_since_input.trim().to_string();
 
         let runner_targets = if self.runner_targets_input.trim().is_empty() {
             Vec::new()
@@ -276,7 +272,7 @@ impl SettingsDraft {
         let config = AppConfig {
             poll_interval_secs,
             poll_timeout_secs,
-            uncontacted_threshold_secs,
+            uncontacted_since,
             gitlab_host: Some(self.host.trim().to_string()),
             gitlab_token: Some(self.token.trim().to_string()),
             discovery_mode: self.discovery_mode,
@@ -293,7 +289,7 @@ impl SettingsDraft {
             SettingsField::Targets => Some(&mut self.runner_targets_input),
             SettingsField::PollInterval => Some(&mut self.poll_interval_input),
             SettingsField::PollTimeout => Some(&mut self.poll_timeout_input),
-            SettingsField::UncontactedThreshold => Some(&mut self.uncontacted_threshold_input),
+            SettingsField::UncontactedSince => Some(&mut self.uncontacted_since_input),
             _ => None,
         }
     }
@@ -762,7 +758,14 @@ impl App {
         let targets = self.config.runner_targets.clone();
         let filters = self.build_filters();
         let tab = self.active_tab();
-        let uncontacted_threshold_secs = self.config.uncontacted_threshold_secs;
+        let uncontacted_cutoff_at = match self.config.resolve_uncontacted_cutoff_at(Utc::now()) {
+            Ok(cutoff) => cutoff,
+            Err(error) => {
+                self.is_loading = false;
+                self.error_message = Some(format!("{:#}", error));
+                return;
+            }
+        };
 
         self.pending_search = Some(tokio::spawn(async move {
             let conductor = Conductor::new_with_mode(client, mode, targets);
@@ -771,7 +774,7 @@ impl App {
                 TabQueryMode::Offline => conductor.list_offline_runners_with_metrics(filters).await,
                 TabQueryMode::Uncontacted => {
                     conductor
-                        .list_uncontacted_runners_with_metrics(filters, uncontacted_threshold_secs)
+                        .list_uncontacted_runners_with_metrics(filters, uncontacted_cutoff_at)
                         .await
                 }
                 TabQueryMode::Empty => {
@@ -829,6 +832,7 @@ impl App {
         self.error_message = None;
         let tab = self.active_tab();
         let filters = self.build_filters();
+        let uncontacted_cutoff_at = self.config.resolve_uncontacted_cutoff_at(Utc::now());
 
         let result = match tab.query_mode() {
             TabQueryMode::FetchRunners => self.conductor.fetch_runners_with_metrics(filters).await,
@@ -838,12 +842,14 @@ impl App {
                     .await
             }
             TabQueryMode::Uncontacted => {
-                self.conductor
-                    .list_uncontacted_runners_with_metrics(
-                        filters,
-                        self.config.uncontacted_threshold_secs,
-                    )
-                    .await
+                match uncontacted_cutoff_at {
+                    Ok(cutoff) => {
+                        self.conductor
+                            .list_uncontacted_runners_with_metrics(filters, cutoff)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                }
             }
             TabQueryMode::Empty => {
                 self.conductor
@@ -2074,13 +2080,13 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_draft_validate_updates_uncontacted_threshold() {
+    fn test_settings_draft_validate_updates_uncontacted_since() {
         let mut draft = SettingsDraft::from_config(&AppConfig::default());
-        draft.uncontacted_threshold_input = "120".to_string();
+        draft.uncontacted_since_input = "10:30".to_string();
 
         let config = draft.validate().expect("config");
 
-        assert_eq!(config.uncontacted_threshold_secs, 120);
+        assert_eq!(config.uncontacted_since, "10:30");
     }
 
     #[test]

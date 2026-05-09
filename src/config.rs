@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -32,7 +33,7 @@ pub struct RunnerTarget {
 pub struct AppConfig {
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
-    pub uncontacted_threshold_secs: u64,
+    pub uncontacted_since: String,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
     pub discovery_mode: RunnerDiscoveryMode,
@@ -44,10 +45,7 @@ impl std::fmt::Debug for AppConfig {
         f.debug_struct("AppConfig")
             .field("poll_interval_secs", &self.poll_interval_secs)
             .field("poll_timeout_secs", &self.poll_timeout_secs)
-            .field(
-                "uncontacted_threshold_secs",
-                &self.uncontacted_threshold_secs,
-            )
+            .field("uncontacted_since", &self.uncontacted_since)
             .field("gitlab_host", &self.gitlab_host)
             .field(
                 "gitlab_token",
@@ -64,7 +62,7 @@ impl Default for AppConfig {
         Self {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
-            uncontacted_threshold_secs: 3600,
+            uncontacted_since: "10:30".to_string(),
             gitlab_host: None,
             gitlab_token: None,
             discovery_mode: RunnerDiscoveryMode::AllRunners,
@@ -131,12 +129,38 @@ impl AppConfig {
             anyhow::bail!("Poll interval must be greater than zero seconds");
         }
 
-        if self.uncontacted_threshold_secs == 0 {
-            anyhow::bail!("Uncontacted threshold must be greater than zero seconds");
-        }
+        let _ = self.resolve_uncontacted_cutoff_at(Utc::now())?;
 
         Ok(())
     }
+
+    pub fn resolve_uncontacted_cutoff_at(&self, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
+        parse_uncontacted_since(&self.uncontacted_since, now)
+    }
+}
+
+fn parse_uncontacted_since(value: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Uncontacted since must not be empty");
+    }
+
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(trimmed) {
+        return Ok(timestamp.with_timezone(&Utc));
+    }
+
+    let time = parse_hhmm_time(trimmed)
+        .with_context(|| "Uncontacted since must be RFC3339 or HH:MM (UTC), e.g. 10:30")?;
+    let date = now.date_naive();
+    let naive = date.and_time(time);
+    Ok(Utc.from_utc_datetime(&naive))
+}
+
+fn parse_hhmm_time(value: &str) -> Result<NaiveTime> {
+    NaiveTime::parse_from_str(value, "%H:%M")
+        .or_else(|_| NaiveTime::parse_from_str(value, "%I:%M%P"))
+        .or_else(|_| NaiveTime::parse_from_str(value, "%I:%M %P"))
+        .map_err(Into::into)
 }
 
 pub fn format_runner_targets(targets: &[RunnerTarget]) -> String {
@@ -213,7 +237,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.poll_interval_secs, 30);
         assert_eq!(config.poll_timeout_secs, 1800);
-        assert_eq!(config.uncontacted_threshold_secs, 3600);
+        assert_eq!(config.uncontacted_since, "10:30");
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
@@ -235,7 +259,7 @@ mod tests {
         let toml_str = r#"
             poll_interval_secs = 60
             poll_timeout_secs = 900
-            uncontacted_threshold_secs = 1200
+            uncontacted_since = "2026-05-09T10:30:00Z"
             gitlab_host = "https://gitlab.example.com"
             gitlab_token = "glpat-test-token"
             discovery_mode = "visible_runners"
@@ -249,7 +273,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 60);
         assert_eq!(config.poll_timeout_secs, 900);
-        assert_eq!(config.uncontacted_threshold_secs, 1200);
+        assert_eq!(config.uncontacted_since, "2026-05-09T10:30:00Z");
         assert_eq!(
             config.gitlab_host,
             Some("https://gitlab.example.com".to_string())
@@ -275,7 +299,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 10);
         assert_eq!(config.poll_timeout_secs, 1800);
-        assert_eq!(config.uncontacted_threshold_secs, 3600);
+        assert_eq!(config.uncontacted_since, "10:30");
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
@@ -305,7 +329,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
-        assert_eq!(config.uncontacted_threshold_secs, 3600);
+        assert_eq!(config.uncontacted_since, "10:30");
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
     }
@@ -429,15 +453,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_runtime_settings_rejects_zero_uncontacted_threshold() {
+    fn test_validate_runtime_settings_rejects_invalid_uncontacted_since() {
         let config = AppConfig {
-            uncontacted_threshold_secs: 0,
+            uncontacted_since: "not-a-time".to_string(),
             discovery_mode: RunnerDiscoveryMode::VisibleRunners,
             ..AppConfig::default()
         };
 
         let error = config.validate_runtime_settings().unwrap_err().to_string();
-        assert!(error.contains("Uncontacted threshold"));
+        assert!(error.contains("Uncontacted since"));
     }
 
     #[test]
@@ -473,7 +497,7 @@ mod tests {
         let config = AppConfig {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
-            uncontacted_threshold_secs: 3600,
+            uncontacted_since: "10:30".to_string(),
             gitlab_host: Some("https://gitlab.com".to_string()),
             gitlab_token: Some("glpat-secret-token".to_string()),
             discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,
@@ -489,5 +513,37 @@ mod tests {
         assert!(!debug_output.contains("glpat-secret-token"));
         assert!(debug_output.contains("[REDACTED]"));
         assert!(debug_output.contains("https://gitlab.com"));
+    }
+
+    #[test]
+    fn resolve_uncontacted_cutoff_at_accepts_hhmm() {
+        let config = AppConfig {
+            uncontacted_since: "10:30".to_string(),
+            ..AppConfig::default()
+        };
+        let now = DateTime::parse_from_rfc3339("2026-05-09T05:57:47Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cutoff = config.resolve_uncontacted_cutoff_at(now).unwrap();
+        assert_eq!(
+            cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "2026-05-09T10:30:00Z"
+        );
+    }
+
+    #[test]
+    fn resolve_uncontacted_cutoff_at_accepts_rfc3339() {
+        let config = AppConfig {
+            uncontacted_since: "2026-05-09T10:30:00Z".to_string(),
+            ..AppConfig::default()
+        };
+        let now = DateTime::parse_from_rfc3339("2026-05-09T05:57:47Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cutoff = config.resolve_uncontacted_cutoff_at(now).unwrap();
+        assert_eq!(
+            cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "2026-05-09T10:30:00Z"
+        );
     }
 }

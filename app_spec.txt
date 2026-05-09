@@ -502,19 +502,19 @@ Some filters (tags, version_prefix) cannot be applied via API and must be filter
 2. Filter: runners where `!managers.is_empty()` AND `managers[0].status != "online"`
 3. Return filtered list
 
-#### 5.1.5 `list_uncontacted_runners(filters: RunnerFilters, time_threshold_secs: u64) -> Vec<Runner>`
+#### 5.1.5 `list_uncontacted_runners(filters: RunnerFilters, cutoff_timestamp: DateTime) -> Vec<Runner>`
 
-**Purpose**: Find runners not contacted within time threshold
+**Purpose**: Find runners not contacted since a configured timestamp
 
 **Algorithm**:
 1. Fetch all runners with managers
-2. Calculate threshold: `current_time - time_threshold_secs`
+2. Resolve configured cutoff timestamp (UTC)
 3. Filter runners where:
    - `!managers.is_empty()` AND
-   - `managers[0].contacted_at.is_none()` OR `managers[0].contacted_at < threshold`
+   - all managers have missing/invalid `contacted_at` OR `contacted_at < cutoff_timestamp`
 4. Return filtered list
 
-**Default threshold**: 3600 seconds (1 hour)
+**Default cutoff**: `10:30` (interpreted as today's `10:30 UTC`)
 
 #### 5.1.6 `get_users(active_only: bool, humans_only: bool) -> Vec<User>`
 

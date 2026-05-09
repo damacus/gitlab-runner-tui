@@ -405,15 +405,15 @@ async fn run_headless(
         let filters = build_runner_filters(tags, version);
 
         let outcome = conductor.fetch_runners_with_metrics(filters).await?;
+        let now = Utc::now();
+        let uncontacted_cutoff_at = config.resolve_uncontacted_cutoff_at(now)?;
 
         let runners = match command {
             HeadlessCommand::Fetch => outcome.runners.clone(),
             HeadlessCommand::Switch => filter_offline_runners(outcome.runners.clone()),
-            HeadlessCommand::Flames => filter_uncontacted_runners(
-                outcome.runners.clone(),
-                Utc::now(),
-                config.uncontacted_threshold_secs,
-            ),
+            HeadlessCommand::Flames => {
+                filter_uncontacted_runners(outcome.runners.clone(), uncontacted_cutoff_at)
+            }
             HeadlessCommand::Empty => filter_runners_without_managers(outcome.runners.clone()),
             HeadlessCommand::Rotate => filter_rotating_runners(outcome.runners.clone()),
         };
@@ -492,21 +492,14 @@ fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
         .collect()
 }
 
-fn filter_uncontacted_runners(
-    runners: Vec<Runner>,
-    now: DateTime<Utc>,
-    threshold_secs: u64,
-) -> Vec<Runner> {
+fn filter_uncontacted_runners(runners: Vec<Runner>, cutoff_at: DateTime<Utc>) -> Vec<Runner> {
     runners
         .into_iter()
         .filter(|runner| {
             !runner.managers.is_empty()
                 && runner.managers.iter().all(|manager| {
                     match crate::models::runner::parse_manager_contacted_at(manager) {
-                        Some(contacted_at) => {
-                            let age = now.signed_duration_since(contacted_at).num_seconds();
-                            age >= threshold_secs as i64
-                        }
+                        Some(contacted_at) => contacted_at < cutoff_at,
                         None => true,
                     }
                 })
