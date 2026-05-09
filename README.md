@@ -67,6 +67,7 @@ gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+uncontacted_threshold_secs = 3600
 discovery_mode = "configured_targets"
 
 [[runner_targets]]
@@ -93,6 +94,7 @@ Example:
 ```toml
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+uncontacted_threshold_secs = 3600
 gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 discovery_mode = "configured_targets"
@@ -138,7 +140,7 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 | `Runners`     | Fetch all GitLab Runner details with optional filters   |
 | `Health`      | Health check - verify all tagged runners are online     |
 | `Offline`     | List runners with no online managers                    |
-| `Uncontacted` | Find runners not contacted recently (default: 1 hour)   |
+| `Uncontacted` | Find runners not contacted recently (`uncontacted_threshold_secs`, default: 1 hour) |
 | `Empty`       | List runners with no managers                           |
 | `Rotating`    | Detect runners currently in rotation (multiple managers)|
 | `Workers`     | Show detailed list of all individual Runner Managers    |

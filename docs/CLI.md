@@ -22,7 +22,7 @@ You can use the same specialized commands available in the TUI:
 
 - `fetch`: List all discovered runners.
 - `switch`: List offline runners (all managers are offline).
-- `flames`: List uncontacted runners (haven't checked in for > 1 hour).
+- `flames`: List uncontacted runners (threshold from `uncontacted_threshold_secs`, default: 1 hour).
 - `empty`: List runners with no registered managers.
 - `rotate`: List runners with more than one manager (potential overlapping process).
 

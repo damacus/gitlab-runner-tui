@@ -32,6 +32,7 @@ pub struct RunnerTarget {
 pub struct AppConfig {
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
+    pub uncontacted_threshold_secs: u64,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
     pub discovery_mode: RunnerDiscoveryMode,
@@ -43,6 +44,10 @@ impl std::fmt::Debug for AppConfig {
         f.debug_struct("AppConfig")
             .field("poll_interval_secs", &self.poll_interval_secs)
             .field("poll_timeout_secs", &self.poll_timeout_secs)
+            .field(
+                "uncontacted_threshold_secs",
+                &self.uncontacted_threshold_secs,
+            )
             .field("gitlab_host", &self.gitlab_host)
             .field(
                 "gitlab_token",
@@ -59,6 +64,7 @@ impl Default for AppConfig {
         Self {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
+            uncontacted_threshold_secs: 3600,
             gitlab_host: None,
             gitlab_token: None,
             discovery_mode: RunnerDiscoveryMode::AllRunners,
@@ -123,6 +129,10 @@ impl AppConfig {
 
         if self.poll_interval_secs == 0 {
             anyhow::bail!("Poll interval must be greater than zero seconds");
+        }
+
+        if self.uncontacted_threshold_secs == 0 {
+            anyhow::bail!("Uncontacted threshold must be greater than zero seconds");
         }
 
         Ok(())
@@ -203,6 +213,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.poll_interval_secs, 30);
         assert_eq!(config.poll_timeout_secs, 1800);
+        assert_eq!(config.uncontacted_threshold_secs, 3600);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
@@ -224,6 +235,7 @@ mod tests {
         let toml_str = r#"
             poll_interval_secs = 60
             poll_timeout_secs = 900
+            uncontacted_threshold_secs = 1200
             gitlab_host = "https://gitlab.example.com"
             gitlab_token = "glpat-test-token"
             discovery_mode = "visible_runners"
@@ -237,6 +249,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 60);
         assert_eq!(config.poll_timeout_secs, 900);
+        assert_eq!(config.uncontacted_threshold_secs, 1200);
         assert_eq!(
             config.gitlab_host,
             Some("https://gitlab.example.com".to_string())
@@ -262,6 +275,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 10);
         assert_eq!(config.poll_timeout_secs, 1800);
+        assert_eq!(config.uncontacted_threshold_secs, 3600);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
@@ -291,6 +305,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));
         assert_eq!(config.poll_interval_secs, 30);
+        assert_eq!(config.uncontacted_threshold_secs, 3600);
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
     }
@@ -414,6 +429,18 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_runtime_settings_rejects_zero_uncontacted_threshold() {
+        let config = AppConfig {
+            uncontacted_threshold_secs: 0,
+            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+            ..AppConfig::default()
+        };
+
+        let error = config.validate_runtime_settings().unwrap_err().to_string();
+        assert!(error.contains("Uncontacted threshold"));
+    }
+
+    #[test]
     fn test_config_paths_includes_cwd() {
         let paths = config_paths();
         assert!(!paths.is_empty());
@@ -446,6 +473,7 @@ mod tests {
         let config = AppConfig {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
+            uncontacted_threshold_secs: 3600,
             gitlab_host: Some("https://gitlab.com".to_string()),
             gitlab_token: Some("glpat-secret-token".to_string()),
             discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,

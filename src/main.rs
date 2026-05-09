@@ -409,9 +409,11 @@ async fn run_headless(
         let runners = match command {
             HeadlessCommand::Fetch => outcome.runners.clone(),
             HeadlessCommand::Switch => filter_offline_runners(outcome.runners.clone()),
-            HeadlessCommand::Flames => {
-                filter_uncontacted_runners(outcome.runners.clone(), Utc::now(), 3600)
-            }
+            HeadlessCommand::Flames => filter_uncontacted_runners(
+                outcome.runners.clone(),
+                Utc::now(),
+                config.uncontacted_threshold_secs,
+            ),
             HeadlessCommand::Empty => filter_runners_without_managers(outcome.runners.clone()),
             HeadlessCommand::Rotate => filter_rotating_runners(outcome.runners.clone()),
         };
