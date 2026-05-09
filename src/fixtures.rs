@@ -466,10 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn demo_runners_include_threshold_edge_case_for_stale_filtering() {
+    fn demo_runners_include_cutoff_edge_case_for_uncontacted_filtering() {
         let runners = demo_runners();
         let now = Utc::now();
-        let threshold_secs = 3600i64;
+        let cutoff_age_secs = 3600i64;
 
         let mixed_runner = runners
             .iter()
@@ -487,12 +487,12 @@ mod tests {
             .collect();
 
         assert!(
-            manager_ages.iter().any(|age| *age <= threshold_secs),
+            manager_ages.iter().any(|age| *age <= cutoff_age_secs),
             "edge-case runner must include at least one recently contacted manager"
         );
         assert!(
-            manager_ages.iter().any(|age| *age > threshold_secs),
-            "edge-case runner must include at least one stale manager"
+            manager_ages.iter().any(|age| *age > cutoff_age_secs),
+            "edge-case runner must include at least one manager contacted before cutoff"
         );
     }
 }
