@@ -1,5 +1,5 @@
 use super::manager::RunnerManager;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, time::Instant};
 
@@ -62,6 +62,26 @@ pub struct RunnerFilters {
     pub paused: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactThreshold {
+    OlderThanSecs(u64),
+    Since(DateTime<Utc>),
+}
+
+impl ContactThreshold {
+    pub fn is_contact_stale(self, contacted_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        match contacted_at {
+            Some(contacted_at) => match self {
+                Self::OlderThanSecs(seconds) => {
+                    now.signed_duration_since(contacted_at).num_seconds() > seconds as i64
+                }
+                Self::Since(cutoff) => contacted_at <= cutoff,
+            },
+            None => true,
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunnerSortKey {
@@ -104,6 +124,34 @@ pub fn parse_manager_created_at(manager: &RunnerManager) -> Option<DateTime<Utc>
 #[allow(dead_code)]
 pub fn parse_manager_contacted_at(manager: &RunnerManager) -> Option<DateTime<Utc>> {
     parse_timestamp(manager.contacted_at.as_deref())
+}
+
+#[allow(dead_code)]
+pub fn parse_stale_cutoff(
+    input: &str,
+    now: DateTime<Local>,
+) -> Result<Option<DateTime<Utc>>, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(input) {
+        return Ok(Some(timestamp.with_timezone(&Utc)));
+    }
+
+    let time = NaiveTime::parse_from_str(input, "%H:%M:%S")
+        .or_else(|_| NaiveTime::parse_from_str(input, "%H:%M"))
+        .map_err(|_| "Use HH:MM, HH:MM:SS, or an RFC3339 timestamp".to_string())?;
+    let local_cutoff = now.date_naive().and_time(time);
+
+    match Local.from_local_datetime(&local_cutoff) {
+        LocalResult::Single(timestamp) => Ok(Some(timestamp.with_timezone(&Utc))),
+        LocalResult::Ambiguous(earliest, _) => Ok(Some(earliest.with_timezone(&Utc))),
+        LocalResult::None => {
+            Err("Cutoff time does not exist in the local timezone today".to_string())
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -550,6 +598,63 @@ mod tests {
         let tags = filters.tag_list.unwrap();
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"alm".to_string()));
+    }
+
+    #[test]
+    fn test_parse_stale_cutoff_accepts_hour_and_minute() {
+        let now = DateTime::parse_from_rfc3339("2026-05-12T09:30:00+01:00")
+            .unwrap()
+            .with_timezone(&Local);
+        let cutoff = parse_stale_cutoff("11:00", now).unwrap().unwrap();
+        let local_cutoff = cutoff.with_timezone(&Local);
+
+        assert_eq!(local_cutoff.date_naive(), now.date_naive());
+        assert_eq!(local_cutoff.format("%H:%M:%S").to_string(), "11:00:00");
+    }
+
+    #[test]
+    fn test_parse_stale_cutoff_accepts_hour_minute_and_second() {
+        let now = DateTime::parse_from_rfc3339("2026-05-12T09:30:00+01:00")
+            .unwrap()
+            .with_timezone(&Local);
+        let cutoff = parse_stale_cutoff("11:00:30", now).unwrap().unwrap();
+        let local_cutoff = cutoff.with_timezone(&Local);
+
+        assert_eq!(local_cutoff.date_naive(), now.date_naive());
+        assert_eq!(local_cutoff.format("%H:%M:%S").to_string(), "11:00:30");
+    }
+
+    #[test]
+    fn test_parse_stale_cutoff_accepts_rfc3339() {
+        let now = Local::now();
+        let cutoff = parse_stale_cutoff("2026-05-12T11:00:00+01:00", now)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cutoff.to_rfc3339(), "2026-05-12T10:00:00+00:00");
+    }
+
+    #[test]
+    fn test_parse_stale_cutoff_blank_clears_cutoff() {
+        assert_eq!(parse_stale_cutoff("   ", Local::now()).unwrap(), None);
+    }
+
+    #[test]
+    fn test_parse_stale_cutoff_rejects_invalid_input() {
+        assert!(parse_stale_cutoff("not-a-time", Local::now()).is_err());
+    }
+
+    #[test]
+    fn test_contact_threshold_cutoff_treats_equal_contact_as_stale() {
+        let cutoff = DateTime::parse_from_rfc3339("2026-05-12T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let after = cutoff + chrono::Duration::seconds(1);
+        let threshold = ContactThreshold::Since(cutoff);
+
+        assert!(threshold.is_contact_stale(Some(cutoff), after));
+        assert!(!threshold.is_contact_stale(Some(after), after));
+        assert!(threshold.is_contact_stale(None, after));
     }
 
     fn create_test_runner(id: u64, status: &str, manager_status: Option<&str>) -> Runner {

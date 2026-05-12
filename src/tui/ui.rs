@@ -179,16 +179,22 @@ fn push_hotkey_hint(spans: &mut Vec<Span<'static>>, key: &str, label: &str, emph
     spans.push(Span::styled(label.to_string(), styles::muted_style()));
 }
 
-fn build_dashboard_shortcuts_line(compact: bool) -> Line<'static> {
+fn build_dashboard_shortcuts_line(compact: bool, active_tab: Tab) -> Line<'static> {
     let mut spans = Vec::new();
     if compact {
         push_hotkey_hint(&mut spans, "r", "refresh", true);
         push_hotkey_hint(&mut spans, "f", "filter", true);
+        if active_tab == Tab::Uncontacted {
+            push_hotkey_hint(&mut spans, "a", "cutoff", true);
+        }
         push_hotkey_hint(&mut spans, "q", "quit", true);
     } else {
         push_hotkey_hint(&mut spans, "p", "poll", true);
         push_hotkey_hint(&mut spans, "r", "refresh", true);
         push_hotkey_hint(&mut spans, "f", "filter", true);
+        if active_tab == Tab::Uncontacted {
+            push_hotkey_hint(&mut spans, "a", "cutoff", true);
+        }
         push_hotkey_hint(&mut spans, "s", "sort", false);
         push_hotkey_hint(&mut spans, "c", "settings", false);
         push_hotkey_hint(&mut spans, "?", "help", false);
@@ -1316,6 +1322,19 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             ("Esc", "stop"),
             ("Ctrl-C", "quit"),
         ])),
+        AppMode::StaleCutoffInput => Some(Line::from(vec![
+            Span::styled("Cutoff ", styles::accent_style()),
+            Span::raw(if app.stale_cutoff_input.is_empty() {
+                "<default 1h>".to_string()
+            } else {
+                app.stale_cutoff_input.clone()
+            }),
+            Span::styled(" · ", styles::muted_style()),
+            Span::styled("Enter", styles::accent_style()),
+            Span::raw(" apply "),
+            Span::styled("Esc", styles::accent_style()),
+            Span::raw(" cancel"),
+        ])),
         AppMode::FilterPopup => Some(simple_status_hint(&[
             ("f/esc", "close"),
             ("tab", "switch"),
@@ -1405,8 +1424,15 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         vertical: 1,
     });
     let compact_shortcuts = inner.width < 92;
-    let shortcuts = build_dashboard_shortcuts_line(compact_shortcuts);
-    let shortcut_width = if compact_shortcuts { 28 } else { 64 }.min(inner.width);
+    let shortcuts = build_dashboard_shortcuts_line(compact_shortcuts, app.active_tab());
+    let shortcut_width = if compact_shortcuts {
+        28
+    } else if app.active_tab() == Tab::Uncontacted {
+        76
+    } else {
+        64
+    }
+    .min(inner.width);
     let cols =
         Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcut_width)]).split(inner);
 
@@ -1460,6 +1486,10 @@ fn render_help_view(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  f or /", styles::accent_style()),
             Span::raw("           Open filter popup (tags + versions multi-select)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  a", styles::accent_style()),
+            Span::raw("                Edit Stale tab contact cutoff"),
         ]),
         Line::from(vec![
             Span::styled("  t", styles::accent_style()),

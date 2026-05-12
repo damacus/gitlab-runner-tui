@@ -149,7 +149,7 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 - `1`-`7` - Jump directly to a tab
 - `↑`/`↓` or `k`/`j` - Move table selection
 - `/` or `f` - Focus tag filter input
-- `a` - Edit the age filter
+- `a` on Stale - Edit the last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339)
 - `v` - Open version multi-select
 - `o` - Cycle sort mode
 - `c` - Open settings + diagnostics
@@ -226,6 +226,7 @@ gitlab-runner-tui --demo --once --json
 - `--json`: Output results in JSON format (best combined with `--once`).
 - `--command <CMD>`: Which query to run (`fetch`, `switch`, `flames`, `empty`, `rotate`). Defaults to `rotate`.
 - `--tags <TAGS>`: Comma-separated list of tags for filtering.
+- `--stale-cutoff <TIME>`: For `--command flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
 
 ## Examples
 
@@ -256,6 +257,14 @@ Run in a non-interactive loop to monitor runners that have multiple managers (e.
 
 ```bash
 gitlab-runner-tui --watch --command rotate --tags prod
+```
+
+### Check maintenance recovery after a cutoff
+
+List runners whose managers have not contacted GitLab after 11:00 local time:
+
+```bash
+gitlab-runner-tui --once --command flames --stale-cutoff 11:00
 ```
 
 ## Development
