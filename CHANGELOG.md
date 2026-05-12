@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.11](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.10...v0.1.11) (2026-05-12)
+
+
+### Features
+
+* add stale runner cutoff ([#125](https://github.com/damacus/gitlab-runner-tui/issues/125)) ([5ec5630](https://github.com/damacus/gitlab-runner-tui/commit/5ec563086e771f2d00cacd863e894cb0791235d1))
+
+
+### Performance Improvements
+
+* ⚡ Bolt: Pre-compute formatted tags in UI ([#118](https://github.com/damacus/gitlab-runner-tui/issues/118)) ([d2cc7b2](https://github.com/damacus/gitlab-runner-tui/commit/d2cc7b211092fefcec3a872557d451b13c51b116))
+
 ## [0.1.10](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.9...v0.1.10) (2026-04-23)
 
 
