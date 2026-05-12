@@ -22,13 +22,20 @@ You can use the same specialized commands available in the TUI:
 
 - `fetch`: List all discovered runners.
 - `switch`: List offline runners (all managers are offline).
-- `flames`: List uncontacted runners (haven't checked in for > 1 hour).
+- `flames`: List uncontacted runners (haven't checked in for > 1 hour, or after `--stale-cutoff` when provided).
 - `empty`: List runners with no registered managers.
 - `rotate`: List runners with more than one manager (potential overlapping process).
 
 Example:
 ```bash
 gitlab-runner-tui --once --json rotate
+```
+
+Use a maintenance cutoff for stale runner checks:
+
+```bash
+gitlab-runner-tui --once --json --command flames --stale-cutoff 11:00
+gitlab-runner-tui --once --json --command flames --stale-cutoff 2026-05-12T11:00:00+01:00
 ```
 
 ---

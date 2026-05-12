@@ -1,7 +1,7 @@
 use crate::client::GitLabClient;
 use crate::config::{RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind};
 use crate::metrics::{LiveQueryMetrics, QueryRequestCounts};
-use crate::models::runner::{Runner, RunnerFilters};
+use crate::models::runner::{parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
@@ -292,10 +292,10 @@ impl Conductor {
     pub async fn list_uncontacted_runners_with_metrics(
         &self,
         filters: RunnerFilters,
-        threshold_secs: u64,
+        threshold: ContactThreshold,
     ) -> Result<QueryOutcome> {
         let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_uncontacted_runners(outcome.runners, Utc::now(), threshold_secs);
+        outcome.runners = filter_uncontacted_runners(outcome.runners, Utc::now(), threshold);
         outcome.metrics.result_count = outcome.runners.len();
         Ok(outcome)
     }
@@ -337,7 +337,7 @@ fn is_runner_offline(runner: &Runner) -> bool {
     !runner.managers.is_empty() && !runner.managers.iter().any(|m| m.status == "online")
 }
 
-fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold_secs: u64) -> bool {
+fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold: ContactThreshold) -> bool {
     if runner.managers.is_empty() {
         return false;
     }
@@ -346,20 +346,7 @@ fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold_secs: u6
     runner
         .managers
         .iter()
-        .all(|m| is_manager_stale(m.contacted_at.as_deref(), now, threshold_secs))
-}
-
-fn is_manager_stale(contacted_at: Option<&str>, now: DateTime<Utc>, threshold_secs: u64) -> bool {
-    match contacted_at {
-        Some(contacted_at_str) => match DateTime::parse_from_rfc3339(contacted_at_str) {
-            Ok(contacted_at) => {
-                let duration = now.signed_duration_since(contacted_at);
-                duration.num_seconds() > threshold_secs as i64
-            }
-            Err(_) => true, // Unparseable timestamp treated as stale
-        },
-        None => true, // Missing contacted_at treated as stale
-    }
+        .all(|m| threshold.is_contact_stale(parse_manager_contacted_at(m), now))
 }
 
 fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
@@ -369,11 +356,11 @@ fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
 fn filter_uncontacted_runners(
     runners: Vec<Runner>,
     now: DateTime<Utc>,
-    threshold_secs: u64,
+    threshold: ContactThreshold,
 ) -> Vec<Runner> {
     runners
         .into_iter()
-        .filter(|r| is_runner_uncontacted(r, now, threshold_secs))
+        .filter(|r| is_runner_uncontacted(r, now, threshold))
         .collect()
 }
 
@@ -1176,7 +1163,10 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(
+                RunnerFilters::default(),
+                ContactThreshold::OlderThanSecs(60),
+            )
             .await
             .unwrap()
             .runners;
@@ -1254,7 +1244,10 @@ mod tests {
         );
 
         let uncontacted = conductor
-            .list_uncontacted_runners_with_metrics(RunnerFilters::default(), 60)
+            .list_uncontacted_runners_with_metrics(
+                RunnerFilters::default(),
+                ContactThreshold::OlderThanSecs(60),
+            )
             .await
             .unwrap()
             .runners;
@@ -1343,10 +1336,32 @@ mod tests {
             test_runner(4, &[("offline", Some("not-a-time"))]),
         ];
 
-        let filtered = filter_uncontacted_runners(runners, now, 60);
+        let filtered =
+            filter_uncontacted_runners(runners, now, ContactThreshold::OlderThanSecs(60));
         let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
 
         assert_eq!(ids, vec![1, 4]);
+    }
+
+    #[test]
+    fn test_filter_uncontacted_runners_cutoff_requires_contact_after_cutoff() {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::seconds(60);
+        let before = (cutoff - chrono::Duration::seconds(1)).to_rfc3339();
+        let equal = cutoff.to_rfc3339();
+        let after = (cutoff + chrono::Duration::seconds(1)).to_rfc3339();
+
+        let runners = vec![
+            test_runner(1, &[("online", Some(&before)), ("offline", Some(&equal))]),
+            test_runner(2, &[("online", Some(&after)), ("offline", Some(&before))]),
+            test_runner(3, &[("offline", Some("not-a-time"))]),
+            test_runner(4, &[]),
+        ];
+
+        let filtered = filter_uncontacted_runners(runners, now, ContactThreshold::Since(cutoff));
+        let ids: Vec<u64> = filtered.into_iter().map(|r| r.id).collect();
+
+        assert_eq!(ids, vec![1, 3]);
     }
 
     #[test]

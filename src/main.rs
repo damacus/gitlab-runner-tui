@@ -10,7 +10,7 @@ const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
 use crate::models::runner::Runner;
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use client::GitLabClient;
 use conductor::Conductor;
@@ -20,7 +20,9 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use models::runner::RunnerFilters;
+use models::runner::{
+    parse_manager_contacted_at, parse_stale_cutoff, ContactThreshold, RunnerFilters,
+};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::StatusCode;
 use std::{
@@ -76,6 +78,10 @@ struct Args {
     #[arg(long = "version")]
     version_filter: Option<String>,
 
+    /// Cutoff for --command flames: HH:MM, HH:MM:SS, or RFC3339 timestamp
+    #[arg(long)]
+    stale_cutoff: Option<String>,
+
     /// Run with demo fixture data (no GitLab credentials required)
     #[arg(long)]
     demo: bool,
@@ -90,6 +96,7 @@ impl std::fmt::Debug for Args {
             .field("command", &self.command)
             .field("tags", &self.tags)
             .field("version", &self.version_filter)
+            .field("stale_cutoff", &self.stale_cutoff)
             .field("demo", &self.demo)
             .finish()
     }
@@ -394,6 +401,7 @@ async fn run_headless(
     args: &Args,
 ) -> Result<()> {
     let command = parse_headless_command(command)?;
+    let stale_threshold = build_stale_threshold(command, args.stale_cutoff.as_deref())?;
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
     let started_at = Instant::now();
     let mut iteration = 0u64;
@@ -404,17 +412,19 @@ async fn run_headless(
 
         let filters = build_runner_filters(tags, version);
 
-        let outcome = conductor.fetch_runners_with_metrics(filters).await?;
+        let mut outcome = conductor.fetch_runners_with_metrics(filters).await?;
 
         let runners = match command {
             HeadlessCommand::Fetch => outcome.runners.clone(),
             HeadlessCommand::Switch => filter_offline_runners(outcome.runners.clone()),
             HeadlessCommand::Flames => {
-                filter_uncontacted_runners(outcome.runners.clone(), Utc::now(), 3600)
+                filter_uncontacted_runners(outcome.runners.clone(), Utc::now(), stale_threshold)
             }
             HeadlessCommand::Empty => filter_runners_without_managers(outcome.runners.clone()),
             HeadlessCommand::Rotate => filter_rotating_runners(outcome.runners.clone()),
         };
+        outcome.runners = runners;
+        outcome.metrics.result_count = outcome.runners.len();
 
         if args.json {
             let output = serde_json::to_string_pretty(&outcome)?;
@@ -425,11 +435,11 @@ async fn run_headless(
                 elapsed / 60,
                 elapsed % 60,
                 iteration,
-                runners.len(),
+                outcome.runners.len(),
                 command.as_str(),
             );
 
-            for runner in &runners {
+            for runner in &outcome.runners {
                 let mgr_info: Vec<String> = runner
                     .managers
                     .iter()
@@ -451,7 +461,7 @@ async fn run_headless(
                 );
             }
 
-            if runners.is_empty() && command == HeadlessCommand::Rotate {
+            if outcome.runners.is_empty() && command == HeadlessCommand::Rotate {
                 println!("  ✓ No rotation detected — all runners have single managers");
             }
         }
@@ -493,20 +503,14 @@ fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
 fn filter_uncontacted_runners(
     runners: Vec<Runner>,
     now: DateTime<Utc>,
-    threshold_secs: u64,
+    threshold: ContactThreshold,
 ) -> Vec<Runner> {
     runners
         .into_iter()
         .filter(|runner| {
             !runner.managers.is_empty()
                 && runner.managers.iter().all(|manager| {
-                    match crate::models::runner::parse_manager_contacted_at(manager) {
-                        Some(contacted_at) => {
-                            let age = now.signed_duration_since(contacted_at).num_seconds();
-                            age >= threshold_secs as i64
-                        }
-                        None => true,
-                    }
+                    threshold.is_contact_stale(parse_manager_contacted_at(manager), now)
                 })
         })
         .collect()
@@ -549,6 +553,23 @@ fn parse_headless_command(command: &str) -> Result<HeadlessCommand> {
             "Unknown headless command: {}. Supported commands: fetch, switch, flames, empty, rotate",
             other
         ),
+    }
+}
+
+fn build_stale_threshold(
+    command: HeadlessCommand,
+    stale_cutoff: Option<&str>,
+) -> Result<ContactThreshold> {
+    match (command, stale_cutoff) {
+        (HeadlessCommand::Flames, Some(input)) => {
+            let cutoff = parse_stale_cutoff(input, Local::now())
+                .map_err(anyhow::Error::msg)?
+                .context("--stale-cutoff cannot be blank")?;
+            Ok(ContactThreshold::Since(cutoff))
+        }
+        (HeadlessCommand::Flames, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
+        (_, Some(_)) => anyhow::bail!("--stale-cutoff is only supported with --command flames"),
+        (_, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
     }
 }
 
@@ -617,6 +638,41 @@ mod tests {
         assert!(parse_headless_command("Fetch").is_err());
         assert!(parse_headless_command("fetch ").is_err());
         assert!(parse_headless_command(" rotate").is_err());
+    }
+
+    #[test]
+    fn builds_default_stale_threshold_for_flames() {
+        assert_eq!(
+            build_stale_threshold(HeadlessCommand::Flames, None).unwrap(),
+            ContactThreshold::OlderThanSecs(3600)
+        );
+    }
+
+    #[test]
+    fn accepts_stale_cutoff_for_flames() {
+        let threshold =
+            build_stale_threshold(HeadlessCommand::Flames, Some("2026-05-12T11:00:00+01:00"))
+                .unwrap();
+
+        assert!(matches!(threshold, ContactThreshold::Since(_)));
+    }
+
+    #[test]
+    fn rejects_stale_cutoff_for_non_flames_commands() {
+        let error = build_stale_threshold(HeadlessCommand::Rotate, Some("11:00"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("--stale-cutoff is only supported with --command flames"));
+    }
+
+    #[test]
+    fn rejects_blank_stale_cutoff_for_cli() {
+        let error = build_stale_threshold(HeadlessCommand::Flames, Some(" "))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("--stale-cutoff cannot be blank"));
     }
 
     #[test]
@@ -709,6 +765,7 @@ mod tests {
             command: "rotate".to_string(),
             tags: None,
             version_filter: None,
+            stale_cutoff: None,
             demo: false,
         };
         let config = AppConfig {
@@ -741,6 +798,7 @@ mod tests {
             command: "rotate".to_string(),
             tags: None,
             version_filter: None,
+            stale_cutoff: None,
             demo: false,
         };
 
@@ -762,6 +820,7 @@ mod tests {
             command: "rotate".to_string(),
             tags: None,
             version_filter: None,
+            stale_cutoff: None,
             demo: false,
         };
 

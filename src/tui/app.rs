@@ -5,11 +5,11 @@ use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{
     apply_runner_filters, benchmark_runner_processing, extract_runner_tags,
-    extract_runner_versions, parse_manager_contacted_at, sort_runners, LocalBenchmarkSnapshot,
-    Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
+    extract_runner_versions, parse_manager_contacted_at, parse_stale_cutoff, sort_runners,
+    ContactThreshold, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
 };
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use std::collections::HashMap;
@@ -112,9 +112,7 @@ impl Tab {
         match self {
             Tab::Runners | Tab::Health | Tab::Workers => TabQueryMode::FetchRunners,
             Tab::Offline => TabQueryMode::Offline,
-            Tab::Uncontacted => TabQueryMode::Uncontacted {
-                threshold_secs: UNCONTACTED_THRESHOLD_SECS,
-            },
+            Tab::Uncontacted => TabQueryMode::Uncontacted,
             Tab::Empty => TabQueryMode::Empty,
             Tab::Rotating => TabQueryMode::Rotating,
         }
@@ -132,6 +130,7 @@ pub enum AppMode {
     #[default]
     Dashboard,
     FilterInput,
+    StaleCutoffInput,
     FilterPopup,
     Settings,
     Help,
@@ -294,7 +293,7 @@ impl SettingsDraft {
 enum TabQueryMode {
     FetchRunners,
     Offline,
-    Uncontacted { threshold_secs: u64 },
+    Uncontacted,
     Empty,
     Rotating,
 }
@@ -353,6 +352,8 @@ pub struct App {
     pub tab_counts: HashMap<Tab, usize>,
 
     pub filter_input: String,
+    pub stale_cutoff_at: Option<DateTime<Utc>>,
+    pub stale_cutoff_input: String,
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
     pub filter_popup_section: FilterPopupSection,
@@ -410,6 +411,8 @@ impl App {
             loaded_tab: None,
             tab_counts: HashMap::new(),
             filter_input: String::new(),
+            stale_cutoff_at: None,
+            stale_cutoff_input: String::new(),
             selected_versions: Vec::new(),
             version_list_state: ListState::default(),
             filter_popup_section: FilterPopupSection::default(),
@@ -522,6 +525,15 @@ impl App {
         self.error_message = None;
     }
 
+    pub fn focus_stale_cutoff(&mut self) {
+        self.stale_cutoff_input = self
+            .stale_cutoff_at
+            .map(format_stale_cutoff_input)
+            .unwrap_or_default();
+        self.mode = AppMode::StaleCutoffInput;
+        self.error_message = None;
+    }
+
     pub fn open_filter_popup(&mut self) {
         self.mode = AppMode::FilterPopup;
         self.filter_popup_section = FilterPopupSection::TagSearch;
@@ -595,6 +607,19 @@ impl App {
                 .then_some(self.selected_versions.clone()),
             ..RunnerFilters::default()
         }
+    }
+
+    fn stale_contact_threshold(&self) -> ContactThreshold {
+        self.stale_cutoff_at
+            .map(ContactThreshold::Since)
+            .unwrap_or(ContactThreshold::OlderThanSecs(UNCONTACTED_THRESHOLD_SECS))
+    }
+
+    pub fn stale_cutoff_summary(&self) -> String {
+        self.stale_cutoff_at.map_or_else(
+            || "older than 1h".to_string(),
+            |cutoff| format!("since {}", format_stale_cutoff_label(cutoff)),
+        )
     }
 
     pub fn sort_label(&self) -> &'static str {
@@ -698,7 +723,11 @@ impl App {
                 }
             }
             Tab::Offline => format!("Offline ({})", self.runners.len()),
-            Tab::Uncontacted => format!("Stale ({})", self.runners.len()),
+            Tab::Uncontacted => format!(
+                "Stale ({}, {})",
+                self.runners.len(),
+                self.stale_cutoff_summary()
+            ),
             Tab::Empty => format!("Idle ({})", self.runners.len()),
             Tab::Rotating => format!("Rotating ({})", self.runners.len()),
             Tab::Workers => format!("Workers ({})", self.manager_rows.len()),
@@ -755,15 +784,16 @@ impl App {
         let targets = self.config.runner_targets.clone();
         let filters = self.build_filters();
         let tab = self.active_tab();
+        let threshold = self.stale_contact_threshold();
 
         self.pending_search = Some(tokio::spawn(async move {
             let conductor = Conductor::new_with_mode(client, mode, targets);
             let result = match tab.query_mode() {
                 TabQueryMode::FetchRunners => conductor.fetch_runners_with_metrics(filters).await,
                 TabQueryMode::Offline => conductor.list_offline_runners_with_metrics(filters).await,
-                TabQueryMode::Uncontacted { threshold_secs } => {
+                TabQueryMode::Uncontacted => {
                     conductor
-                        .list_uncontacted_runners_with_metrics(filters, threshold_secs)
+                        .list_uncontacted_runners_with_metrics(filters, threshold)
                         .await
                 }
                 TabQueryMode::Empty => {
@@ -821,6 +851,7 @@ impl App {
         self.error_message = None;
         let tab = self.active_tab();
         let filters = self.build_filters();
+        let threshold = self.stale_contact_threshold();
 
         let result = match tab.query_mode() {
             TabQueryMode::FetchRunners => self.conductor.fetch_runners_with_metrics(filters).await,
@@ -829,9 +860,9 @@ impl App {
                     .list_offline_runners_with_metrics(filters)
                     .await
             }
-            TabQueryMode::Uncontacted { threshold_secs } => {
+            TabQueryMode::Uncontacted => {
                 self.conductor
-                    .list_uncontacted_runners_with_metrics(filters, threshold_secs)
+                    .list_uncontacted_runners_with_metrics(filters, threshold)
                     .await
             }
             TabQueryMode::Empty => {
@@ -1247,6 +1278,20 @@ impl App {
         ));
     }
 
+    fn apply_stale_cutoff_input(&mut self) {
+        match parse_stale_cutoff(&self.stale_cutoff_input, Local::now()) {
+            Ok(cutoff) => {
+                self.stale_cutoff_at = cutoff;
+                self.mode = AppMode::Dashboard;
+                self.error_message = None;
+                self.start_search();
+            }
+            Err(message) => {
+                self.error_message = Some(format!("Invalid stale cutoff: {message}"));
+            }
+        }
+    }
+
     async fn save_settings(&mut self) {
         let result = async {
             let new_config = self.settings_draft.validate()?;
@@ -1372,6 +1417,24 @@ impl App {
                 }
                 KeyCode::Char(character) => {
                     self.filter_input.push(character);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.mode == AppMode::StaleCutoffInput {
+            match key.code {
+                KeyCode::Enter => self.apply_stale_cutoff_input(),
+                KeyCode::Esc => {
+                    self.mode = AppMode::Dashboard;
+                    self.error_message = None;
+                }
+                KeyCode::Backspace => {
+                    self.stale_cutoff_input.pop();
+                }
+                KeyCode::Char(character) => {
+                    self.stale_cutoff_input.push(character);
                 }
                 _ => {}
             }
@@ -1670,6 +1733,9 @@ impl App {
             KeyCode::Char('t') => {
                 self.focus_filter();
             }
+            KeyCode::Char('a') if self.active_tab() == Tab::Uncontacted => {
+                self.focus_stale_cutoff();
+            }
             KeyCode::Char('/') | KeyCode::Char('f') => {
                 self.open_filter_popup();
             }
@@ -1757,6 +1823,23 @@ pub fn latest_runner_contact(runner: &Runner) -> Option<DateTime<Utc>> {
         .iter()
         .filter_map(|manager| parse_contact_timestamp(manager.contacted_at.as_deref()))
         .max()
+}
+
+fn format_stale_cutoff_input(cutoff: DateTime<Utc>) -> String {
+    let local_cutoff = cutoff.with_timezone(&Local);
+    let today = Local::now().date_naive();
+    if local_cutoff.date_naive() == today {
+        local_cutoff.format("%H:%M:%S").to_string()
+    } else {
+        local_cutoff.to_rfc3339()
+    }
+}
+
+fn format_stale_cutoff_label(cutoff: DateTime<Utc>) -> String {
+    cutoff
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
 }
 
 pub fn open_in_browser(url: &str) {
@@ -2088,12 +2171,7 @@ mod tests {
         assert_eq!(Tab::Health.query_mode(), TabQueryMode::FetchRunners);
         assert_eq!(Tab::Workers.query_mode(), TabQueryMode::FetchRunners);
         assert_eq!(Tab::Offline.query_mode(), TabQueryMode::Offline);
-        assert_eq!(
-            Tab::Uncontacted.query_mode(),
-            TabQueryMode::Uncontacted {
-                threshold_secs: UNCONTACTED_THRESHOLD_SECS
-            }
-        );
+        assert_eq!(Tab::Uncontacted.query_mode(), TabQueryMode::Uncontacted);
         assert_eq!(Tab::Empty.query_mode(), TabQueryMode::Empty);
         assert_eq!(Tab::Rotating.query_mode(), TabQueryMode::Rotating);
     }
@@ -2190,6 +2268,66 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::FilterInput);
+    }
+
+    #[tokio::test]
+    async fn test_a_key_opens_stale_cutoff_input_on_stale_tab() {
+        let mut app = test_app();
+        app.select_tab(Tab::Uncontacted);
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.mode, AppMode::StaleCutoffInput);
+        assert!(app.stale_cutoff_input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stale_cutoff_enter_applies_and_refreshes() {
+        let mut app = test_app();
+        app.demo_mode = true;
+        app.select_tab(Tab::Uncontacted);
+        app.focus_stale_cutoff();
+        app.stale_cutoff_input = "11:00".to_string();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.mode, AppMode::Dashboard);
+        assert!(matches!(
+            app.stale_contact_threshold(),
+            ContactThreshold::Since(_)
+        ));
+        assert!(app.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stale_cutoff_esc_cancels_edit() {
+        let mut app = test_app();
+        let existing = Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 0).unwrap();
+        app.stale_cutoff_at = Some(existing);
+        app.focus_stale_cutoff();
+        app.stale_cutoff_input = "12:00".to_string();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.mode, AppMode::Dashboard);
+        assert_eq!(app.stale_cutoff_at, Some(existing));
+    }
+
+    #[tokio::test]
+    async fn test_blank_stale_cutoff_restores_default_threshold() {
+        let mut app = test_app();
+        app.demo_mode = true;
+        app.stale_cutoff_at = Some(Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 0).unwrap());
+        app.focus_stale_cutoff();
+        app.stale_cutoff_input.clear();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.stale_cutoff_at, None);
+        assert_eq!(
+            app.stale_contact_threshold(),
+            ContactThreshold::OlderThanSecs(UNCONTACTED_THRESHOLD_SECS)
+        );
     }
 
     #[tokio::test]
