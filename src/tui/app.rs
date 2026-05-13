@@ -1016,7 +1016,8 @@ impl App {
                         // This prevents creating `Vec<&str>` and joining strings 60 times a second
                         // in the hot UI render loop (inside `render_runner_detail`).
                         let formatted_groups = if !runner.groups.is_empty() {
-                            let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
+                            let group_names: Vec<&str> =
+                                runner.groups.iter().map(|g| g.name.as_str()).collect();
                             Some(group_names.join(", "))
                         } else {
                             None
@@ -1040,7 +1041,8 @@ impl App {
                         // This prevents creating `Vec<&str>` and joining strings 60 times a second
                         // in the hot UI render loop (inside `render_runner_detail`).
                         let formatted_groups = if !runner.groups.is_empty() {
-                            let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
+                            let group_names: Vec<&str> =
+                                runner.groups.iter().map(|g| g.name.as_str()).collect();
                             Some(group_names.join(", "))
                         } else {
                             None
