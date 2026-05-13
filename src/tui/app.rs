@@ -333,6 +333,7 @@ impl HealthSummary {
 pub struct UIRunner {
     pub runner: Runner,
     pub formatted_tags: String,
+    pub formatted_groups: Option<String>,
 }
 
 pub struct App {
@@ -662,6 +663,10 @@ impl App {
     }
 
     pub fn selected_runner(&self) -> Option<&Runner> {
+        self.selected_ui_runner().map(|u| &u.runner)
+    }
+
+    pub fn selected_ui_runner(&self) -> Option<&UIRunner> {
         if !self.has_loaded_active_tab() {
             return None;
         }
@@ -671,7 +676,7 @@ impl App {
             _ => self
                 .table_state
                 .selected()
-                .and_then(|index| self.runners.get(index).map(|u| &u.runner)),
+                .and_then(|index| self.runners.get(index)),
         }
     }
 
@@ -1006,9 +1011,20 @@ impl App {
                     .into_iter()
                     .map(|runner| {
                         let formatted_tags = runner.tag_list.join(", ");
+
+                        // ⚡ Bolt: Pre-calculate formatted groups during state update
+                        // This prevents creating `Vec<&str>` and joining strings 60 times a second
+                        // in the hot UI render loop (inside `render_runner_detail`).
+                        let formatted_groups = if !runner.groups.is_empty() {
+                            let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
+                            Some(group_names.join(", "))
+                        } else {
+                            None
+                        };
                         UIRunner {
                             runner,
                             formatted_tags,
+                            formatted_groups,
                         }
                     })
                     .collect();
@@ -1019,9 +1035,20 @@ impl App {
                     .into_iter()
                     .map(|runner| {
                         let formatted_tags = runner.tag_list.join(", ");
+
+                        // ⚡ Bolt: Pre-calculate formatted groups during state update
+                        // This prevents creating `Vec<&str>` and joining strings 60 times a second
+                        // in the hot UI render loop (inside `render_runner_detail`).
+                        let formatted_groups = if !runner.groups.is_empty() {
+                            let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
+                            Some(group_names.join(", "))
+                        } else {
+                            None
+                        };
                         UIRunner {
                             runner,
                             formatted_tags,
+                            formatted_groups,
                         }
                     })
                     .collect();
@@ -2584,6 +2611,7 @@ mod tests {
         let runner = test_runner(42, vec![test_manager(1, "online")]);
         app.runners = vec![UIRunner {
             formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
             runner,
         }];
         app.table_state.select(Some(0));
@@ -2616,6 +2644,7 @@ mod tests {
         let runner = test_runner(42, vec![test_manager(1, "online")]);
         app.runners = vec![UIRunner {
             formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
             runner,
         }];
         app.table_state.select(Some(0));
