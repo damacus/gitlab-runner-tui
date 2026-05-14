@@ -20,8 +20,11 @@ use ratatui::{
     Frame,
 };
 
-fn dash_or(value: &Option<String>) -> String {
-    value.as_deref().unwrap_or("-").to_string()
+// ⚡ Bolt: Return `&str` instead of `String`
+// This avoids calling `.to_string()` and creating heap allocations
+// for every runner row rendered in the TUI table.
+fn dash_or(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("-")
 }
 
 fn display_or_dash(value: &str) -> &str {
@@ -723,13 +726,14 @@ fn render_table_scrollbar(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
-    let Some(runner) = app.selected_runner() else {
+    let Some(ui_runner) = app.selected_ui_runner() else {
         let paragraph = Paragraph::new("Select a runner to inspect its details.")
             .style(styles::muted_style())
             .block(styles::block("Details"));
         frame.render_widget(paragraph, area);
         return;
     };
+    let runner = &ui_runner.runner;
 
     let now = Utc::now();
 
@@ -809,9 +813,8 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         items.push(ListItem::new(format!("IP: {ip}")));
     }
 
-    if !runner.groups.is_empty() {
-        let group_names: Vec<&str> = runner.groups.iter().map(|g| g.name.as_str()).collect();
-        items.push(ListItem::new(format!("Groups: {}", group_names.join(", "))));
+    if let Some(formatted_groups) = &ui_runner.formatted_groups {
+        items.push(ListItem::new(format!("Groups: {formatted_groups}")));
     }
 
     items.extend(tag_items);
@@ -1689,6 +1692,7 @@ mod tests {
         );
         app.runners = vec![crate::tui::app::UIRunner {
             formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
             runner,
         }];
         app.table_state.select(Some(0));
@@ -1769,6 +1773,7 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         );
         app.runners = vec![crate::tui::app::UIRunner {
             formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
             runner,
         }];
         app.health_summary = Some(HealthSummary {
@@ -1831,6 +1836,7 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         );
         app.runners = vec![crate::tui::app::UIRunner {
             formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
             runner,
         }];
 
