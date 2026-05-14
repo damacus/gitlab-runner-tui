@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.11...v0.1.12) (2026-05-14)
+
+
+### Performance Improvements
+
+* ⚡ Bolt: Eliminate heap allocations in TUI render loop ([#126](https://github.com/damacus/gitlab-runner-tui/issues/126)) ([61814a6](https://github.com/damacus/gitlab-runner-tui/commit/61814a6f4fa87c5b94ec07cd4fecc7c1faa8270e))
+
 ## [0.1.11](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.10...v0.1.11) (2026-05-12)
 
 
