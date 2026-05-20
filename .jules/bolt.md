@@ -18,3 +18,7 @@
 ## 2024-05-27 - CI Lint Failures and Clippy Enforcement
 **Learning:** The GitHub CI pipeline is configured to enforce Clippy linting strictly by treating warnings as errors (equivalent to `cargo clippy -- -D warnings`). The CI failure encountered (`clippy::derivable_impls`) was caused by a manual implementation of the `Default` trait that could be auto-derived.
 **Action:** Always run `cargo clippy -- -D warnings` and `cargo clippy --tests -- -D warnings` locally before considering a change complete to catch and resolve any lint warnings before they break the CI.
+
+## 2024-05-30 - O(N) String allocations in Hot TUI Loop via format!
+**Learning:** During text-wrapping computations within `render_runner_detail`, constructing candidate strings dynamically using `format!` and immediately calling `.clone()` if line limits are exceeded creates multiple throwaway string allocations per tag *per rendering tick*.
+**Action:** When computing wrapped text or dynamic strings inside hot TUI render loops, avoid using `format!` and `.clone()`. Instead, use `String::with_capacity()`, in-place concatenation (`push_str()`), and `std::mem::take()` or `std::mem::replace()` to reuse string buffers and drastically reduce heap allocations per frame.

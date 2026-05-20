@@ -746,17 +746,17 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         let prefix_len = prefix.len();
         let mut lines: Vec<ratatui::text::Line> = Vec::new();
         let mut current_line = prefix.to_string();
-        let mut first = true;
-        for tag in &runner.tag_list {
-            let sep = if first { "" } else { ", " };
-            let candidate = format!("{}{}{}", current_line, sep, tag);
-            if !first && candidate.len() > inner_width {
-                lines.push(ratatui::text::Line::from(current_line.clone()));
-                current_line = format!("{:prefix_len$}{}", "", tag);
+        for (i, tag) in runner.tag_list.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            let added_len = sep.len() + tag.len();
+            if i > 0 && current_line.len() + added_len > inner_width {
+                lines.push(ratatui::text::Line::from(std::mem::take(&mut current_line)));
+                current_line.push_str(&" ".repeat(prefix_len));
+                current_line.push_str(tag);
             } else {
-                current_line = candidate;
+                current_line.push_str(sep);
+                current_line.push_str(tag);
             }
-            first = false;
         }
         lines.push(ratatui::text::Line::from(current_line));
         vec![ListItem::new(ratatui::text::Text::from(lines))]
