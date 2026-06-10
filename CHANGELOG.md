@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.13](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.12...v0.1.13) (2026-06-10)
+
+
+### Performance Improvements
+
+* ⚡ Bolt: Eliminate string allocations inside UI render loop ([#128](https://github.com/damacus/gitlab-runner-tui/issues/128)) ([880fc52](https://github.com/damacus/gitlab-runner-tui/commit/880fc5211521ff66223068d9fbdf069f5a2c1a21))
+* ⚡ Bolt: Hoist string allocation in TUI render loop ([#135](https://github.com/damacus/gitlab-runner-tui/issues/135)) ([15b7dd0](https://github.com/damacus/gitlab-runner-tui/commit/15b7dd08176e68d55960e83e5fd8891a315681bf))
+
 ## [0.1.12](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.11...v0.1.12) (2026-05-14)
 
 
