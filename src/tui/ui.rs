@@ -746,12 +746,16 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         let prefix_len = prefix.len();
         let mut lines: Vec<ratatui::text::Line> = Vec::new();
         let mut current_line = prefix.to_string();
+
+        // ⚡ Bolt: Hoist invariant string allocation outside of the loop
+        let indent = " ".repeat(prefix_len);
+
         for (i, tag) in runner.tag_list.iter().enumerate() {
             let sep = if i == 0 { "" } else { ", " };
             let added_len = sep.len() + tag.len();
             if i > 0 && current_line.len() + added_len > inner_width {
                 lines.push(ratatui::text::Line::from(std::mem::take(&mut current_line)));
-                current_line.push_str(&" ".repeat(prefix_len));
+                current_line.push_str(&indent);
                 current_line.push_str(tag);
             } else {
                 current_line.push_str(sep);
