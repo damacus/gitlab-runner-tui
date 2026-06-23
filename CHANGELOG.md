@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.15](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.14...v0.1.15) (2026-06-23)
+
+
+### Bug Fixes
+
+* normalize runner admin browser URLs ([#144](https://github.com/damacus/gitlab-runner-tui/issues/144)) ([3a78c28](https://github.com/damacus/gitlab-runner-tui/commit/3a78c282fc31ce0c33e26e3e2a801ba144afc197))
+
 ## [0.1.14](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.13...v0.1.14) (2026-06-23)
 
 
