@@ -8,27 +8,23 @@ mod tui;
 
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
-use crate::models::runner::Runner;
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, Utc};
-use clap::Parser;
+use chrono::Local;
+use clap::{Parser, Subcommand};
 use client::GitLabClient;
-use conductor::Conductor;
+use conductor::{Conductor, QueryOutcome};
 use config::{parse_runner_targets, AppConfig, RunnerDiscoveryMode, RunnerTarget};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use models::runner::{
-    parse_manager_contacted_at, parse_stale_cutoff, ContactThreshold, RunnerFilters,
-};
+use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::StatusCode;
 use std::{
     env,
     io::{self, Write},
-    time::Instant,
 };
 use tui::{
     app::App,
@@ -36,54 +32,46 @@ use tui::{
     ui,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HeadlessCommand {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+enum CliCommand {
+    /// List all discovered runners
     Fetch,
+    /// List offline runners where all managers are offline
     Switch,
+    /// List runners whose managers have not contacted GitLab recently
     Flames,
+    /// List runners with no registered managers
     Empty,
-    Rotate,
+    /// List runners with more than one manager
+    Rotating,
 }
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, disable_version_flag = true)]
 struct Args {
-    #[arg(long, env("GITLAB_HOST"))]
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+
+    #[arg(long, env("GITLAB_HOST"), global = true)]
     host: Option<String>,
 
-    #[arg(long, env("GITLAB_TOKEN"), hide_env_values = true)]
+    #[arg(long, env("GITLAB_TOKEN"), hide_env_values = true, global = true)]
     token: Option<String>,
 
-    /// Run in headless mode, polling until timeout
-    #[arg(long)]
-    watch: bool,
-
-    /// Run once and exit (for CLI/automation use)
-    #[arg(long)]
-    once: bool,
-
-    /// Output results in JSON format
-    #[arg(long)]
-    json: bool,
-
-    /// Command to run in headless mode (fetch, switch, flames, empty, rotate)
-    #[arg(long, default_value = "rotate")]
-    command: String,
-
     /// Comma-separated tags to filter runners
-    #[arg(long)]
+    #[arg(long, global = true)]
     tags: Option<String>,
 
     /// Version prefix to filter runners (e.g. "16.11")
-    #[arg(long = "version")]
+    #[arg(long = "version", global = true)]
     version_filter: Option<String>,
 
-    /// Cutoff for --command flames: HH:MM, HH:MM:SS, or RFC3339 timestamp
-    #[arg(long)]
+    /// Cutoff for flames: HH:MM, HH:MM:SS, or RFC3339 timestamp
+    #[arg(long, global = true)]
     stale_cutoff: Option<String>,
 
     /// Run with demo fixture data (no GitLab credentials required)
-    #[arg(long)]
+    #[arg(long, global = true)]
     demo: bool,
 }
 
@@ -92,7 +80,6 @@ impl std::fmt::Debug for Args {
         f.debug_struct("Args")
             .field("host", &self.host)
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
-            .field("watch", &self.watch)
             .field("command", &self.command)
             .field("tags", &self.tags)
             .field("version", &self.version_filter)
@@ -107,6 +94,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
     let mut config = AppConfig::load().unwrap_or_default();
+    validate_cli_args(&args)?;
 
     // Setup logging
     let file_appender = tracing_appender::rolling::daily("logs", "gitlab-runner-tui.log");
@@ -116,7 +104,7 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    let is_headless = args.watch || args.once;
+    let is_command_mode = args.command.is_some();
 
     let conductor = if args.demo {
         let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
@@ -127,7 +115,7 @@ async fn main() -> Result<()> {
     } else {
         let (host, token, resolved_config) = resolve_runtime_settings(&args, config.clone())?;
         config = resolved_config;
-        if is_headless {
+        if is_command_mode {
             let client = GitLabClient::new(host, token)?;
             Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone())
         } else {
@@ -135,16 +123,17 @@ async fn main() -> Result<()> {
         }
     };
 
-    if is_headless {
-        return run_headless(
-            conductor,
-            config,
-            &args.command,
+    if let Some(command) = args.command {
+        let outcome = run_cli_query(
+            &conductor,
+            command,
             args.tags.as_deref(),
             args.version_filter.as_deref(),
-            &args,
+            args.stale_cutoff.as_deref(),
         )
-        .await;
+        .await?;
+        println!("{}", render_json_output(&outcome)?);
+        return Ok(());
     }
 
     let mut app = App::new(conductor, config);
@@ -265,7 +254,7 @@ fn resolve_runtime_settings_with_env(
         .or(env_token)
         .or_else(|| config.gitlab_token.clone());
 
-    if args.watch {
+    if args.command.is_some() {
         config.validate_runtime_settings()?;
         let token = token.context(
             "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
@@ -392,183 +381,75 @@ fn prompt_runner_targets(required: bool) -> Result<Vec<RunnerTarget>> {
     }
 }
 
-async fn run_headless(
-    conductor: Conductor,
-    config: AppConfig,
-    command: &str,
-    tags: Option<&str>,
-    version: Option<&str>,
-    args: &Args,
-) -> Result<()> {
-    let command = parse_headless_command(command)?;
-    let stale_threshold = build_stale_threshold(command, args.stale_cutoff.as_deref())?;
-    let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
-    let started_at = Instant::now();
-    let mut iteration = 0u64;
+fn validate_cli_args(args: &Args) -> Result<()> {
+    if args.command == Some(CliCommand::Rotating)
+        && build_runner_filters(args.tags.as_deref(), None)
+            .tag_list
+            .is_none()
+    {
+        anyhow::bail!("rotating requires --tags with at least one non-empty tag");
+    }
 
-    loop {
-        iteration += 1;
-        let elapsed = started_at.elapsed().as_secs();
-
-        let filters = build_runner_filters(tags, version);
-
-        let mut outcome = conductor.fetch_runners_with_metrics(filters).await?;
-
-        let runners = match command {
-            HeadlessCommand::Fetch => outcome.runners.clone(),
-            HeadlessCommand::Switch => filter_offline_runners(outcome.runners.clone()),
-            HeadlessCommand::Flames => {
-                filter_uncontacted_runners(outcome.runners.clone(), Utc::now(), stale_threshold)
-            }
-            HeadlessCommand::Empty => filter_runners_without_managers(outcome.runners.clone()),
-            HeadlessCommand::Rotate => filter_rotating_runners(outcome.runners.clone()),
-        };
-        outcome.runners = runners;
-        outcome.metrics.result_count = outcome.runners.len();
-
-        if args.json {
-            let output = serde_json::to_string_pretty(&outcome)?;
-            println!("{}", output);
-        } else {
-            println!(
-                "[{:02}:{:02}] Poll #{} — {} runners matched (command: {})",
-                elapsed / 60,
-                elapsed % 60,
-                iteration,
-                outcome.runners.len(),
-                command.as_str(),
-            );
-
-            for runner in &outcome.runners {
-                let mgr_info: Vec<String> = runner
-                    .managers
-                    .iter()
-                    .map(|m| {
-                        format!(
-                            "{}({}/{})",
-                            m.system_id,
-                            m.status,
-                            m.version.as_deref().unwrap_or("-")
-                        )
-                    })
-                    .collect();
-
-                println!(
-                    "  Runner {} [{}] managers=[{}]",
-                    runner.id,
-                    runner.tag_list.join(","),
-                    mgr_info.join(", ")
-                );
-            }
-
-            if outcome.runners.is_empty() && command == HeadlessCommand::Rotate {
-                println!("  ✓ No rotation detected — all runners have single managers");
-            }
-        }
-
-        if args.once {
-            break;
-        }
-
-        // Check timeout
-        if started_at.elapsed().as_secs() >= config.poll_timeout_secs {
-            if !args.json {
-                println!(
-                    "\nPoll timeout reached ({} seconds). Exiting.",
-                    config.poll_timeout_secs
-                );
-            }
-            break;
-        }
-
-        tokio::time::sleep(poll_interval).await;
+    if args.stale_cutoff.is_some() && args.command != Some(CliCommand::Flames) {
+        anyhow::bail!("--stale-cutoff is only supported with flames");
     }
 
     Ok(())
 }
 
-fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
-    runners
-        .into_iter()
-        .filter(|runner| {
-            !runner.managers.is_empty()
-                && runner
-                    .managers
-                    .iter()
-                    .all(|manager| manager.status == "offline")
-        })
-        .collect()
-}
+async fn run_cli_query(
+    conductor: &Conductor,
+    command: CliCommand,
+    tags: Option<&str>,
+    version: Option<&str>,
+    stale_cutoff: Option<&str>,
+) -> Result<QueryOutcome> {
+    let filters = build_runner_filters(tags, version);
 
-fn filter_uncontacted_runners(
-    runners: Vec<Runner>,
-    now: DateTime<Utc>,
-    threshold: ContactThreshold,
-) -> Vec<Runner> {
-    runners
-        .into_iter()
-        .filter(|runner| {
-            !runner.managers.is_empty()
-                && runner.managers.iter().all(|manager| {
-                    threshold.is_contact_stale(parse_manager_contacted_at(manager), now)
-                })
-        })
-        .collect()
-}
+    if command == CliCommand::Rotating && filters.tag_list.is_none() {
+        anyhow::bail!("rotating requires --tags with at least one non-empty tag");
+    }
 
-fn filter_runners_without_managers(runners: Vec<Runner>) -> Vec<Runner> {
-    runners
-        .into_iter()
-        .filter(|runner| runner.managers.is_empty())
-        .collect()
-}
+    let stale_threshold = build_stale_threshold(command, stale_cutoff)?;
 
-fn filter_rotating_runners(runners: Vec<Runner>) -> Vec<Runner> {
-    runners
-        .into_iter()
-        .filter(|runner| runner.managers.len() > 1)
-        .collect()
-}
-
-impl HeadlessCommand {
-    fn as_str(self) -> &'static str {
-        match self {
-            HeadlessCommand::Fetch => "fetch",
-            HeadlessCommand::Switch => "switch",
-            HeadlessCommand::Flames => "flames",
-            HeadlessCommand::Empty => "empty",
-            HeadlessCommand::Rotate => "rotate",
+    match command {
+        CliCommand::Fetch => conductor.fetch_runners_with_metrics(filters).await,
+        CliCommand::Switch => conductor.list_offline_runners_with_metrics(filters).await,
+        CliCommand::Flames => {
+            conductor
+                .list_uncontacted_runners_with_metrics(filters, stale_threshold)
+                .await
+        }
+        CliCommand::Empty => {
+            conductor
+                .list_runners_without_managers_with_metrics(filters)
+                .await
+        }
+        CliCommand::Rotating => {
+            conductor
+                .detect_rotating_runners_with_metrics(filters)
+                .await
         }
     }
 }
 
-fn parse_headless_command(command: &str) -> Result<HeadlessCommand> {
-    match command {
-        "fetch" => Ok(HeadlessCommand::Fetch),
-        "switch" => Ok(HeadlessCommand::Switch),
-        "flames" => Ok(HeadlessCommand::Flames),
-        "empty" => Ok(HeadlessCommand::Empty),
-        "rotate" => Ok(HeadlessCommand::Rotate),
-        other => anyhow::bail!(
-            "Unknown headless command: {}. Supported commands: fetch, switch, flames, empty, rotate",
-            other
-        ),
-    }
+fn render_json_output(outcome: &QueryOutcome) -> Result<String> {
+    Ok(serde_json::to_string_pretty(outcome)?)
 }
 
 fn build_stale_threshold(
-    command: HeadlessCommand,
+    command: CliCommand,
     stale_cutoff: Option<&str>,
 ) -> Result<ContactThreshold> {
     match (command, stale_cutoff) {
-        (HeadlessCommand::Flames, Some(input)) => {
+        (CliCommand::Flames, Some(input)) => {
             let cutoff = parse_stale_cutoff(input, Local::now())
                 .map_err(anyhow::Error::msg)?
                 .context("--stale-cutoff cannot be blank")?;
             Ok(ContactThreshold::Since(cutoff))
         }
-        (HeadlessCommand::Flames, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
-        (_, Some(_)) => anyhow::bail!("--stale-cutoff is only supported with --command flames"),
+        (CliCommand::Flames, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
+        (_, Some(_)) => anyhow::bail!("--stale-cutoff is only supported with flames"),
         (_, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
     }
 }
@@ -600,50 +481,234 @@ fn build_runner_filters(tags: Option<&str>, version: Option<&str>) -> RunnerFilt
 mod tests {
     use super::*;
     use crate::config::RunnerTargetKind;
-    use mockito::Server;
+    use mockito::{Matcher, Server};
 
-    #[test]
-    fn parses_supported_headless_commands() {
-        assert_eq!(
-            parse_headless_command("fetch").unwrap(),
-            HeadlessCommand::Fetch
+    fn list_response_body(id: u64, status: &str) -> String {
+        format!(
+            r#"{{
+                "id": {},
+                "runner_type": "group_type",
+                "active": true,
+                "paused": false,
+                "description": "Runner {}",
+                "ip_address": "",
+                "is_shared": false,
+                "status": "{}",
+                "name": null,
+                "online": {}
+            }}"#,
+            id,
+            id,
+            status,
+            status == "online"
+        )
+    }
+
+    fn detail_response_body(id: u64, status: &str, tags: &[&str]) -> String {
+        let tags_json: Vec<String> = tags.iter().map(|tag| format!("\"{}\"", tag)).collect();
+        format!(
+            r#"{{
+                "id": {},
+                "runner_type": "group_type",
+                "active": true,
+                "paused": false,
+                "description": "Runner {}",
+                "ip_address": "",
+                "is_shared": false,
+                "status": "{}",
+                "version": "17.5.0",
+                "revision": "abc123",
+                "tag_list": [{}]
+            }}"#,
+            id,
+            id,
+            status,
+            tags_json.join(", ")
+        )
+    }
+
+    fn manager_response_body(id: u64, runner_id: u64, status: &str) -> String {
+        format!(
+            r#"{{
+                "id": {},
+                "system_id": "host-{}",
+                "created_at": "2024-01-15T10:30:00.000Z",
+                "contacted_at": "2024-01-20T14:22:00.000Z",
+                "ip_address": "10.0.1.1",
+                "status": "{}",
+                "version": "17.5.0",
+                "revision": "abc123"
+            }}"#,
+            id, runner_id, status
+        )
+    }
+
+    async fn setup_command_runner_mocks(
+        server: &mut Server,
+        tags: Option<&str>,
+    ) -> Vec<mockito::Mock> {
+        let list_body = format!(
+            "[{},{}]",
+            list_response_body(1, "online"),
+            list_response_body(2, "online")
         );
-        assert_eq!(
-            parse_headless_command("switch").unwrap(),
-            HeadlessCommand::Switch
-        );
-        assert_eq!(
-            parse_headless_command("flames").unwrap(),
-            HeadlessCommand::Flames
-        );
-        assert_eq!(
-            parse_headless_command("empty").unwrap(),
-            HeadlessCommand::Empty
-        );
-        assert_eq!(
-            parse_headless_command("rotate").unwrap(),
-            HeadlessCommand::Rotate
-        );
+        let mut query_matchers = vec![
+            Matcher::UrlEncoded("per_page".into(), "100".into()),
+            Matcher::UrlEncoded("page".into(), "1".into()),
+        ];
+        if let Some(tag) = tags {
+            query_matchers.push(Matcher::UrlEncoded("tag_list[]".into(), tag.into()));
+        }
+
+        let mut mocks = vec![
+            server
+                .mock("GET", "/api/v4/groups/123/runners")
+                .match_query(Matcher::AllOf(query_matchers))
+                .with_status(200)
+                .with_body(list_body)
+                .create_async()
+                .await,
+        ];
+
+        for (id, manager_ids) in [(1, vec![11, 12]), (2, vec![21])] {
+            mocks.push(
+                server
+                    .mock("GET", format!("/api/v4/runners/{}", id).as_str())
+                    .with_status(200)
+                    .with_body(detail_response_body(id, "online", &["prod"]))
+                    .create_async()
+                    .await,
+            );
+
+            let manager_body = manager_ids
+                .into_iter()
+                .map(|manager_id| manager_response_body(manager_id, id, "online"))
+                .collect::<Vec<_>>()
+                .join(",");
+            mocks.push(
+                server
+                    .mock("GET", format!("/api/v4/runners/{}/managers", id).as_str())
+                    .with_status(200)
+                    .with_body(format!("[{}]", manager_body))
+                    .create_async()
+                    .await,
+            );
+        }
+
+        mocks
+    }
+
+    fn command_test_conductor(server_url: String) -> Conductor {
+        let client = GitLabClient::new(server_url, "test-token".to_string()).unwrap();
+        Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![RunnerTarget {
+                kind: RunnerTargetKind::Group,
+                id: "123".to_string(),
+                label: None,
+            }],
+        )
     }
 
     #[test]
-    fn rejects_non_headless_commands() {
-        let error = parse_headless_command("lights").unwrap_err().to_string();
-        assert!(error.contains("Unknown headless command: lights"));
-        assert!(error.contains("fetch, switch, flames, empty, rotate"));
+    fn parses_no_subcommand_as_tui_mode() {
+        let args = Args::try_parse_from(["gitlab-runner-tui"]).unwrap();
+
+        assert_eq!(args.command, None);
     }
 
     #[test]
-    fn rejects_headless_commands_with_case_or_whitespace_mismatch() {
-        assert!(parse_headless_command("Fetch").is_err());
-        assert!(parse_headless_command("fetch ").is_err());
-        assert!(parse_headless_command(" rotate").is_err());
+    fn parses_supported_cli_commands() {
+        for (name, expected) in [
+            ("fetch", CliCommand::Fetch),
+            ("switch", CliCommand::Switch),
+            ("flames", CliCommand::Flames),
+            ("empty", CliCommand::Empty),
+            ("rotating", CliCommand::Rotating),
+        ] {
+            let args = Args::try_parse_from(["gitlab-runner-tui", name]).unwrap();
+            assert_eq!(args.command, Some(expected));
+        }
+    }
+
+    #[test]
+    fn rejects_removed_once_json_and_command_flags() {
+        assert!(Args::try_parse_from(["gitlab-runner-tui", "--once", "fetch"]).is_err());
+        assert!(Args::try_parse_from(["gitlab-runner-tui", "--json", "fetch"]).is_err());
+        assert!(Args::try_parse_from(["gitlab-runner-tui", "--command", "fetch"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn rotating_requires_non_empty_tags_before_querying() {
+        let conductor = command_test_conductor("http://127.0.0.1:1".to_string());
+
+        let missing_error =
+            match run_cli_query(&conductor, CliCommand::Rotating, None, None, None).await {
+                Ok(_) => panic!("rotating without tags should fail"),
+                Err(error) => error.to_string(),
+            };
+        assert!(missing_error.contains("rotating requires --tags"));
+
+        let blank_error =
+            match run_cli_query(&conductor, CliCommand::Rotating, Some(" , "), None, None).await {
+                Ok(_) => panic!("rotating with blank tags should fail"),
+                Err(error) => error.to_string(),
+            };
+        assert!(blank_error.contains("rotating requires --tags"));
+    }
+
+    #[tokio::test]
+    async fn fetch_command_returns_json_envelope_for_all_runners() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_command_runner_mocks(&mut server, None).await;
+        let conductor = command_test_conductor(server.url());
+
+        let outcome = run_cli_query(&conductor, CliCommand::Fetch, None, None, None)
+            .await
+            .unwrap();
+        let output = render_json_output(&outcome).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(outcome.runners.len(), 2);
+        assert_eq!(outcome.metrics.result_count, 2);
+        assert!(parsed.get("runners").is_some());
+        assert!(parsed.get("metrics").is_some());
+        assert!(parsed.get("all_runners_fell_back").is_some());
+
+        for mock in mocks {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn rotating_command_returns_filtered_json_envelope() {
+        let mut server = Server::new_async().await;
+        let mocks = setup_command_runner_mocks(&mut server, Some("prod")).await;
+        let conductor = command_test_conductor(server.url());
+
+        let outcome = run_cli_query(&conductor, CliCommand::Rotating, Some("prod"), None, None)
+            .await
+            .unwrap();
+        let output = render_json_output(&outcome).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let runners = parsed["runners"].as_array().unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.runners[0].id, 1);
+        assert_eq!(outcome.metrics.result_count, 1);
+        assert_eq!(runners.len(), 1);
+        assert_eq!(runners[0]["id"], 1);
+
+        for mock in mocks {
+            mock.assert_async().await;
+        }
     }
 
     #[test]
     fn builds_default_stale_threshold_for_flames() {
         assert_eq!(
-            build_stale_threshold(HeadlessCommand::Flames, None).unwrap(),
+            build_stale_threshold(CliCommand::Flames, None).unwrap(),
             ContactThreshold::OlderThanSecs(3600)
         );
     }
@@ -651,24 +716,23 @@ mod tests {
     #[test]
     fn accepts_stale_cutoff_for_flames() {
         let threshold =
-            build_stale_threshold(HeadlessCommand::Flames, Some("2026-05-12T11:00:00+01:00"))
-                .unwrap();
+            build_stale_threshold(CliCommand::Flames, Some("2026-05-12T11:00:00+01:00")).unwrap();
 
         assert!(matches!(threshold, ContactThreshold::Since(_)));
     }
 
     #[test]
     fn rejects_stale_cutoff_for_non_flames_commands() {
-        let error = build_stale_threshold(HeadlessCommand::Rotate, Some("11:00"))
+        let error = build_stale_threshold(CliCommand::Rotating, Some("11:00"))
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("--stale-cutoff is only supported with --command flames"));
+        assert!(error.contains("--stale-cutoff is only supported with flames"));
     }
 
     #[test]
     fn rejects_blank_stale_cutoff_for_cli() {
-        let error = build_stale_threshold(HeadlessCommand::Flames, Some(" "))
+        let error = build_stale_threshold(CliCommand::Flames, Some(" "))
             .unwrap_err()
             .to_string();
 
@@ -757,12 +821,9 @@ mod tests {
     #[test]
     fn resolves_runtime_settings_from_config_for_interactive_mode() {
         let args = Args {
+            command: None,
             host: None,
             token: None,
-            watch: false,
-            once: false,
-            json: false,
-            command: "rotate".to_string(),
             tags: None,
             version_filter: None,
             stale_cutoff: None,
@@ -788,14 +849,11 @@ mod tests {
     }
 
     #[test]
-    fn watch_mode_requires_token_when_not_configured() {
+    fn command_mode_requires_token_when_not_configured() {
         let args = Args {
+            command: Some(CliCommand::Fetch),
             host: None,
             token: None,
-            watch: true,
-            once: false,
-            json: false,
-            command: "rotate".to_string(),
             tags: None,
             version_filter: None,
             stale_cutoff: None,
@@ -810,14 +868,11 @@ mod tests {
     }
 
     #[test]
-    fn watch_mode_allows_missing_runner_targets() {
+    fn command_mode_allows_missing_runner_targets() {
         let args = Args {
+            command: Some(CliCommand::Fetch),
             host: None,
             token: Some("glpat-test".to_string()),
-            watch: true,
-            once: false,
-            json: false,
-            command: "rotate".to_string(),
             tags: None,
             version_filter: None,
             stale_cutoff: None,
