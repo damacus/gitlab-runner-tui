@@ -1789,9 +1789,8 @@ impl App {
                         .config
                         .gitlab_host
                         .as_deref()
-                        .unwrap_or("https://gitlab.com")
-                        .trim_end_matches('/');
-                    let url = format!("{host}/admin/runners/{}", runner.id);
+                        .unwrap_or("https://gitlab.com");
+                    let url = runner_admin_url(host, runner.id);
                     open_in_browser(&url);
                 } else {
                     self.start_search();
@@ -1880,6 +1879,21 @@ pub fn open_in_browser(url: &str) {
     let _ = std::process::Command::new("cmd")
         .args(["/c", "start", url])
         .spawn();
+}
+
+pub fn runner_admin_url(host: &str, runner_id: u64) -> String {
+    let host = normalize_browser_host(host);
+    format!("{host}/admin/runners/{runner_id}")
+}
+
+fn normalize_browser_host(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('/');
+
+    if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
 }
 
 pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> String {
@@ -2604,6 +2618,22 @@ mod tests {
     #[test]
     fn test_detail_layout_mode_requires_height_for_bottom_panel() {
         assert_eq!(detail_layout_mode(100, 20), DetailLayoutMode::Compact);
+    }
+
+    #[test]
+    fn test_runner_admin_url_adds_https_for_scheme_less_host() {
+        assert_eq!(
+            runner_admin_url("gitlab.example.com/", 7411),
+            "https://gitlab.example.com/admin/runners/7411"
+        );
+    }
+
+    #[test]
+    fn test_runner_admin_url_preserves_existing_scheme() {
+        assert_eq!(
+            runner_admin_url("http://gitlab.example.com/", 7411),
+            "http://gitlab.example.com/admin/runners/7411"
+        );
     }
 
     #[test]
