@@ -20,7 +20,7 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 
 - 🚀 **Interactive TUI** - Beautiful, keyboard-driven interface built with [ratatui](https://ratatui.rs/)
 - 📊 **Seven Dashboard Tabs** - Specialized views for different runner and infrastructure metrics
-- 🔍 **Headless Watch Mode** - Run in a non-interactive loop for CI/CD or monitoring
+- 🔍 **Command Mode** - Run one-shot JSON queries for CI/CD or automation
 - 🏷️ **Tag Filtering** - Filter runners by comma-separated tags
 - ⚡ **Real-time API Queries** - Direct integration with GitLab REST API v4
 - 📊 **Detailed Results** - Tabular display of runners and managers with color highlighting
@@ -174,16 +174,16 @@ gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
 
 In addition to the interactive TUI, `gitlab-runner-tui` can function as a powerful CLI tool for automation and LLM-based workflows.
 
-### One-shot JSON Output
+### Command JSON Output
 
-Use the `--once` and `--json` flags to fetch data once and exit with a JSON response:
+Pass a command to fetch data once and exit with a JSON response:
 
 ```bash
 # Fetch all runners as JSON
-gitlab-runner-tui --once --json --command fetch
+gitlab-runner-tui fetch
 
 # List only rotating runners as JSON
-gitlab-runner-tui --once --json --command rotate
+gitlab-runner-tui rotating --tags production
 ```
 
 ### Integration with `jq`
@@ -192,18 +192,18 @@ The JSON output includes both the `runners` data and `metrics` about the query. 
 
 **List all runner IDs:**
 ```bash
-gitlab-runner-tui --once --json --command fetch | jq '.runners[].id'
+gitlab-runner-tui fetch | jq '.runners[].id'
 ```
 
 **Find runners with offline managers:**
 ```bash
-gitlab-runner-tui --once --json --command fetch | \
+gitlab-runner-tui fetch | \
   jq '.runners[] | select(.managers[].status == "offline") | {id: .id, description: .description}'
 ```
 
 **Get query performance metrics:**
 ```bash
-gitlab-runner-tui --once --json --command fetch | jq '.metrics'
+gitlab-runner-tui fetch | jq '.metrics'
 ```
 
 ### CLI Flags
@@ -212,21 +212,19 @@ gitlab-runner-tui --once --json --command fetch | jq '.metrics'
 # Override host and token
 gitlab-runner-tui --host <URL> --token <TOKEN>
 
-# Headless mode (non-interactive)
-gitlab-runner-tui --watch --command rotate --tags production
-gitlab-runner-tui --once --json --command fetch
+# Command mode (non-interactive, JSON output)
+gitlab-runner-tui fetch --tags production
+gitlab-runner-tui rotating --tags production
 
 # Use demo data for any mode (no credentials required)
 gitlab-runner-tui --demo
-gitlab-runner-tui --demo --once --json
+gitlab-runner-tui --demo fetch
 ```
 
-- `--watch`: Enable headless mode; polls and logs to stdout until timeout.
-- `--once`: Run once and exit (ideal for scripts and automation).
-- `--json`: Output results in JSON format (best combined with `--once`).
-- `--command <CMD>`: Which query to run (`fetch`, `switch`, `flames`, `empty`, `rotate`). Defaults to `rotate`.
+- Commands: `fetch`, `switch`, `flames`, `empty`, `rotating`.
 - `--tags <TAGS>`: Comma-separated list of tags for filtering.
-- `--stale-cutoff <TIME>`: For `--command flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
+- `--stale-cutoff <TIME>`: For `flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
+- `rotating` requires `--tags` to avoid estate-wide rotation scans.
 
 ## Examples
 
@@ -251,12 +249,12 @@ gitlab-runner-tui --demo --once --json
 3. Press `/` to enter tags: `alm`
 4. View runners with offline managers
 
-### Watch for runner rotation (Headless)
+### Check for runner rotation
 
-Run in a non-interactive loop to monitor runners that have multiple managers (e.g. during a migration):
+Run a non-interactive check for runners that have multiple managers (e.g. during a migration):
 
 ```bash
-gitlab-runner-tui --watch --command rotate --tags prod
+gitlab-runner-tui rotating --tags prod
 ```
 
 ### Check maintenance recovery after a cutoff
@@ -264,7 +262,7 @@ gitlab-runner-tui --watch --command rotate --tags prod
 List runners whose managers have not contacted GitLab after 11:00 local time:
 
 ```bash
-gitlab-runner-tui --once --command flames --stale-cutoff 11:00
+gitlab-runner-tui flames --stale-cutoff 11:00
 ```
 
 ## Development

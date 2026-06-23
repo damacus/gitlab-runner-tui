@@ -1,7 +1,9 @@
 use crate::client::GitLabClient;
 use crate::config::{RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind};
 use crate::metrics::{LiveQueryMetrics, QueryRequestCounts};
-use crate::models::runner::{parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters};
+use crate::models::runner::{
+    apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
@@ -80,7 +82,8 @@ impl Conductor {
         let started_at = Utc::now();
         let started = Instant::now();
         let (runners, request_counts, all_runners_fell_back) =
-            self.fetch_runners_internal(filters).await?;
+            self.fetch_runners_internal(filters.clone()).await?;
+        let runners = apply_runner_filters(&runners, &filters, Utc::now());
         let finished_at = Utc::now();
         let metrics = LiveQueryMetrics::success(
             started_at,
@@ -441,6 +444,15 @@ mod tests {
     }
 
     fn detail_response_body(id: u64, status: &str, tags: &[&str]) -> String {
+        detail_response_body_with_version(id, status, tags, "17.5.0")
+    }
+
+    fn detail_response_body_with_version(
+        id: u64,
+        status: &str,
+        tags: &[&str],
+        version: &str,
+    ) -> String {
         let tags_json: Vec<String> = tags.iter().map(|t| format!("\"{}\"", t)).collect();
         format!(
             r#"{{
@@ -452,13 +464,14 @@ mod tests {
                 "ip_address": "",
                 "is_shared": false,
                 "status": "{}",
-                "version": "17.5.0",
+                "version": "{}",
                 "revision": "abc123",
                 "tag_list": [{}]
             }}"#,
             id,
             id,
             status,
+            version,
             tags_json.join(", ")
         )
     }
@@ -686,6 +699,85 @@ mod tests {
         managers_1.assert_async().await;
         managers_2.assert_async().await;
         managers_3.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runners_applies_version_filter_client_side() {
+        let mut server = Server::new_async().await;
+
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(2, "online")
+            ))
+            .create_async()
+            .await;
+
+        let detail_1 = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body_with_version(
+                1,
+                "online",
+                &["prod"],
+                "16.11.2",
+            ))
+            .create_async()
+            .await;
+        let detail_2 = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body_with_version(
+                2,
+                "online",
+                &["prod"],
+                "17.5.0",
+            ))
+            .create_async()
+            .await;
+        let managers_1 = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let managers_2 = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+        let filters = RunnerFilters {
+            version_prefix: Some("16.11".to_string()),
+            ..RunnerFilters::default()
+        };
+
+        let outcome = conductor.fetch_runners_with_metrics(filters).await.unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.runners[0].id, 1);
+        assert_eq!(outcome.metrics.result_count, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 2);
+
+        list.assert_async().await;
+        detail_1.assert_async().await;
+        detail_2.assert_async().await;
+        managers_1.assert_async().await;
+        managers_2.assert_async().await;
     }
 
     #[tokio::test]

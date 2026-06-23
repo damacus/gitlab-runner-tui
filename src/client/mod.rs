@@ -74,9 +74,6 @@ impl GitLabClient {
                 request = request.query(&[("tag_list[]", tag)]);
             }
         }
-        if let Some(prefix) = &filters.version_prefix {
-            request = request.query(&[("version_prefix", prefix)]);
-        }
 
         let response = request.send().await.context("Failed to send request")?;
         let response = response
@@ -456,6 +453,35 @@ mod tests {
         let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
         let filters = RunnerFilters {
             status: Some("online".to_string()),
+            ..Default::default()
+        };
+        let target = group_target("123");
+
+        let runners = client
+            .fetch_target_runners(&target, &filters, 1, 100)
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+        assert!(runners.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_group_runners_does_not_send_version_filter() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Exact("per_page=100&page=1".to_string()))
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let filters = RunnerFilters {
+            version_prefix: Some("16.11".to_string()),
             ..Default::default()
         };
         let target = group_target("123");
