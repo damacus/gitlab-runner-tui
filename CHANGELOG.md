@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.13...v0.1.14) (2026-06-23)
+
+
+### Features
+
+* simplify cli command mode ([#142](https://github.com/damacus/gitlab-runner-tui/issues/142)) ([fd44c97](https://github.com/damacus/gitlab-runner-tui/commit/fd44c979a40b87eb93020952ac1cb4d8468c705d))
+
 ## [0.1.13](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.12...v0.1.13) (2026-06-10)
 
 
