@@ -710,7 +710,6 @@ mod tests {
             .match_query(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("per_page".into(), "100".into()),
                 Matcher::UrlEncoded("page".into(), "1".into()),
-                Matcher::UrlEncoded("version_prefix".into(), "16.11".into()),
             ]))
             .with_status(200)
             .with_body(format!(
