@@ -1106,10 +1106,12 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     }
 
     // --- Footer ---
-    let footer = Paragraph::new(
-        "type:search  space:toggle/remove  m:AND/OR  c:clear section  a:clear all  tab:switch  esc:close",
-    )
-    .style(styles::muted_style());
+    let footer_hint = if search_focused {
+        "type:search  backspace:delete  esc:clear/close  tab:switch  f:close"
+    } else {
+        "space:toggle/remove  m:AND/OR  c:clear section  a:clear all  tab:switch  esc:close"
+    };
+    let footer = Paragraph::new(footer_hint).style(styles::muted_style());
     frame.render_widget(footer, sections[5]);
 }
 
@@ -1342,6 +1344,14 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("Esc", styles::accent_style()),
             Span::raw(" cancel"),
         ])),
+        AppMode::FilterPopup if app.filter_popup_section == FilterPopupSection::TagSearch => {
+            Some(simple_status_hint(&[
+                ("type", "search"),
+                ("tab", "switch"),
+                ("esc", "clear/close"),
+                ("f", "close"),
+            ]))
+        }
         AppMode::FilterPopup => Some(simple_status_hint(&[
             ("f/esc", "close"),
             ("tab", "switch"),
@@ -1848,5 +1858,18 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         assert!(rendered.contains("refresh"));
         assert!(rendered.contains("filter"));
         assert!(rendered.contains("READY") || rendered.contains("runners for"));
+    }
+
+    #[test]
+    fn filter_popup_search_hints_do_not_reserve_a_key() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::TagSearch;
+
+        let rendered = render_to_string(&mut app, 120, 30);
+
+        assert!(rendered.contains("type:search"));
+        assert!(!rendered.contains("a:clear all"));
+        assert!(!rendered.contains("a clear all"));
     }
 }

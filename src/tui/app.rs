@@ -1489,9 +1489,6 @@ impl App {
                     KeyCode::Char('f') if key.modifiers.is_empty() => {
                         self.mode = AppMode::Dashboard;
                     }
-                    KeyCode::Char('a') => {
-                        self.clear_all_filters();
-                    }
                     KeyCode::Tab => {
                         self.filter_popup_section = FilterPopupSection::Selected;
                     }
@@ -2492,6 +2489,28 @@ mod tests {
         assert!(app.selected_tags.is_empty());
         assert!(app.selected_versions.is_empty());
         assert!(app.selected_status.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tag_search_accepts_a_without_clearing_filters() {
+        let mut app = test_app();
+        app.mode = AppMode::FilterPopup;
+        app.filter_popup_section = FilterPopupSection::TagSearch;
+        app.filter_input = "prod".to_owned();
+        app.selected_tags = vec!["docker".to_owned()];
+        app.selected_versions = vec!["17.5.0".to_owned()];
+        app.selected_status = Some("online".to_owned());
+
+        for character in ['e', 'x', 'a'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .await;
+        }
+
+        assert_eq!(app.tag_search_input, "exa");
+        assert_eq!(app.filter_input, "prod");
+        assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
+        assert_eq!(app.selected_versions, vec!["17.5.0".to_owned()]);
+        assert_eq!(app.selected_status, Some("online".to_owned()));
     }
 
     #[tokio::test]
