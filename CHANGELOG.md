@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.15...v0.1.16) (2026-06-24)
+
+
+### Bug Fixes
+
+* allow a in tag search filter ([#147](https://github.com/damacus/gitlab-runner-tui/issues/147)) ([e4f3a9f](https://github.com/damacus/gitlab-runner-tui/commit/e4f3a9f58316491d470e0d5e3470439ae10f71a0))
+
 ## [0.1.15](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.14...v0.1.15) (2026-06-23)
 
 
