@@ -113,6 +113,9 @@ async fn main() -> Result<()> {
         .init();
 
     let is_command_mode = args.command.is_some();
+    if is_command_mode {
+        config.validate_runtime_settings()?;
+    }
 
     let conductor = if args.demo {
         let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
@@ -1137,6 +1140,32 @@ mod tests {
         assert_eq!(host, "https://gitlab.com");
         assert_eq!(token, "glpat-test");
         assert!(config.runner_targets.is_empty());
+    }
+
+    #[test]
+    fn command_mode_rejects_invalid_rotation_wait_config() {
+        let args = Args {
+            command: Some(CliCommand::Rotating { wait: true }),
+            host: None,
+            token: Some("glpat-test".to_string()),
+            tags: Some("prod".to_string()),
+            version_filter: None,
+            stale_cutoff: None,
+            demo: false,
+        };
+        let config = AppConfig {
+            rotation_wait: crate::config::RotationWaitConfig {
+                active_contacted_within_secs: 0,
+                ..crate::config::RotationWaitConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let error = resolve_runtime_settings_with_env(&args, config, None, None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("active contact threshold"));
     }
 
     #[tokio::test]
