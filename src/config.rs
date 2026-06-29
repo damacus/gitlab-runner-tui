@@ -36,6 +36,29 @@ pub struct AppConfig {
     pub gitlab_token: Option<String>,
     pub discovery_mode: RunnerDiscoveryMode,
     pub runner_targets: Vec<RunnerTarget>,
+    pub rotation_wait: RotationWaitConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct RotationWaitConfig {
+    pub timezone: Option<String>,
+    pub rotation_window_start: Option<String>,
+    pub active_contacted_within_secs: u64,
+    pub missing_runner_grace_polls: u64,
+    pub completion_stability_polls: u64,
+}
+
+impl Default for RotationWaitConfig {
+    fn default() -> Self {
+        Self {
+            timezone: None,
+            rotation_window_start: None,
+            active_contacted_within_secs: 3600,
+            missing_runner_grace_polls: 2,
+            completion_stability_polls: 2,
+        }
+    }
 }
 
 impl std::fmt::Debug for AppConfig {
@@ -50,6 +73,7 @@ impl std::fmt::Debug for AppConfig {
             )
             .field("discovery_mode", &self.discovery_mode)
             .field("runner_targets", &self.runner_targets)
+            .field("rotation_wait", &self.rotation_wait)
             .finish()
     }
 }
@@ -63,6 +87,7 @@ impl Default for AppConfig {
             gitlab_token: None,
             discovery_mode: RunnerDiscoveryMode::AllRunners,
             runner_targets: Vec::new(),
+            rotation_wait: RotationWaitConfig::default(),
         }
     }
 }
@@ -123,6 +148,24 @@ impl AppConfig {
 
         if self.poll_interval_secs == 0 {
             anyhow::bail!("Poll interval must be greater than zero seconds");
+        }
+
+        if self.poll_timeout_secs == 0 {
+            anyhow::bail!("Poll timeout must be greater than zero seconds");
+        }
+
+        if self.rotation_wait.active_contacted_within_secs == 0 {
+            anyhow::bail!(
+                "Rotation wait active contact threshold must be greater than zero seconds"
+            );
+        }
+
+        if self.rotation_wait.missing_runner_grace_polls == 0 {
+            anyhow::bail!("Rotation wait missing runner grace polls must be greater than zero");
+        }
+
+        if self.rotation_wait.completion_stability_polls == 0 {
+            anyhow::bail!("Rotation wait completion stability polls must be greater than zero");
         }
 
         Ok(())
@@ -262,10 +305,41 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 10);
         assert_eq!(config.poll_timeout_secs, 1800);
+        assert_eq!(config.rotation_wait.active_contacted_within_secs, 3600);
+        assert_eq!(config.rotation_wait.missing_runner_grace_polls, 2);
+        assert_eq!(config.rotation_wait.completion_stability_polls, 2);
+        assert_eq!(config.rotation_wait.timezone, None);
+        assert_eq!(config.rotation_wait.rotation_window_start, None);
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
         assert!(config.runner_targets.is_empty());
+    }
+
+    #[test]
+    fn test_load_from_toml_with_rotation_wait_config() {
+        let toml_str = r#"
+            [rotation_wait]
+            timezone = "Europe/London"
+            rotation_window_start = "00:00"
+            active_contacted_within_secs = 1200
+            missing_runner_grace_polls = 3
+            completion_stability_polls = 4
+        "#;
+
+        let config = AppConfig::load_from_str(toml_str).unwrap();
+
+        assert_eq!(
+            config.rotation_wait.timezone,
+            Some("Europe/London".to_string())
+        );
+        assert_eq!(
+            config.rotation_wait.rotation_window_start,
+            Some("00:00".to_string())
+        );
+        assert_eq!(config.rotation_wait.active_contacted_within_secs, 1200);
+        assert_eq!(config.rotation_wait.missing_runner_grace_polls, 3);
+        assert_eq!(config.rotation_wait.completion_stability_polls, 4);
     }
 
     #[test]
@@ -454,6 +528,7 @@ mod tests {
                 id: "my-org/platform".to_string(),
                 label: Some("Platform".to_string()),
             }],
+            rotation_wait: RotationWaitConfig::default(),
         };
 
         let debug_output = format!("{:?}", config);
