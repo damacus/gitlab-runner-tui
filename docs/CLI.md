@@ -31,12 +31,42 @@ Example:
 gitlab-runner-tui rotating --tags production
 ```
 
+Block until matching runners have rotated:
+
+```bash
+gitlab-runner-tui rotating --wait --tags production
+```
+
+`rotating --wait` emits newline-delimited JSON progress events instead of one pretty-printed JSON document:
+
+```json
+{"event":"baseline","eligible_count":200,"completed_count":0,"pending_count":200,"stable_polls":0,"stale_excluded_count":3,"added_runner_ids":[123],"rotated_runner_ids":[],"missing_runner_ids":[],"removed_runner_ids":[],"pending_runner_ids":[123],"is_complete":false}
+{"event":"complete","eligible_count":198,"completed_count":198,"pending_count":0,"stable_polls":2,"stale_excluded_count":0,"added_runner_ids":[],"rotated_runner_ids":[],"missing_runner_ids":[],"removed_runner_ids":[],"pending_runner_ids":[],"is_complete":true}
+```
+
 Use a maintenance cutoff for stale runner checks:
 
 ```bash
 gitlab-runner-tui flames --stale-cutoff 11:00
 gitlab-runner-tui flames --stale-cutoff 2026-05-12T11:00:00+01:00
 ```
+
+## Rotation Wait Configuration
+
+The waiter uses the existing `poll_interval_secs` and `poll_timeout_secs` settings. Optional rotation-specific settings can be added to `config.toml`:
+
+```toml
+[rotation_wait]
+# Optional: defaults to the system timezone.
+timezone = "Europe/London"
+# Optional: defaults to the command start time.
+rotation_window_start = "00:00"
+active_contacted_within_secs = 3600
+missing_runner_grace_polls = 2
+completion_stability_polls = 2
+```
+
+A runner counts as rotated when a manager was created at or after the effective rotation window start, or when a later poll observes a manager `system_id` that was not present in that runner's baseline. Runners that stop appearing during deployment stop blocking after `missing_runner_grace_polls`.
 
 ---
 

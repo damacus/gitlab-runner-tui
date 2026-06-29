@@ -77,6 +77,15 @@ label = "Platform"
 [[runner_targets]]
 kind = "project"
 id = "my-org/app"
+
+[rotation_wait]
+# Optional: defaults to the system timezone.
+timezone = "Europe/London"
+# Optional: defaults to the command start time.
+rotation_window_start = "00:00"
+active_contacted_within_secs = 3600
+missing_runner_grace_polls = 2
+completion_stability_polls = 2
 ```
 
 If you launch the interactive TUI without a configured token, with a stale/invalid token, or without runner targets, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
@@ -106,6 +115,11 @@ label = "Platform"
 kind = "project"
 id = "12345"
 label = "App Project"
+
+[rotation_wait]
+active_contacted_within_secs = 3600
+missing_runner_grace_polls = 2
+completion_stability_polls = 2
 ```
 
 `runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
@@ -184,6 +198,9 @@ gitlab-runner-tui fetch
 
 # List only rotating runners as JSON
 gitlab-runner-tui rotating --tags production
+
+# Block until matching runners have rotated
+gitlab-runner-tui rotating --wait --tags production
 ```
 
 ### Integration with `jq`
@@ -215,6 +232,7 @@ gitlab-runner-tui --host <URL> --token <TOKEN>
 # Command mode (non-interactive, JSON output)
 gitlab-runner-tui fetch --tags production
 gitlab-runner-tui rotating --tags production
+gitlab-runner-tui rotating --wait --tags production
 
 # Use demo data for any mode (no credentials required)
 gitlab-runner-tui --demo
@@ -225,6 +243,7 @@ gitlab-runner-tui --demo fetch
 - `--tags <TAGS>`: Comma-separated list of tags for filtering.
 - `--stale-cutoff <TIME>`: For `flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
 - `rotating` requires `--tags` to avoid estate-wide rotation scans.
+- `rotating --wait` polls until all currently eligible matching runners have rotated, emitting newline-delimited JSON progress events.
 
 ## Examples
 
@@ -255,6 +274,12 @@ Run a non-interactive check for runners that have multiple managers (e.g. during
 
 ```bash
 gitlab-runner-tui rotating --tags prod
+```
+
+Block until matching runners have completed rotation:
+
+```bash
+gitlab-runner-tui rotating --wait --tags prod
 ```
 
 ### Check maintenance recovery after a cutoff

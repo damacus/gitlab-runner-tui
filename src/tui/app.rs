@@ -1,6 +1,8 @@
 use crate::client::GitLabClient;
 use crate::conductor::{Conductor, QueryOutcome};
-use crate::config::{format_runner_targets, parse_runner_targets, AppConfig, RunnerDiscoveryMode};
+use crate::config::{
+    format_runner_targets, parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode,
+};
 use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{
@@ -228,6 +230,7 @@ pub struct SettingsDraft {
     pub runner_targets_input: String,
     pub poll_interval_input: String,
     pub poll_timeout_input: String,
+    pub rotation_wait: RotationWaitConfig,
     pub selected_field: SettingsField,
 }
 
@@ -243,6 +246,7 @@ impl SettingsDraft {
             runner_targets_input: format_runner_targets(&config.runner_targets),
             poll_interval_input: config.poll_interval_secs.to_string(),
             poll_timeout_input: config.poll_timeout_secs.to_string(),
+            rotation_wait: config.rotation_wait.clone(),
             selected_field: SettingsField::Host,
         }
     }
@@ -272,6 +276,7 @@ impl SettingsDraft {
             gitlab_token: Some(self.token.trim().to_string()),
             discovery_mode: self.discovery_mode,
             runner_targets,
+            rotation_wait: self.rotation_wait.clone(),
         };
         config.validate_runtime_settings()?;
         Ok(config)

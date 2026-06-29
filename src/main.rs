@@ -4,16 +4,19 @@ mod config;
 mod fixtures;
 mod metrics;
 mod models;
+mod rotation_wait;
 mod tui;
 
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use client::GitLabClient;
 use conductor::{Conductor, QueryOutcome};
-use config::{parse_runner_targets, AppConfig, RunnerDiscoveryMode, RunnerTarget};
+use config::{
+    parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode, RunnerTarget,
+};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -22,6 +25,7 @@ use crossterm::{
 use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use reqwest::StatusCode;
+use rotation_wait::{RotationWaitOptions, RotationWaitState};
 use std::{
     env,
     io::{self, Write},
@@ -43,7 +47,11 @@ enum CliCommand {
     /// List runners with no registered managers
     Empty,
     /// List runners with more than one manager
-    Rotating,
+    Rotating {
+        /// Poll until all matching runners have rotated
+        #[arg(long)]
+        wait: bool,
+    },
 }
 
 #[derive(Parser)]
@@ -124,15 +132,28 @@ async fn main() -> Result<()> {
     };
 
     if let Some(command) = args.command {
-        let outcome = run_cli_query(
-            &conductor,
-            command,
-            args.tags.as_deref(),
-            args.version_filter.as_deref(),
-            args.stale_cutoff.as_deref(),
-        )
-        .await?;
-        println!("{}", render_json_output(&outcome)?);
+        if matches!(command, CliCommand::Rotating { wait: true }) {
+            let completed = run_rotation_wait(
+                &conductor,
+                &config,
+                args.tags.as_deref(),
+                args.version_filter.as_deref(),
+            )
+            .await?;
+            if !completed {
+                std::process::exit(2);
+            }
+        } else {
+            let outcome = run_cli_query(
+                &conductor,
+                command,
+                args.tags.as_deref(),
+                args.version_filter.as_deref(),
+                args.stale_cutoff.as_deref(),
+            )
+            .await?;
+            println!("{}", render_json_output(&outcome)?);
+        }
         return Ok(());
     }
 
@@ -382,7 +403,7 @@ fn prompt_runner_targets(required: bool) -> Result<Vec<RunnerTarget>> {
 }
 
 fn validate_cli_args(args: &Args) -> Result<()> {
-    if args.command == Some(CliCommand::Rotating)
+    if matches!(args.command, Some(CliCommand::Rotating { .. }))
         && build_runner_filters(args.tags.as_deref(), None)
             .tag_list
             .is_none()
@@ -406,7 +427,7 @@ async fn run_cli_query(
 ) -> Result<QueryOutcome> {
     let filters = build_runner_filters(tags, version);
 
-    if command == CliCommand::Rotating && filters.tag_list.is_none() {
+    if matches!(command, CliCommand::Rotating { .. }) && filters.tag_list.is_none() {
         anyhow::bail!("rotating requires --tags with at least one non-empty tag");
     }
 
@@ -425,10 +446,100 @@ async fn run_cli_query(
                 .list_runners_without_managers_with_metrics(filters)
                 .await
         }
-        CliCommand::Rotating => {
+        CliCommand::Rotating { .. } => {
             conductor
                 .detect_rotating_runners_with_metrics(filters)
                 .await
+        }
+    }
+}
+
+async fn run_rotation_wait(
+    conductor: &Conductor,
+    config: &AppConfig,
+    tags: Option<&str>,
+    version: Option<&str>,
+) -> Result<bool> {
+    let started_at = std::time::Instant::now();
+    let filters = build_runner_filters(tags, version);
+    let options = build_rotation_wait_options(&config.rotation_wait, Utc::now())?;
+    let mut state = RotationWaitState::new(options);
+    let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
+
+    loop {
+        let outcome = conductor
+            .fetch_runners_with_metrics(filters.clone())
+            .await?;
+        let event = state.observe(&outcome.runners, Utc::now());
+        println!("{}", serde_json::to_string(&event)?);
+
+        if event.is_complete {
+            return Ok(true);
+        }
+
+        if started_at.elapsed().as_secs() >= config.poll_timeout_secs {
+            println!("{}", serde_json::to_string(&state.timeout_event())?);
+            return Ok(false);
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+fn build_rotation_wait_options(
+    config: &RotationWaitConfig,
+    command_started_at: DateTime<Utc>,
+) -> Result<RotationWaitOptions> {
+    Ok(RotationWaitOptions {
+        rotation_window_start: resolve_rotation_window_start(config, command_started_at)?,
+        active_contacted_within_secs: config.active_contacted_within_secs,
+        missing_runner_grace_polls: config.missing_runner_grace_polls,
+        completion_stability_polls: config.completion_stability_polls,
+    })
+}
+
+fn resolve_rotation_window_start(
+    config: &RotationWaitConfig,
+    command_started_at: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    let Some(start) = config.rotation_window_start.as_deref() else {
+        return Ok(command_started_at);
+    };
+
+    let time = NaiveTime::parse_from_str(start.trim(), "%H:%M:%S")
+        .or_else(|_| NaiveTime::parse_from_str(start.trim(), "%H:%M"))
+        .with_context(|| "rotation_window_start must use HH:MM or HH:MM:SS")?;
+
+    match config
+        .timezone
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(timezone) => {
+            let tz: chrono_tz::Tz = timezone
+                .parse()
+                .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
+            let local_now = command_started_at.with_timezone(&tz);
+            let local_window = local_now.date_naive().and_time(time);
+            match tz.from_local_datetime(&local_window) {
+                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
+                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
+                LocalResult::None => anyhow::bail!(
+                    "rotation_window_start does not exist in timezone {timezone} today"
+                ),
+            }
+        }
+        None => {
+            let local_now = command_started_at.with_timezone(&Local);
+            let local_window = local_now.date_naive().and_time(time);
+            match Local.from_local_datetime(&local_window) {
+                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
+                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
+                LocalResult::None => anyhow::bail!(
+                    "rotation_window_start does not exist in the system timezone today"
+                ),
+            }
         }
     }
 }
@@ -528,18 +639,34 @@ mod tests {
     }
 
     fn manager_response_body(id: u64, runner_id: u64, status: &str) -> String {
+        manager_response_body_with_times(
+            id,
+            runner_id,
+            status,
+            "2024-01-15T10:30:00.000Z",
+            "2024-01-20T14:22:00.000Z",
+        )
+    }
+
+    fn manager_response_body_with_times(
+        id: u64,
+        runner_id: u64,
+        status: &str,
+        created_at: &str,
+        contacted_at: &str,
+    ) -> String {
         format!(
             r#"{{
                 "id": {},
                 "system_id": "host-{}",
-                "created_at": "2024-01-15T10:30:00.000Z",
-                "contacted_at": "2024-01-20T14:22:00.000Z",
+                "created_at": "{}",
+                "contacted_at": "{}",
                 "ip_address": "10.0.1.1",
                 "status": "{}",
                 "version": "17.5.0",
                 "revision": "abc123"
             }}"#,
-            id, runner_id, status
+            id, runner_id, created_at, contacted_at, status
         )
     }
 
@@ -625,11 +752,21 @@ mod tests {
             ("switch", CliCommand::Switch),
             ("flames", CliCommand::Flames),
             ("empty", CliCommand::Empty),
-            ("rotating", CliCommand::Rotating),
+            ("rotating", CliCommand::Rotating { wait: false }),
         ] {
             let args = Args::try_parse_from(["gitlab-runner-tui", name]).unwrap();
             assert_eq!(args.command, Some(expected));
         }
+    }
+
+    #[test]
+    fn parses_rotating_wait_option() {
+        let args =
+            Args::try_parse_from(["gitlab-runner-tui", "rotating", "--wait", "--tags", "prod"])
+                .unwrap();
+
+        assert_eq!(args.command, Some(CliCommand::Rotating { wait: true }));
+        assert_eq!(args.tags, Some("prod".to_string()));
     }
 
     #[test]
@@ -643,18 +780,32 @@ mod tests {
     async fn rotating_requires_non_empty_tags_before_querying() {
         let conductor = command_test_conductor("http://127.0.0.1:1".to_string());
 
-        let missing_error =
-            match run_cli_query(&conductor, CliCommand::Rotating, None, None, None).await {
-                Ok(_) => panic!("rotating without tags should fail"),
-                Err(error) => error.to_string(),
-            };
+        let missing_error = match run_cli_query(
+            &conductor,
+            CliCommand::Rotating { wait: false },
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("rotating without tags should fail"),
+            Err(error) => error.to_string(),
+        };
         assert!(missing_error.contains("rotating requires --tags"));
 
-        let blank_error =
-            match run_cli_query(&conductor, CliCommand::Rotating, Some(" , "), None, None).await {
-                Ok(_) => panic!("rotating with blank tags should fail"),
-                Err(error) => error.to_string(),
-            };
+        let blank_error = match run_cli_query(
+            &conductor,
+            CliCommand::Rotating { wait: false },
+            Some(" , "),
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("rotating with blank tags should fail"),
+            Err(error) => error.to_string(),
+        };
         assert!(blank_error.contains("rotating requires --tags"));
     }
 
@@ -687,9 +838,15 @@ mod tests {
         let mocks = setup_command_runner_mocks(&mut server, Some("prod")).await;
         let conductor = command_test_conductor(server.url());
 
-        let outcome = run_cli_query(&conductor, CliCommand::Rotating, Some("prod"), None, None)
-            .await
-            .unwrap();
+        let outcome = run_cli_query(
+            &conductor,
+            CliCommand::Rotating { wait: false },
+            Some("prod"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let output = render_json_output(&outcome).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         let runners = parsed["runners"].as_array().unwrap();
@@ -703,6 +860,62 @@ mod tests {
         for mock in mocks {
             mock.assert_async().await;
         }
+    }
+
+    #[tokio::test]
+    async fn rotating_wait_completes_for_already_rotated_runner() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+                Matcher::UrlEncoded("tag_list[]".into(), "prod".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "online", &["prod"]))
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{}]",
+                manager_response_body_with_times(
+                    11,
+                    1,
+                    "online",
+                    "2999-01-01T00:00:00Z",
+                    "2999-01-01T00:00:00Z",
+                )
+            ))
+            .create_async()
+            .await;
+        let conductor = command_test_conductor(server.url());
+        let config = AppConfig {
+            poll_interval_secs: 1,
+            poll_timeout_secs: 1,
+            rotation_wait: crate::config::RotationWaitConfig {
+                completion_stability_polls: 1,
+                ..crate::config::RotationWaitConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let completed = run_rotation_wait(&conductor, &config, Some("prod"), None)
+            .await
+            .unwrap();
+
+        assert!(completed);
+        list.assert_async().await;
+        detail.assert_async().await;
+        managers.assert_async().await;
     }
 
     #[test]
@@ -723,11 +936,50 @@ mod tests {
 
     #[test]
     fn rejects_stale_cutoff_for_non_flames_commands() {
-        let error = build_stale_threshold(CliCommand::Rotating, Some("11:00"))
+        let error = build_stale_threshold(CliCommand::Rotating { wait: false }, Some("11:00"))
             .unwrap_err()
             .to_string();
 
         assert!(error.contains("--stale-cutoff is only supported with flames"));
+    }
+
+    #[test]
+    fn rotation_wait_defaults_window_start_to_command_start() {
+        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let options = build_rotation_wait_options(
+            &crate::config::RotationWaitConfig::default(),
+            command_started_at,
+        )
+        .unwrap();
+
+        assert_eq!(options.rotation_window_start, command_started_at);
+        assert_eq!(options.active_contacted_within_secs, 3600);
+        assert_eq!(options.missing_runner_grace_polls, 2);
+        assert_eq!(options.completion_stability_polls, 2);
+    }
+
+    #[test]
+    fn rotation_wait_uses_configured_timezone_window_start() {
+        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let config = crate::config::RotationWaitConfig {
+            timezone: Some("Europe/London".to_string()),
+            rotation_window_start: Some("00:00".to_string()),
+            ..crate::config::RotationWaitConfig::default()
+        };
+
+        let options = build_rotation_wait_options(&config, command_started_at).unwrap();
+
+        assert_eq!(
+            options.rotation_window_start,
+            DateTime::parse_from_rfc3339("2026-06-28T23:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
     }
 
     #[test]
