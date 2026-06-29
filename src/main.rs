@@ -39,7 +39,11 @@ use tui::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum CliCommand {
     /// List all discovered runners
-    Fetch,
+    Fetch {
+        /// Return list endpoint data only without per-runner detail or manager requests
+        #[arg(long)]
+        summary: bool,
+    },
     /// List offline runners where all managers are offline
     Switch,
     /// List runners whose managers have not contacted GitLab recently
@@ -414,6 +418,12 @@ fn validate_cli_args(args: &Args) -> Result<()> {
         anyhow::bail!("rotating requires --tags with at least one non-empty tag");
     }
 
+    if matches!(args.command, Some(CliCommand::Fetch { summary: true }))
+        && args.version_filter.is_some()
+    {
+        anyhow::bail!("fetch --summary cannot be combined with --version");
+    }
+
     if args.stale_cutoff.is_some() && args.command != Some(CliCommand::Flames) {
         anyhow::bail!("--stale-cutoff is only supported with flames");
     }
@@ -433,11 +443,17 @@ async fn run_cli_query(
     if matches!(command, CliCommand::Rotating { .. }) && filters.tag_list.is_none() {
         anyhow::bail!("rotating requires --tags with at least one non-empty tag");
     }
+    if matches!(command, CliCommand::Fetch { summary: true }) && filters.version_prefix.is_some() {
+        anyhow::bail!("fetch --summary cannot be combined with --version");
+    }
 
     let stale_threshold = build_stale_threshold(command, stale_cutoff)?;
 
     match command {
-        CliCommand::Fetch => conductor.fetch_runners_with_metrics(filters).await,
+        CliCommand::Fetch { summary: true } => {
+            conductor.fetch_runner_summaries_with_metrics(filters).await
+        }
+        CliCommand::Fetch { summary: false } => conductor.fetch_runners_with_metrics(filters).await,
         CliCommand::Switch => conductor.list_offline_runners_with_metrics(filters).await,
         CliCommand::Flames => {
             conductor
@@ -751,7 +767,7 @@ mod tests {
     #[test]
     fn parses_supported_cli_commands() {
         for (name, expected) in [
-            ("fetch", CliCommand::Fetch),
+            ("fetch", CliCommand::Fetch { summary: false }),
             ("switch", CliCommand::Switch),
             ("flames", CliCommand::Flames),
             ("empty", CliCommand::Empty),
@@ -760,6 +776,13 @@ mod tests {
             let args = Args::try_parse_from(["gitlab-runner-tui", name]).unwrap();
             assert_eq!(args.command, Some(expected));
         }
+    }
+
+    #[test]
+    fn parses_fetch_summary_option() {
+        let args = Args::try_parse_from(["gitlab-runner-tui", "fetch", "--summary"]).unwrap();
+
+        assert_eq!(args.command, Some(CliCommand::Fetch { summary: true }));
     }
 
     #[test]
@@ -818,9 +841,15 @@ mod tests {
         let mocks = setup_command_runner_mocks(&mut server, None).await;
         let conductor = command_test_conductor(server.url());
 
-        let outcome = run_cli_query(&conductor, CliCommand::Fetch, None, None, None)
-            .await
-            .unwrap();
+        let outcome = run_cli_query(
+            &conductor,
+            CliCommand::Fetch { summary: false },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let output = render_json_output(&outcome).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -833,6 +862,85 @@ mod tests {
         for mock in mocks {
             mock.assert_async().await;
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_summary_command_returns_list_only_json_envelope() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(2, "offline")
+            ))
+            .create_async()
+            .await;
+        let conductor = command_test_conductor(server.url());
+
+        let outcome = run_cli_query(
+            &conductor,
+            CliCommand::Fetch { summary: true },
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let output = render_json_output(&outcome).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(outcome.runners.len(), 2);
+        assert_eq!(outcome.metrics.result_count, 2);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 0);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 0);
+        assert!(parsed.get("runners").is_some());
+        assert!(parsed.get("metrics").is_some());
+        assert!(parsed.get("all_runners_fell_back").is_some());
+
+        list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn fetch_summary_rejects_version_filter_before_querying() {
+        let conductor = command_test_conductor("http://127.0.0.1:1".to_string());
+
+        let error = match run_cli_query(
+            &conductor,
+            CliCommand::Fetch { summary: true },
+            None,
+            Some("17.5"),
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("fetch --summary with --version should fail"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("fetch --summary cannot be combined with --version"));
+    }
+
+    #[test]
+    fn validate_cli_args_rejects_fetch_summary_with_version() {
+        let args = Args::try_parse_from([
+            "gitlab-runner-tui",
+            "fetch",
+            "--summary",
+            "--version",
+            "17.5",
+        ])
+        .unwrap();
+
+        let error = validate_cli_args(&args).unwrap_err().to_string();
+
+        assert!(error.contains("fetch --summary cannot be combined with --version"));
     }
 
     #[tokio::test]
@@ -1106,7 +1214,7 @@ mod tests {
     #[test]
     fn command_mode_requires_token_when_not_configured() {
         let args = Args {
-            command: Some(CliCommand::Fetch),
+            command: Some(CliCommand::Fetch { summary: false }),
             host: None,
             token: None,
             tags: None,
@@ -1125,7 +1233,7 @@ mod tests {
     #[test]
     fn command_mode_allows_missing_runner_targets() {
         let args = Args {
-            command: Some(CliCommand::Fetch),
+            command: Some(CliCommand::Fetch { summary: false }),
             host: None,
             token: Some("glpat-test".to_string()),
             tags: None,

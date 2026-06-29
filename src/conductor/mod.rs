@@ -81,8 +81,9 @@ impl Conductor {
     pub async fn fetch_runners_with_metrics(&self, filters: RunnerFilters) -> Result<QueryOutcome> {
         let started_at = Utc::now();
         let started = Instant::now();
-        let (runners, request_counts, all_runners_fell_back) =
-            self.fetch_runners_internal(filters.clone()).await?;
+        let (runners, mut request_counts, all_runners_fell_back) =
+            self.discover_runners(filters.clone()).await?;
+        let runners = self.enrich_runners(runners, &mut request_counts).await;
         let runners = apply_runner_filters(&runners, &filters, Utc::now());
         let finished_at = Utc::now();
         let metrics = LiveQueryMetrics::success(
@@ -100,7 +101,32 @@ impl Conductor {
         })
     }
 
-    async fn fetch_runners_internal(
+    pub async fn fetch_runner_summaries_with_metrics(
+        &self,
+        filters: RunnerFilters,
+    ) -> Result<QueryOutcome> {
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let (runners, request_counts, all_runners_fell_back) =
+            self.discover_runners(filters.clone()).await?;
+        let runners = apply_runner_filters(&runners, &filters, Utc::now());
+        let finished_at = Utc::now();
+        let metrics = LiveQueryMetrics::success(
+            started_at,
+            finished_at,
+            started.elapsed().as_millis(),
+            runners.len(),
+            self.discovery_mode,
+            request_counts,
+        );
+        Ok(QueryOutcome {
+            runners,
+            metrics,
+            all_runners_fell_back,
+        })
+    }
+
+    async fn discover_runners(
         &self,
         filters: RunnerFilters,
     ) -> Result<(Vec<Runner>, QueryRequestCounts, bool)> {
@@ -243,11 +269,22 @@ impl Conductor {
             }
         }
 
-        let runners: Vec<Runner> = runner_map.into_values().collect();
+        Ok((
+            runner_map.into_values().collect(),
+            request_counts,
+            all_runners_fell_back,
+        ))
+    }
+
+    async fn enrich_runners(
+        &self,
+        runners: Vec<Runner>,
+        request_counts: &mut QueryRequestCounts,
+    ) -> Vec<Runner> {
         request_counts.detail_requests = runners.len();
         request_counts.manager_requests = runners.len();
 
-        let enriched: Vec<Runner> = stream::iter(runners.into_iter().map(|r| {
+        stream::iter(runners.into_iter().map(|r| {
             let client = self.client.clone();
             async move {
                 let runner_id = r.id;
@@ -277,9 +314,7 @@ impl Conductor {
         }))
         .buffer_unordered(50)
         .collect()
-        .await;
-
-        Ok((enriched, request_counts, all_runners_fell_back))
+        .await
     }
 
     pub async fn list_offline_runners_with_metrics(
@@ -699,6 +734,62 @@ mod tests {
         managers_1.assert_async().await;
         managers_2.assert_async().await;
         managers_3.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_fetch_runner_summaries_merges_targets_without_enrichment() {
+        let mut server = Server::new_async().await;
+
+        let group_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(2, "offline")
+            ))
+            .create_async()
+            .await;
+
+        let project_list = server
+            .mock("GET", "/api/v4/projects/my-org%2Fapp/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1, "online"),
+                list_response_body(3, "online")
+            ))
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123"), project_target("my-org/app")],
+        );
+
+        let outcome = conductor
+            .fetch_runner_summaries_with_metrics(RunnerFilters::default())
+            .await
+            .unwrap();
+        let ids: Vec<u64> = outcome.runners.iter().map(|runner| runner.id).collect();
+
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 2);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 0);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 0);
+
+        group_list.assert_async().await;
+        project_list.assert_async().await;
     }
 
     #[tokio::test]
