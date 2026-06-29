@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.17](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.16...v0.1.17) (2026-06-29)
+
+
+### Features
+
+* add rotating runner waiter support ([#152](https://github.com/damacus/gitlab-runner-tui/issues/152)) ([5057c4f](https://github.com/damacus/gitlab-runner-tui/commit/5057c4f0a8ed5524bb32fa74e8561bc554c9d3e8))
+
+
+### Performance Improvements
+
+* eliminate heap allocations in version sorting ([#149](https://github.com/damacus/gitlab-runner-tui/issues/149)) ([af70e54](https://github.com/damacus/gitlab-runner-tui/commit/af70e54971eccf3fe82dc7f2e9d7568d30594f27))
+
 ## [0.1.16](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.15...v0.1.16) (2026-06-24)
 
 
