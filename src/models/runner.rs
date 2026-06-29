@@ -440,18 +440,17 @@ fn compare_versions_desc(left: &str, right: &str) -> Ordering {
     compare_versions_asc(right, left)
 }
 
+// ⚡ Bolt: Compare iterators directly to prevent O(N log N) heap allocations
+// during version sorting in the hot render loop.
 fn compare_versions_asc(left: &str, right: &str) -> Ordering {
-    let left_key = version_sort_key(left);
-    let right_key = version_sort_key(right);
-    left_key.cmp(&right_key).then_with(|| left.cmp(right))
-}
-
-fn version_sort_key(version: &str) -> (Vec<u32>, String) {
-    let numeric = version
+    let left_iter = left
         .split(['.', '-', '+'])
-        .map(|segment| segment.parse::<u32>().unwrap_or(0))
-        .collect();
-    (numeric, version.to_string())
+        .map(|segment| segment.parse::<u32>().unwrap_or(0));
+    let right_iter = right
+        .split(['.', '-', '+'])
+        .map(|segment| segment.parse::<u32>().unwrap_or(0));
+
+    left_iter.cmp(right_iter).then_with(|| left.cmp(right))
 }
 
 #[cfg(test)]

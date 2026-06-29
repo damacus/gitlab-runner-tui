@@ -22,3 +22,7 @@
 ## 2024-05-30 - O(N) String allocations in Hot TUI Loop via format!
 **Learning:** During text-wrapping computations within `render_runner_detail`, constructing candidate strings dynamically using `format!` and immediately calling `.clone()` if line limits are exceeded creates multiple throwaway string allocations per tag *per rendering tick*.
 **Action:** When computing wrapped text or dynamic strings inside hot TUI render loops, avoid using `format!` and `.clone()`. Instead, use `String::with_capacity()`, in-place concatenation (`push_str()`), and `std::mem::take()` or `std::mem::replace()` to reuse string buffers and drastically reduce heap allocations per frame.
+
+## 2024-05-30 - O(N log N) Heap Allocations in Version Sorting
+**Learning:** Parsing versions by converting segments into `Vec<u32>` and comparing strings `(Vec<u32>, String)` inside a `sort_by` closure results in severe performance degradation. Because the closure is called $O(N \log N)$ times, this causes continuous memory allocation and deallocation during TUI rendering.
+**Action:** Always compare version components using lazily evaluated split iterators (e.g., `left.split('.').map(...)`). Comparing iterators natively via `.cmp()` delegating to lexicographical element comparisons avoids heap allocations completely.
