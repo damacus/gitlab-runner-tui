@@ -310,8 +310,8 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
         fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
     }
 
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination_wide: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
@@ -321,8 +321,8 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
     // duration of the call. The flags request an atomic replacement with durable write-through.
     let replaced = unsafe {
         MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };
