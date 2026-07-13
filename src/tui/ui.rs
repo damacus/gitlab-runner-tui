@@ -2007,7 +2007,7 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
 
     #[test]
     fn settings_never_render_token_plaintext_when_focused_or_unfocused() {
-        const SENTINEL: &str = "glpat-sentinel-must-never-render";
+        const SENTINEL: &str = "sentinel-token-must-never-render";
         let mut app = test_app();
         app.mode = AppMode::Settings;
         app.settings_draft.token = SENTINEL.to_string();
