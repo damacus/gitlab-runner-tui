@@ -3,7 +3,7 @@ use crate::config::{
     RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, DEFAULT_MAX_ENRICHMENT_REQUESTS,
     MAX_MAX_ENRICHMENT_REQUESTS, MIN_MAX_ENRICHMENT_REQUESTS,
 };
-use crate::metrics::{LiveQueryMetrics, QueryRequestCounts};
+use crate::metrics::{EnrichmentReuseCounts, LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{
     apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
 };
@@ -14,7 +14,12 @@ use futures::{
     TryStreamExt,
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, future::Future, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    sync::Arc,
+    time::Instant,
+};
 use tokio::sync::Semaphore;
 
 const CONFIGURED_TARGET_CONCURRENCY: usize = 4;
@@ -94,6 +99,13 @@ impl EnrichmentProfile {
         }
     }
 
+    const fn intersection(self, other: Self) -> Self {
+        Self {
+            detail: self.detail && other.detail,
+            managers: self.managers && other.managers,
+        }
+    }
+
     const fn is_empty(self) -> bool {
         !self.detail && !self.managers
     }
@@ -118,6 +130,61 @@ pub struct QueryOutcome {
 pub struct EnrichmentProgress {
     pub runner: Runner,
     pub metrics: LiveQueryMetrics,
+}
+
+#[derive(Clone, Default)]
+pub struct RunnerEnrichmentCache {
+    scope: Option<RunnerFilters>,
+    entries: HashMap<u64, CachedEnrichment>,
+}
+
+#[derive(Clone)]
+struct CachedEnrichment {
+    summary: Runner,
+    enriched: Runner,
+    available: EnrichmentProfile,
+}
+
+pub struct CachedQueryOutcome {
+    pub outcome: QueryOutcome,
+    pub cache: RunnerEnrichmentCache,
+}
+
+struct RunnerEnrichmentResult {
+    runner: Runner,
+    succeeded: EnrichmentProfile,
+}
+
+struct PendingRunnerEnrichment {
+    index: usize,
+    summary: Runner,
+    base: Runner,
+    available: EnrichmentProfile,
+    missing: EnrichmentProfile,
+}
+
+impl RunnerEnrichmentCache {
+    fn begin_scope(&mut self, scope: RunnerFilters) {
+        if self.scope.as_ref() != Some(&scope) {
+            self.entries.clear();
+            self.scope = Some(scope);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.scope = None;
+        self.entries.clear();
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Returns true when an anyhow error wraps a reqwest 403 Forbidden response.
@@ -273,9 +340,11 @@ impl Conductor {
         &self,
         summaries: QueryOutcome,
         filters: RunnerFilters,
+        cache_scope: RunnerFilters,
         profile: QueryProfile,
+        mut cache: RunnerEnrichmentCache,
         mut publish: F,
-    ) -> QueryOutcome
+    ) -> CachedQueryOutcome
     where
         F: FnMut(EnrichmentProgress) -> Fut,
         Fut: Future<Output = bool>,
@@ -285,53 +354,128 @@ impl Conductor {
 
         let started_at = summaries.metrics.started_at;
         let mut request_counts = summaries.metrics.request_counts;
+        let mut reused_enrichments = EnrichmentReuseCounts::default();
         let required_profile = profile
             .enrichment()
             .union(EnrichmentProfile::for_filters(&filters));
         let all_runners_fell_back = summaries.all_runners_fell_back;
         let mut runners = summaries.runners;
+        cache.begin_scope(cache_scope.clone());
+        let mut next_cache = RunnerEnrichmentCache {
+            scope: Some(cache_scope),
+            entries: HashMap::new(),
+        };
 
         if !required_profile.is_empty() && !runners.is_empty() && !self.demo_mode {
-            let enrichment_permits = Arc::new(Semaphore::new(self.max_enrichment_requests));
-            let runners_to_enrich = runners.clone();
-            let enrichments = stream::iter(runners_to_enrich.into_iter().enumerate().map(
-                |(index, runner)| {
-                    let client = self.client.clone();
-                    let enrichment_permits = Arc::clone(&enrichment_permits);
-                    async move {
-                        let runner = Self::enrich_runner(
-                            client,
-                            enrichment_permits,
-                            runner,
-                            required_profile,
-                        )
-                        .await;
-                        (index, runner)
+            let mut pending = Vec::new();
+            let mut publishing_open = true;
+
+            for (index, summary) in runners.clone().into_iter().enumerate() {
+                let cached = cache
+                    .entries
+                    .get(&summary.id)
+                    .filter(|entry| entry.summary == summary);
+                let (base, available) = cached.map_or_else(
+                    || (summary.clone(), EnrichmentProfile::default()),
+                    |entry| (entry.enriched.clone(), entry.available),
+                );
+                let missing = required_profile.missing_from(available);
+                let reused = required_profile.intersection(available);
+
+                if reused.detail {
+                    reused_enrichments.detail_enrichments += 1;
+                }
+                if reused.managers {
+                    reused_enrichments.manager_enrichments += 1;
+                }
+
+                if !reused.is_empty() {
+                    runners[index] = base.clone();
+                    next_cache.entries.insert(
+                        summary.id,
+                        CachedEnrichment {
+                            summary: summary.clone(),
+                            enriched: base.clone(),
+                            available,
+                        },
+                    );
+                    publishing_open = publish(EnrichmentProgress {
+                        runner: base.clone(),
+                        metrics: self.success_metrics(
+                            started_at,
+                            runners.len(),
+                            request_counts.clone(),
+                            reused_enrichments.clone(),
+                        ),
+                    })
+                    .await;
+                    if !publishing_open {
+                        break;
                     }
-                },
-            ))
+                }
+
+                if !missing.is_empty() {
+                    pending.push(PendingRunnerEnrichment {
+                        index,
+                        summary,
+                        base,
+                        available,
+                        missing,
+                    });
+                }
+            }
+
+            let enrichment_permits = Arc::new(Semaphore::new(self.max_enrichment_requests));
+            let enrichments = stream::iter(pending.into_iter().map(|pending| {
+                let client = self.client.clone();
+                let enrichment_permits = Arc::clone(&enrichment_permits);
+                async move {
+                    let result = Self::enrich_runner(
+                        client,
+                        enrichment_permits,
+                        pending.base.clone(),
+                        pending.missing,
+                    )
+                    .await;
+                    (pending, result)
+                }
+            }))
             .buffer_unordered(self.max_enrichment_requests);
             tokio::pin!(enrichments);
 
-            while let Some((index, runner)) = enrichments.next().await {
-                runners[index] = runner.clone();
-                if required_profile.detail {
-                    request_counts.detail_requests += 1;
-                }
-                if required_profile.managers {
-                    request_counts.manager_requests += 1;
-                }
+            if publishing_open {
+                while let Some((pending, result)) = enrichments.next().await {
+                    runners[pending.index] = result.runner.clone();
+                    if pending.missing.detail {
+                        request_counts.detail_requests += 1;
+                    }
+                    if pending.missing.managers {
+                        request_counts.manager_requests += 1;
+                    }
+                    let available = pending.available.union(result.succeeded);
+                    if !available.is_empty() {
+                        next_cache.entries.insert(
+                            pending.summary.id,
+                            CachedEnrichment {
+                                summary: pending.summary,
+                                enriched: result.runner.clone(),
+                                available,
+                            },
+                        );
+                    }
 
-                let progress = EnrichmentProgress {
-                    runner,
-                    metrics: self.success_metrics(
-                        started_at,
-                        runners.len(),
-                        request_counts.clone(),
-                    ),
-                };
-                if !publish(progress).await {
-                    break;
+                    let progress = EnrichmentProgress {
+                        runner: result.runner,
+                        metrics: self.success_metrics(
+                            started_at,
+                            runners.len(),
+                            request_counts.clone(),
+                            reused_enrichments.clone(),
+                        ),
+                    };
+                    if !publish(progress).await {
+                        break;
+                    }
                 }
             }
         }
@@ -341,12 +485,20 @@ impl Conductor {
             local_filters.tag_list = None;
         }
         let runners = apply_runner_filters(&runners, &local_filters, Utc::now());
-        let metrics = self.success_metrics(started_at, runners.len(), request_counts);
+        let metrics = self.success_metrics(
+            started_at,
+            runners.len(),
+            request_counts,
+            reused_enrichments,
+        );
 
-        QueryOutcome {
-            runners,
-            metrics,
-            all_runners_fell_back,
+        CachedQueryOutcome {
+            outcome: QueryOutcome {
+                runners,
+                metrics,
+                all_runners_fell_back,
+            },
+            cache: next_cache,
         }
     }
 
@@ -355,19 +507,21 @@ impl Conductor {
         started_at: DateTime<Utc>,
         result_count: usize,
         request_counts: QueryRequestCounts,
+        reused_enrichments: EnrichmentReuseCounts,
     ) -> LiveQueryMetrics {
         let finished_at = Utc::now();
         let duration_millis = finished_at
             .signed_duration_since(started_at)
             .num_milliseconds()
             .max(0) as u128;
-        LiveQueryMetrics::success(
+        LiveQueryMetrics::success_with_reuse(
             started_at,
             finished_at,
             duration_millis,
             result_count,
             self.discovery_mode,
             request_counts,
+            reused_enrichments,
         )
     }
 
@@ -514,7 +668,11 @@ impl Conductor {
         stream::iter(runners.into_iter().map(|runner| {
             let client = self.client.clone();
             let enrichment_permits = Arc::clone(&enrichment_permits);
-            Self::enrich_runner(client, enrichment_permits, runner, profile)
+            async move {
+                Self::enrich_runner(client, enrichment_permits, runner, profile)
+                    .await
+                    .runner
+            }
         }))
         .buffer_unordered(self.max_enrichment_requests)
         .collect()
@@ -526,7 +684,7 @@ impl Conductor {
         enrichment_permits: Arc<Semaphore>,
         runner: Runner,
         profile: EnrichmentProfile,
-    ) -> Runner {
+    ) -> RunnerEnrichmentResult {
         let runner_id = runner.id;
 
         let (detail_res, managers_res) = tokio::join!(
@@ -559,8 +717,12 @@ impl Conductor {
         );
 
         let existing_managers = runner.managers.clone();
+        let mut succeeded = EnrichmentProfile::default();
         let mut enriched = match detail_res {
-            Some(Ok(detail)) => detail,
+            Some(Ok(detail)) => {
+                succeeded.detail = true;
+                detail
+            }
             Some(Err(error)) => {
                 tracing::warn!(runner_id, error = %error, "Failed to fetch runner detail, using list data");
                 runner
@@ -569,7 +731,10 @@ impl Conductor {
         };
 
         match managers_res {
-            Some(Ok(managers)) => enriched.managers = managers,
+            Some(Ok(managers)) => {
+                succeeded.managers = true;
+                enriched.managers = managers;
+            }
             Some(Err(error)) => {
                 tracing::warn!(runner_id, error = %error, "Failed to fetch runner managers, keeping existing manager data");
                 enriched.managers = existing_managers;
@@ -577,7 +742,10 @@ impl Conductor {
             None => enriched.managers = existing_managers,
         }
 
-        enriched
+        RunnerEnrichmentResult {
+            runner: enriched,
+            succeeded,
+        }
     }
 
     async fn fetch_configured_target(
