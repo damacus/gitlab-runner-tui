@@ -1,0 +1,3 @@
+# Non-secret UI rendering sentinel introduced on this feature branch and removed later.
+# Remove this exact fingerprint after issue #155 rewrites the synthetic marker from history.
+0e701ca86071418b1068f2b62e23391efe57ebe6:src/tui/ui.rs:gitlab-pat:1872

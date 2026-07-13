@@ -43,6 +43,12 @@ verifying the archive's pinned SHA-256 digest. It performs two required scans:
 Both scans use 100 percent redaction. No credential values should appear in CI
 logs or reports.
 
+`.gitleaksignore` contains one exact commit/path/rule/line fingerprint for the
+non-secret UI rendering sentinel that was added and later replaced on this
+feature branch. It is not a regex or path-wide exception, and it does not match
+the historical `.env` finding. Remove the entry after issue #155 rewrites the
+synthetic marker from reachable history.
+
 These gates prevent a new secret from entering through the current file tree or
 through a commit that adds and then removes a secret within one pull request.
 They do not assert that old repository history is clean.
@@ -57,8 +63,8 @@ gitleaks git --log-opts=--all --redact=100 --no-banner --no-color .
 
 It is opt-in through `workflow_dispatch` and is not a required green check.
 Until issue #155 is completed, it is expected to fail on the genuine historical
-`.env` finding and the already-pushed historical form of a synthetic test
-fixture. Neither finding is ignored.
+`.env` finding. The already-pushed synthetic test fixture is suppressed only by
+the exact fingerprint described above; the real credential is not ignored.
 
 After the owner-coordinated rewrite in issue #155:
 

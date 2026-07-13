@@ -66,9 +66,9 @@ bypass or disable the ruleset before the force-push, then restore and verify it.
 The scan also detects the already-pushed historical form of a non-secret,
 token-shaped test sentinel in `src/tui/ui.rs`. Issue #174 replaces the current
 fixture so current-tree and new-commit scans can pass, but the old commit still
-prevents a zero-finding full-history gate. During the rewrite, remove that
-historical form too, or add a narrowly reviewed ignore for only the rewritten
-synthetic fingerprint. Never ignore the `.env` finding.
+has one exact fingerprint entry in `.gitleaksignore`. During the rewrite,
+remove that historical form too and then delete the stale ignore entry. Never
+ignore the `.env` finding.
 
 ## Required authorizations and external actions
 
