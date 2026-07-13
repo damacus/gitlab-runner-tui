@@ -948,7 +948,7 @@ impl App {
     /// Call `poll_pending_search()` on each tick to collect the result.
     pub fn start_search(&mut self) {
         if self.demo_mode {
-            return;
+            self.conductor.demo_mode = true;
         }
         self.request_redraw();
         if let Some(pending) = self.pending_search.take() {
@@ -963,6 +963,7 @@ impl App {
 
         let client = self.conductor.client().clone();
         let mode = self.conductor.discovery_mode();
+        let demo_mode = self.conductor.demo_mode;
         let targets = self.config.runner_targets.clone();
         let max_enrichment_requests = self.config.max_enrichment_requests;
         let filters = self.build_filters();
@@ -973,12 +974,13 @@ impl App {
         let (updates_tx, updates_rx) = mpsc::channel(4);
 
         let handle = tokio::spawn(async move {
-            let conductor = Conductor::new_with_mode_and_enrichment_limit(
+            let mut conductor = Conductor::new_with_mode_and_enrichment_limit(
                 client,
                 mode,
                 targets,
                 max_enrichment_requests,
             );
+            conductor.demo_mode = demo_mode;
 
             if tab == Tab::Runners {
                 match conductor
@@ -3660,14 +3662,45 @@ mod tests {
         assert!(app.take_redraw_request());
     }
 
-    #[test]
-    fn test_demo_mode_suppresses_start_search() {
+    #[tokio::test]
+    async fn demo_mode_loads_every_tab_from_the_fixture_fleet() {
         let mut app = test_app();
         app.demo_mode = true;
+        app.seed_demo_data(crate::fixtures::demo_runners());
+
+        let expected_counts = [
+            (Tab::Runners, 14),
+            (Tab::Health, 14),
+            (Tab::Offline, 6),
+            (Tab::Uncontacted, 3),
+            (Tab::Empty, 2),
+            (Tab::Rotating, 1),
+            (Tab::Workers, 13),
+        ];
+
+        for (tab, expected_count) in expected_counts {
+            app.select_tab(tab);
+            app.start_search();
+            app.await_pending_search().await;
+
+            assert_eq!(app.loaded_tab, Some(tab), "{tab} should load");
+            assert_eq!(
+                app.active_result_len(),
+                expected_count,
+                "{tab} should derive its rows from the demo fleet"
+            );
+            assert!(
+                app.error_message.is_none(),
+                "{tab} should not hit the network"
+            );
+        }
+
+        app.select_tab(Tab::Health);
         app.start_search();
-        // is_loading must stay false — no background task was spawned
-        assert!(!app.is_loading);
-        assert!(app.pending_search.is_none());
+        app.await_pending_search().await;
+        let health = app.health_summary.as_ref().expect("health summary");
+        assert_eq!(health.online_count, 6);
+        assert_eq!(health.total_count, 14);
     }
 
     #[test]
