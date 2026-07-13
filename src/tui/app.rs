@@ -3802,12 +3802,12 @@ mod tests {
         app.start_search();
         wait_for_partial_results(&mut app).await;
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !old_detail.matched_async().await {
+            while !(old_detail.matched_async().await && old_managers.matched_async().await) {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("the old enrichment should enter retry backoff");
+        .expect("the old enrichment requests should start before retry backoff is superseded");
 
         app.filter_input = "new".to_string();
         app.start_search();
@@ -4332,12 +4332,13 @@ mod tests {
         app.start_search();
         wait_for_partial_results(&mut app).await;
         tokio::time::timeout(Duration::from_secs(1), async {
-            while !retrying_detail.matched_async().await {
+            while !(retrying_detail.matched_async().await && changed_managers.matched_async().await)
+            {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("changed enrichment should enter retry backoff");
+        .expect("changed enrichment requests should start before refresh cancellation");
         changed_list.assert_async().await;
         drop(changed_list);
 
