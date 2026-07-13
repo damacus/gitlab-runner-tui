@@ -2017,6 +2017,57 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         assert!(!table_needs_scrollbar(1, Rect::new(0, 0, 120, 3)));
     }
 
+    fn assert_rounded_block_edges(buffer: &Buffer, area: Rect) {
+        let left = area.x;
+        let right = area.right() - 1;
+        let top = area.y;
+        let bottom = area.bottom() - 1;
+
+        assert_eq!(buffer[(left, top)].symbol(), "╭");
+        assert_eq!(buffer[(right, top)].symbol(), "╮");
+        assert_eq!(buffer[(left, bottom)].symbol(), "╰");
+        assert_eq!(buffer[(right, bottom)].symbol(), "╯");
+
+        for y in top + 1..bottom {
+            assert_eq!(buffer[(left, y)].symbol(), "│");
+            assert_eq!(buffer[(right, y)].symbol(), "│");
+        }
+        for x in left + 1..right {
+            assert_eq!(buffer[(x, bottom)].symbol(), "─");
+        }
+    }
+
+    #[test]
+    fn full_dashboard_uses_rounded_blocks_without_border_gaps() {
+        let mut app = test_app();
+        app.demo_mode = true;
+        app.seed_demo_data(crate::fixtures::demo_runners());
+
+        let area = Rect::new(0, 0, 180, 50);
+        let root = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(area);
+        let header =
+            Layout::horizontal([Constraint::Min(24), Constraint::Length(32)]).split(root[0]);
+        let content = Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)])
+            .split(root[2]);
+
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(&mut app, frame))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        for block_area in [header[0], header[1], content[0], content[1], root[3]] {
+            assert_rounded_block_edges(buffer, block_area);
+        }
+    }
+
     #[test]
     fn fitting_rows_keep_the_rounded_table_border() {
         let mut app = test_app();
