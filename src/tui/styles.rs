@@ -1,8 +1,7 @@
 use ratatui::{
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
-    widgets::{Block, Borders},
+    widgets::{Block, BorderType, Borders},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +125,7 @@ pub fn block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
-        .border_set(symbols::border::ONE_EIGHTH_TALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_BORDER))
         .title(Span::styled(
             format!(" {} ", title),
@@ -138,7 +137,7 @@ pub fn focused_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
-        .border_set(symbols::border::ONE_EIGHTH_TALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ACCENT))
         .title(Span::styled(
             format!(" {} ", title),
@@ -168,7 +167,7 @@ pub fn error_block(title: impl Into<String>) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
-        .border_set(symbols::border::ONE_EIGHTH_TALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ERROR))
         .title(Span::styled(
             format!(" {} ", title),
