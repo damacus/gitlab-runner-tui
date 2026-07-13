@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{ListState, ScrollbarState, TableState};
+use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
@@ -1786,15 +1787,7 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some(runner) = self.selected_runner() {
-                    let host = self
-                        .config
-                        .gitlab_host
-                        .as_deref()
-                        .unwrap_or("https://gitlab.com");
-                    let url = runner_admin_url(host, runner.id);
-                    open_in_browser(&url);
-                } else {
+                if !self.open_selected_runner_with(open_in_browser) {
                     self.start_search();
                 }
             }
@@ -1835,6 +1828,28 @@ impl App {
             _ => {}
         }
     }
+
+    fn open_selected_runner_with<F>(&mut self, launcher: F) -> bool
+    where
+        F: FnOnce(&str) -> Result<()>,
+    {
+        let Some(runner_id) = self.selected_runner().map(|runner| runner.id) else {
+            return false;
+        };
+        let host = self
+            .config
+            .gitlab_host
+            .as_deref()
+            .unwrap_or("https://gitlab.com");
+
+        match launch_runner_admin_with(host, runner_id, launcher) {
+            Ok(()) => self.error_message = None,
+            Err(error) => {
+                self.error_message = Some(format!("Failed to open runner in browser: {error:#}"));
+            }
+        }
+        true
+    }
 }
 
 pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
@@ -1872,30 +1887,131 @@ fn format_stale_cutoff_label(cutoff: DateTime<Utc>) -> String {
         .to_string()
 }
 
-pub fn open_in_browser(url: &str) {
+fn open_in_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .context("Failed to start the macOS browser launcher")?;
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .context("Failed to start the Linux browser launcher")?;
+        Ok(())
+    }
+
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", url])
-        .spawn();
+    {
+        open_with_shell_execute(url).context("Failed to start the Windows browser launcher")
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        anyhow::bail!("Opening a browser is unsupported on this platform")
+    }
 }
 
-pub fn runner_admin_url(host: &str, runner_id: u64) -> String {
-    let host = normalize_browser_host(host);
-    format!("{host}/admin/runners/{runner_id}")
+#[cfg(target_os = "windows")]
+fn open_with_shell_execute(url: &str) -> std::io::Result<()> {
+    use std::{ffi::c_void, ptr};
+
+    const SW_SHOWNORMAL: i32 = 1;
+    const OPEN: [u16; 5] = [b'o' as u16, b'p' as u16, b'e' as u16, b'n' as u16, 0];
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            window: *mut c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_command: i32,
+        ) -> isize;
+    }
+
+    let mut target: Vec<u16> = url.encode_utf16().collect();
+    if target.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "browser URL contains an interior NUL",
+        ));
+    }
+    target.push(0);
+
+    // SAFETY: Every string passed to ShellExecuteW is a NUL-terminated UTF-16 buffer that
+    // remains alive for the duration of the call. Optional pointer arguments are null.
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            OPEN.as_ptr(),
+            target.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    if result <= 32 {
+        Err(std::io::Error::other(format!(
+            "ShellExecuteW failed with code {result}"
+        )))
+    } else {
+        Ok(())
+    }
 }
 
-fn normalize_browser_host(host: &str) -> String {
+fn launch_runner_admin_with<F>(host: &str, runner_id: u64, launcher: F) -> Result<()>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    let url = runner_admin_url(host, runner_id)?;
+    launcher(url.as_str()).with_context(|| format!("Browser launch failed for {url}"))
+}
+
+pub fn runner_admin_url(host: &str, runner_id: u64) -> Result<Url> {
     let trimmed = host.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        anyhow::bail!("GitLab host must not be empty");
+    }
+    if trimmed.chars().any(|character| {
+        matches!(
+            character,
+            '&' | '|' | ';' | '$' | '`' | '<' | '>' | '\n' | '\r'
+        )
+    }) {
+        anyhow::bail!("GitLab host contains unsupported shell metacharacters");
+    }
 
-    if trimmed.contains("://") {
+    let normalized = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
         format!("https://{trimmed}")
+    };
+    let mut url = Url::parse(&normalized).context("GitLab host must be a valid URL")?;
+
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("Runner links require an HTTP or HTTPS GitLab host");
     }
+    if url.host_str().is_none() {
+        anyhow::bail!("GitLab host must include a hostname");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("GitLab host must not include credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("GitLab host must not include a query string or fragment");
+    }
+
+    let base_path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/admin/runners/{runner_id}"));
+    Ok(url)
 }
 
 pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> String {
@@ -1995,6 +2111,17 @@ mod tests {
             managers,
             groups: vec![],
         }
+    }
+
+    fn select_test_runner(app: &mut App, runner_id: u64) {
+        let runner = test_runner(runner_id, vec![test_manager(1, "online")]);
+        app.loaded_tab = Some(Tab::Runners);
+        app.runners = vec![UIRunner {
+            formatted_tags: runner.tag_list.join(", "),
+            formatted_groups: None,
+            runner,
+        }];
+        app.table_state.select(Some(0));
     }
 
     fn test_manager(id: u64, status: &str) -> RunnerManager {
@@ -2647,7 +2774,9 @@ mod tests {
     #[test]
     fn test_runner_admin_url_adds_https_for_scheme_less_host() {
         assert_eq!(
-            runner_admin_url("gitlab.example.com/", 7411),
+            runner_admin_url("gitlab.example.com/", 7411)
+                .unwrap()
+                .as_str(),
             "https://gitlab.example.com/admin/runners/7411"
         );
     }
@@ -2655,22 +2784,100 @@ mod tests {
     #[test]
     fn test_runner_admin_url_preserves_existing_scheme() {
         assert_eq!(
-            runner_admin_url("http://gitlab.example.com/", 7411),
+            runner_admin_url("http://gitlab.example.com/", 7411)
+                .unwrap()
+                .as_str(),
             "http://gitlab.example.com/admin/runners/7411"
         );
     }
 
     #[test]
+    fn test_runner_admin_url_preserves_gitlab_subpath() {
+        assert_eq!(
+            runner_admin_url("https://gitlab.example.com/gitlab/", 7411)
+                .unwrap()
+                .as_str(),
+            "https://gitlab.example.com/gitlab/admin/runners/7411"
+        );
+    }
+
+    #[test]
+    fn test_runner_admin_url_rejects_unsupported_schemes() {
+        for host in ["file:///tmp/gitlab", "ftp://gitlab.example.com"] {
+            let error = runner_admin_url(host, 7411).unwrap_err();
+            assert!(error.to_string().contains("HTTP or HTTPS"));
+        }
+    }
+
+    #[test]
+    fn test_runner_admin_url_rejects_shell_metacharacters() {
+        for host in [
+            "https://gitlab.example.com/$(touch-pwned)",
+            "https://gitlab.example.com/runner;calc",
+            "https://gitlab.example.com/runner|calc",
+        ] {
+            let error = runner_admin_url(host, 7411).unwrap_err();
+            assert!(error.to_string().contains("shell metacharacters"));
+        }
+    }
+
+    #[test]
+    fn test_injected_browser_launcher_receives_validated_url() {
+        let mut app = test_app();
+        app.config.gitlab_host = Some("https://gitlab.example.com".to_string());
+        select_test_runner(&mut app, 7411);
+        let captured_url = std::cell::RefCell::new(None);
+
+        assert!(app.open_selected_runner_with(|url| {
+            captured_url.replace(Some(url.to_string()));
+            Ok(())
+        }));
+
+        assert_eq!(
+            captured_url.into_inner().as_deref(),
+            Some("https://gitlab.example.com/admin/runners/7411")
+        );
+        assert!(app.error_message.is_none());
+    }
+
+    #[test]
+    fn test_injected_browser_launcher_failure_is_shown_in_app() {
+        let mut app = test_app();
+        select_test_runner(&mut app, 7411);
+
+        assert!(
+            app.open_selected_runner_with(|_| { anyhow::bail!("no default browser is available") })
+        );
+
+        let error = app.error_message.as_deref().unwrap();
+        assert!(error.contains("Failed to open runner in browser"));
+        assert!(error.contains("no default browser is available"));
+    }
+
+    #[test]
+    fn test_invalid_runner_url_never_reaches_injected_launcher() {
+        let mut app = test_app();
+        app.config.gitlab_host = Some("javascript://alert.example".to_string());
+        select_test_runner(&mut app, 7411);
+        let launched = std::cell::Cell::new(false);
+
+        assert!(app.open_selected_runner_with(|_| {
+            launched.set(true);
+            Ok(())
+        }));
+
+        assert!(!launched.get());
+        assert!(app
+            .error_message
+            .as_deref()
+            .unwrap()
+            .contains("HTTP or HTTPS"));
+    }
+
+    #[test]
     fn test_selected_runner_for_runner_tabs() {
         let mut app = test_app();
-        app.loaded_tab = Some(Tab::Runners);
-        let runner = test_runner(42, vec![test_manager(1, "online")]);
-        app.runners = vec![UIRunner {
-            formatted_tags: runner.tag_list.join(", "),
-            formatted_groups: None,
-            runner,
-        }];
-        app.table_state.select(Some(0));
+        select_test_runner(&mut app, 42);
 
         let runner = app.selected_runner().expect("selected runner");
         assert_eq!(runner.id, 42);

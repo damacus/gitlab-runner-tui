@@ -2,7 +2,38 @@ use crate::config::{RunnerTarget, RunnerTargetKind};
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::{Context, Result};
-use reqwest::{Client, Method, RequestBuilder};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, LINK},
+    Client, Method, RequestBuilder, Url,
+};
+use std::net::IpAddr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pagination {
+    Next(u32),
+    Complete,
+    Missing,
+    Invalid,
+}
+
+#[derive(Debug)]
+pub struct RunnerPage {
+    pub runners: Vec<Runner>,
+    pub pagination: Pagination,
+}
+
+impl RunnerPage {
+    pub fn next_page(&self, current_page: u32, per_page: u32) -> Option<u32> {
+        match self.pagination {
+            Pagination::Next(page) => Some(page),
+            Pagination::Complete | Pagination::Invalid => None,
+            Pagination::Missing if self.runners.len() >= per_page as usize => {
+                current_page.checked_add(1)
+            }
+            Pagination::Missing => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct GitLabClient {
@@ -12,7 +43,19 @@ pub struct GitLabClient {
 
 impl GitLabClient {
     pub fn new(host: String, token: String) -> Result<Self> {
-        let host = normalize_host(&host);
+        Self::new_with_insecure_loopback(host, token, cfg!(test))
+    }
+
+    /// Builds a client that may use plaintext HTTP only for loopback development endpoints.
+    ///
+    /// Production callers should use [`Self::new`]. This opt-in exists for local development
+    /// servers and test fixtures that cannot provide HTTPS.
+    pub fn new_with_insecure_loopback(
+        host: String,
+        token: String,
+        allow_insecure_loopback: bool,
+    ) -> Result<Self> {
+        let host = normalize_host(&host, allow_insecure_loopback)?;
 
         let mut headers = reqwest::header::HeaderMap::new();
         let mut auth_value =
@@ -55,7 +98,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         let mut request = self
             .request(Method::GET, endpoint)
             .query(&[("per_page", per_page), ("page", page)]);
@@ -79,12 +122,16 @@ impl GitLabClient {
         let response = response
             .error_for_status()
             .context("GitLab API request failed")?;
+        let pagination = pagination_from_headers(response.headers(), response.url(), page);
         let runners = response
             .json::<Vec<Runner>>()
             .await
             .context("Failed to deserialize runners")?;
 
-        Ok(runners)
+        Ok(RunnerPage {
+            runners,
+            pagination,
+        })
     }
 
     pub async fn fetch_available_runners(
@@ -92,7 +139,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         self.fetch_runners_from_endpoint("runners", filters, page, per_page)
             .await
     }
@@ -102,7 +149,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         self.fetch_runners_from_endpoint("runners/all", filters, page, per_page)
             .await
     }
@@ -113,7 +160,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         let endpoint = match target.kind {
             RunnerTargetKind::Group => format!("groups/{}/runners", encode_target_id(&target.id)),
             RunnerTargetKind::Project => {
@@ -131,7 +178,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         let target = RunnerTarget {
             kind: RunnerTargetKind::Group,
             id: group_id.to_string(),
@@ -147,7 +194,7 @@ impl GitLabClient {
         filters: &RunnerFilters,
         page: u32,
         per_page: u32,
-    ) -> Result<Vec<Runner>> {
+    ) -> Result<RunnerPage> {
         let target = RunnerTarget {
             kind: RunnerTargetKind::Project,
             id: project_id.to_string(),
@@ -199,6 +246,100 @@ impl GitLabClient {
     }
 }
 
+fn pagination_from_headers(
+    headers: &HeaderMap,
+    response_url: &Url,
+    current_page: u32,
+) -> Pagination {
+    if let Some(next_page) = headers.get("x-next-page") {
+        let pagination = pagination_from_x_next_page(next_page, current_page);
+        if pagination != Pagination::Invalid {
+            return pagination;
+        }
+
+        return headers
+            .get(LINK)
+            .map(|link| pagination_from_link(link, response_url, current_page))
+            .unwrap_or(Pagination::Invalid);
+    }
+
+    headers
+        .get(LINK)
+        .map(|link| pagination_from_link(link, response_url, current_page))
+        .unwrap_or(Pagination::Missing)
+}
+
+fn pagination_from_x_next_page(value: &HeaderValue, current_page: u32) -> Pagination {
+    let Ok(value) = value.to_str() else {
+        return Pagination::Invalid;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Pagination::Complete;
+    }
+
+    parse_advancing_page(value, current_page)
+}
+
+fn pagination_from_link(value: &HeaderValue, response_url: &Url, current_page: u32) -> Pagination {
+    let Ok(value) = value.to_str() else {
+        return Pagination::Invalid;
+    };
+    let mut saw_valid_link = false;
+
+    for entry in value.split(',') {
+        let Some((target, parameters)) = entry.trim().split_once('>') else {
+            continue;
+        };
+        let Some(target) = target.trim().strip_prefix('<') else {
+            continue;
+        };
+        saw_valid_link = true;
+
+        if !has_next_relation(parameters) {
+            continue;
+        }
+
+        let Ok(url) = Url::parse(target).or_else(|_| response_url.join(target)) else {
+            return Pagination::Invalid;
+        };
+        let Some(page) = url
+            .query_pairs()
+            .find_map(|(name, value)| (name == "page").then_some(value))
+        else {
+            return Pagination::Invalid;
+        };
+
+        return parse_advancing_page(&page, current_page);
+    }
+
+    if saw_valid_link {
+        Pagination::Complete
+    } else {
+        Pagination::Invalid
+    }
+}
+
+fn has_next_relation(parameters: &str) -> bool {
+    parameters.split(';').any(|parameter| {
+        let parameter = parameter.trim();
+        let Some(value) = parameter.strip_prefix("rel=") else {
+            return false;
+        };
+        value
+            .trim_matches('"')
+            .split_ascii_whitespace()
+            .any(|relation| relation.eq_ignore_ascii_case("next"))
+    })
+}
+
+fn parse_advancing_page(value: &str, current_page: u32) -> Pagination {
+    match value.parse::<u32>() {
+        Ok(page) if page > current_page => Pagination::Next(page),
+        Ok(_) | Err(_) => Pagination::Invalid,
+    }
+}
+
 fn encode_target_id(id: &str) -> String {
     let mut encoded = String::with_capacity(id.len());
     for byte in id.bytes() {
@@ -212,14 +353,50 @@ fn encode_target_id(id: &str) -> String {
     encoded
 }
 
-fn normalize_host(host: &str) -> String {
+fn normalize_host(host: &str, allow_insecure_loopback: bool) -> Result<String> {
     let trimmed = host.trim().trim_end_matches('/');
-
-    if trimmed.contains("://") {
+    let normalized = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
         format!("https://{trimmed}")
+    };
+    let url = Url::parse(&normalized).context("GitLab host must be a valid URL")?;
+
+    if url.host_str().is_none() {
+        anyhow::bail!("GitLab host must include a hostname");
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("GitLab host must not include credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("GitLab host must not include a query string or fragment");
+    }
+
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_insecure_loopback && is_loopback_host(&url) => {}
+        "http" => {
+            anyhow::bail!(
+                "GitLab host must use HTTPS; HTTP is allowed only for explicitly enabled loopback development"
+            )
+        }
+        scheme => anyhow::bail!("Unsupported GitLab host scheme: {scheme}"),
+    }
+
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    host.trim_matches(['[', ']'])
+        .parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]
@@ -244,6 +421,59 @@ mod tests {
     }
 
     #[test]
+    fn pagination_headers_distinguish_next_complete_missing_and_invalid() {
+        let response_url = Url::parse("https://gitlab.example.com/api/v4/runners?page=1").unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-next-page", HeaderValue::from_static("2"));
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Next(2)
+        );
+
+        headers.insert("x-next-page", HeaderValue::from_static(""));
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Complete
+        );
+
+        headers.clear();
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Missing
+        );
+
+        headers.insert("x-next-page", HeaderValue::from_static("not-a-page"));
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Invalid
+        );
+
+        headers.insert("x-next-page", HeaderValue::from_static("1"));
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Invalid
+        );
+    }
+
+    #[test]
+    fn pagination_uses_link_next_when_x_next_page_is_absent() {
+        let response_url = Url::parse("https://gitlab.example.com/api/v4/runners?page=1").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            LINK,
+            HeaderValue::from_static(
+                "<https://gitlab.example.com/api/v4/runners?page=2&per_page=100>; rel=\"next\"",
+            ),
+        );
+
+        assert_eq!(
+            pagination_from_headers(&headers, &response_url, 1),
+            Pagination::Next(2)
+        );
+    }
+
+    #[test]
     fn test_client_creation() {
         let client = GitLabClient::new(
             "https://gitlab.example.com".to_string(),
@@ -265,6 +495,83 @@ mod tests {
     fn test_client_creation_without_scheme() {
         let client = GitLabClient::new("gitlab.example.com".to_string(), "token".to_string());
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn strict_client_accepts_https_hosts() {
+        let client = GitLabClient::new_with_insecure_loopback(
+            "https://gitlab.example.com".to_string(),
+            "token".to_string(),
+            false,
+        );
+
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn strict_client_rejects_http_hosts_before_building_requests() {
+        for host in [
+            "http://gitlab.example.com",
+            "http://10.0.0.7",
+            "http://192.168.1.7",
+            "http://127.0.0.1:8080",
+        ] {
+            let error = GitLabClient::new_with_insecure_loopback(
+                host.to_string(),
+                "token".to_string(),
+                false,
+            )
+            .err()
+            .expect("plaintext HTTP should be rejected");
+
+            assert!(
+                error.to_string().contains("must use HTTPS"),
+                "{host}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_development_option_accepts_only_loopback_http() {
+        for host in [
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            let client = GitLabClient::new_with_insecure_loopback(
+                host.to_string(),
+                "token".to_string(),
+                true,
+            );
+            assert!(client.is_ok(), "{host} should be accepted");
+        }
+
+        for host in ["http://gitlab.example.com", "http://10.0.0.7"] {
+            let client = GitLabClient::new_with_insecure_loopback(
+                host.to_string(),
+                "token".to_string(),
+                true,
+            );
+            assert!(client.is_err(), "{host} must remain rejected");
+        }
+    }
+
+    #[test]
+    fn strict_client_rejects_unsupported_or_ambiguous_host_urls() {
+        for host in [
+            "ftp://gitlab.example.com",
+            "file:///tmp/gitlab",
+            "https://user:password@gitlab.example.com",
+            "https://gitlab.example.com?redirect=http://example.com",
+            "https://gitlab.example.com/#fragment",
+        ] {
+            let client = GitLabClient::new_with_insecure_loopback(
+                host.to_string(),
+                "token".to_string(),
+                false,
+            );
+            assert!(client.is_err(), "{host} must be rejected");
+        }
     }
 
     #[test]
@@ -401,10 +708,10 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert_eq!(runners.len(), 1);
-        assert_eq!(runners[0].id, 12345);
-        assert_eq!(runners[0].status, "online");
-        assert!(runners[0].tag_list.is_empty());
+        assert_eq!(runners.runners.len(), 1);
+        assert_eq!(runners.runners[0].id, 12345);
+        assert_eq!(runners.runners[0].status, "online");
+        assert!(runners.runners[0].tag_list.is_empty());
     }
 
     #[tokio::test]
@@ -430,7 +737,7 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert!(runners.is_empty());
+        assert!(runners.runners.is_empty());
     }
 
     #[tokio::test]
@@ -463,7 +770,7 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert!(runners.is_empty());
+        assert!(runners.runners.is_empty());
     }
 
     #[tokio::test]
@@ -492,7 +799,7 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert!(runners.is_empty());
+        assert!(runners.runners.is_empty());
     }
 
     #[tokio::test]
@@ -633,7 +940,7 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert!(runners.is_empty());
+        assert!(runners.runners.is_empty());
     }
 
     #[tokio::test]
@@ -724,7 +1031,7 @@ mod tests {
             .unwrap();
 
         mock.assert_async().await;
-        assert!(runners.is_empty());
+        assert!(runners.runners.is_empty());
     }
 
     #[tokio::test]

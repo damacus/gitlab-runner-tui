@@ -1,7 +1,7 @@
 use super::manager::RunnerManager;
 use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, time::Instant};
+use std::{cmp::Ordering, cmp::Reverse, time::Instant};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct RunnerGroup {
@@ -312,13 +312,9 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
             )
             .then_with(|| left.id.cmp(&right.id))
         }),
-        RunnerSortKey::LastContact => runners.sort_by(|left, right| {
-            compare_option_datetimes(
-                latest_runner_contact_at(left),
-                latest_runner_contact_at(right),
-            )
-            .then_with(|| left.id.cmp(&right.id))
-        }),
+        RunnerSortKey::LastContact => {
+            sort_runners_by_last_contact_with(runners, latest_runner_contact_at)
+        }
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
             // Compare tag_list vectors directly to avoid expensive allocations
             // caused by calling .join() within the O(N log N) sorting closure.
@@ -336,6 +332,13 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
     }
 
     let _ = now;
+}
+
+fn sort_runners_by_last_contact_with<F>(runners: &mut [Runner], mut contact_key: F)
+where
+    F: FnMut(&Runner) -> Option<DateTime<Utc>>,
+{
+    runners.sort_by_cached_key(|runner| (contact_key(runner).map(Reverse), runner.id));
 }
 
 #[allow(dead_code)]
@@ -850,6 +853,97 @@ mod tests {
         assert_eq!(runners[0].id, missing.id);
         assert_eq!(runners[1].id, recent.id);
         assert_eq!(runners[2].id, stale.id);
+    }
+
+    #[test]
+    fn test_cached_last_contact_sort_matches_comparator_semantics() {
+        let mut missing = create_test_runner(40, "online", Some("online"));
+        missing.managers[0].contacted_at = None;
+
+        let mut invalid = create_test_runner(30, "online", Some("online"));
+        invalid.managers[0].contacted_at = Some("not-a-timestamp".to_string());
+
+        let mut recent_first = create_test_runner(20, "online", Some("online"));
+        recent_first.managers[0].contacted_at = Some("2024-03-01T00:00:00Z".to_string());
+
+        let mut recent_tie = create_test_runner(10, "online", Some("online"));
+        recent_tie.managers[0].contacted_at = Some("2024-03-01T00:00:00Z".to_string());
+
+        let mut older = create_test_runner(50, "online", Some("online"));
+        older.managers[0].contacted_at = Some("2024-01-01T00:00:00Z".to_string());
+
+        let mut reference = [
+            older.clone(),
+            recent_first.clone(),
+            invalid.clone(),
+            missing.clone(),
+            recent_tie.clone(),
+        ];
+        reference.sort_by(|left, right| {
+            compare_option_datetimes(
+                latest_runner_contact_at(left),
+                latest_runner_contact_at(right),
+            )
+            .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut cached = [older, recent_first, invalid, missing, recent_tie];
+        sort_runners(&mut cached, RunnerSortKey::LastContact, Utc::now());
+
+        assert_eq!(
+            cached.iter().map(|runner| runner.id).collect::<Vec<_>>(),
+            reference.iter().map(|runner| runner.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            cached.iter().map(|runner| runner.id).collect::<Vec<_>>(),
+            vec![30, 40, 10, 20, 50]
+        );
+    }
+
+    #[test]
+    fn test_cached_last_contact_sort_parses_each_manager_once() {
+        use std::cell::Cell;
+
+        const RUNNER_COUNT: u64 = 32;
+        const MANAGERS_PER_RUNNER: u64 = 7;
+
+        let mut runners: Vec<_> = (0..RUNNER_COUNT)
+            .map(|runner_id| {
+                let mut runner = create_test_runner(runner_id, "online", None);
+                runner.managers = (0..MANAGERS_PER_RUNNER)
+                    .map(|manager_id| RunnerManager {
+                        id: runner_id * MANAGERS_PER_RUNNER + manager_id,
+                        system_id: format!("host-{runner_id}-{manager_id}"),
+                        created_at: "2024-01-01T00:00:00Z".to_string(),
+                        contacted_at: Some(format!("2024-01-{:02}T00:00:00Z", manager_id + 1)),
+                        ip_address: None,
+                        status: "online".to_string(),
+                        version: None,
+                        revision: None,
+                        platform: None,
+                        architecture: None,
+                    })
+                    .collect();
+                runner
+            })
+            .collect();
+        let parse_count = Cell::new(0usize);
+
+        sort_runners_by_last_contact_with(&mut runners, |runner| {
+            runner
+                .managers
+                .iter()
+                .filter_map(|manager| {
+                    parse_count.set(parse_count.get() + 1);
+                    parse_manager_contacted_at(manager)
+                })
+                .max()
+        });
+
+        assert_eq!(
+            parse_count.get(),
+            (RUNNER_COUNT * MANAGERS_PER_RUNNER) as usize
+        );
     }
 
     #[test]

@@ -6,10 +6,19 @@ use crate::models::runner::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use futures::stream::{self, StreamExt};
+use futures::{
+    stream::{self, StreamExt},
+    TryStreamExt,
+};
 use serde::Serialize;
-use std::collections::BTreeMap;
-use std::time::Instant;
+use std::{collections::BTreeMap, future::Future, time::Instant};
+
+const CONFIGURED_TARGET_CONCURRENCY: usize = 4;
+
+struct TargetFetchResult {
+    runners: Vec<Runner>,
+    list_requests: usize,
+}
 
 pub struct Conductor {
     client: GitLabClient,
@@ -147,6 +156,7 @@ impl Conductor {
             RunnerDiscoveryMode::AllRunners => {
                 // Try /runners/all (admin/auditor only). Fall back silently to /runners on 403
                 // so that non-admin tokens still work without the user changing settings.
+                request_counts.list_requests += 1;
                 let first = self.client.fetch_all_runners(&filters, 1, per_page).await;
                 let use_admin = match &first {
                     Ok(_) => true,
@@ -155,30 +165,23 @@ impl Conductor {
 
                 if use_admin {
                     let first_page = first?;
-                    request_counts.list_requests += 1;
-                    let first_len = first_page.len();
-                    for runner in first_page {
+                    let mut next_page = first_page.next_page(1, per_page);
+                    for runner in first_page.runners {
                         runner_map.entry(runner.id).or_insert(runner);
                     }
-                    if first_len >= per_page as usize {
-                        let mut page = 2;
-                        loop {
-                            request_counts.list_requests += 1;
-                            let runners = self
-                                .client
-                                .fetch_all_runners(&filters, page, per_page)
-                                .await?;
-                            if runners.is_empty() {
-                                break;
-                            }
-                            let count = runners.len();
-                            for runner in runners {
-                                runner_map.entry(runner.id).or_insert(runner);
-                            }
-                            if count < per_page as usize {
-                                break;
-                            }
-                            page += 1;
+
+                    while let Some(page) = next_page {
+                        request_counts.list_requests += 1;
+                        let runner_page = self
+                            .client
+                            .fetch_all_runners(&filters, page, per_page)
+                            .await?;
+                        if runner_page.runners.is_empty() {
+                            break;
+                        }
+                        next_page = runner_page.next_page(page, per_page);
+                        for runner in runner_page.runners {
+                            runner_map.entry(runner.id).or_insert(runner);
                         }
                     }
                 } else {
@@ -187,21 +190,21 @@ impl Conductor {
                     let mut page = 1;
                     loop {
                         request_counts.list_requests += 1;
-                        let runners = self
+                        let runner_page = self
                             .client
                             .fetch_available_runners(&filters, page, per_page)
                             .await?;
-                        if runners.is_empty() {
+                        if runner_page.runners.is_empty() {
                             break;
                         }
-                        let count = runners.len();
-                        for runner in runners {
+                        let next_page = runner_page.next_page(page, per_page);
+                        for runner in runner_page.runners {
                             runner_map.entry(runner.id).or_insert(runner);
                         }
-                        if count < per_page as usize {
+                        let Some(next_page) = next_page else {
                             break;
-                        }
-                        page += 1;
+                        };
+                        page = next_page;
                     }
                 }
             }
@@ -210,62 +213,41 @@ impl Conductor {
 
                 loop {
                     request_counts.list_requests += 1;
-                    let runners = self
+                    let runner_page = self
                         .client
                         .fetch_available_runners(&filters, page, per_page)
                         .await?;
-                    if runners.is_empty() {
+                    if runner_page.runners.is_empty() {
                         break;
                     }
 
-                    let count = runners.len();
-                    for runner in runners {
+                    let next_page = runner_page.next_page(page, per_page);
+                    for runner in runner_page.runners {
                         runner_map.entry(runner.id).or_insert(runner);
                     }
 
-                    if count < per_page as usize {
+                    let Some(next_page) = next_page else {
                         break;
-                    }
-                    page += 1;
+                    };
+                    page = next_page;
                 }
             }
             RunnerDiscoveryMode::ConfiguredTargets => {
-                for target in &self.runner_targets {
-                    let mut page = 1;
-
-                    loop {
-                        request_counts.list_requests += 1;
-                        let runners = match target.kind {
-                            RunnerTargetKind::Group => {
-                                self.client
-                                    .fetch_group_runners(&target.id, &filters, page, per_page)
-                                    .await?
-                            }
-                            RunnerTargetKind::Project => {
-                                self.client
-                                    .fetch_project_runners(&target.id, &filters, page, per_page)
-                                    .await?
-                            }
-                        };
-                        if runners.is_empty() {
-                            break;
-                        }
-
-                        let count = runners.len();
-                        for runner in runners {
-                            if let Some(existing) = runner_map.get_mut(&runner.id) {
-                                merge_runner(existing, runner);
-                            } else {
-                                runner_map.insert(runner.id, runner);
-                            }
-                        }
-
-                        if count < per_page as usize {
-                            break;
-                        }
-                        page += 1;
-                    }
-                }
+                let client = self.client.clone();
+                let target_filters = filters.clone();
+                let target_fetches = self.runner_targets.iter().cloned().map(move |target| {
+                    Self::fetch_configured_target(
+                        client.clone(),
+                        target,
+                        target_filters.clone(),
+                        per_page,
+                    )
+                });
+                let target_results =
+                    collect_bounded_in_input_order(target_fetches, CONFIGURED_TARGET_CONCURRENCY)
+                        .await?;
+                request_counts.list_requests +=
+                    merge_configured_target_results(target_results, &mut runner_map);
             }
         }
 
@@ -315,6 +297,49 @@ impl Conductor {
         .buffer_unordered(50)
         .collect()
         .await
+    }
+
+    async fn fetch_configured_target(
+        client: GitLabClient,
+        target: RunnerTarget,
+        filters: RunnerFilters,
+        per_page: u32,
+    ) -> Result<TargetFetchResult> {
+        let mut page = 1;
+        let mut list_requests = 0;
+        let mut runners = Vec::new();
+
+        loop {
+            list_requests += 1;
+            let runner_page = match target.kind {
+                RunnerTargetKind::Group => {
+                    client
+                        .fetch_group_runners(&target.id, &filters, page, per_page)
+                        .await?
+                }
+                RunnerTargetKind::Project => {
+                    client
+                        .fetch_project_runners(&target.id, &filters, page, per_page)
+                        .await?
+                }
+            };
+            if runner_page.runners.is_empty() {
+                break;
+            }
+
+            let next_page = runner_page.next_page(page, per_page);
+            runners.extend(runner_page.runners);
+
+            let Some(next_page) = next_page else {
+                break;
+            };
+            page = next_page;
+        }
+
+        Ok(TargetFetchResult {
+            runners,
+            list_requests,
+        })
     }
 
     pub async fn list_offline_runners_with_metrics(
@@ -369,6 +394,47 @@ impl Conductor {
         outcome.metrics.result_count = outcome.runners.len();
         Ok(outcome)
     }
+}
+
+async fn collect_bounded_in_input_order<I, F, T>(futures: I, concurrency: usize) -> Result<Vec<T>>
+where
+    I: IntoIterator<Item = F>,
+    F: Future<Output = Result<T>>,
+{
+    assert!(concurrency > 0, "target concurrency must be non-zero");
+
+    let mut completed: Vec<(usize, T)> = stream::iter(
+        futures
+            .into_iter()
+            .enumerate()
+            .map(|(index, future)| async move { future.await.map(|value| (index, value)) }),
+    )
+    .buffer_unordered(concurrency)
+    .try_collect()
+    .await?;
+    completed.sort_by_key(|(index, _)| *index);
+
+    Ok(completed.into_iter().map(|(_, value)| value).collect())
+}
+
+fn merge_configured_target_results(
+    target_results: Vec<TargetFetchResult>,
+    runner_map: &mut BTreeMap<u64, Runner>,
+) -> usize {
+    let mut list_requests = 0;
+
+    for target_result in target_results {
+        list_requests += target_result.list_requests;
+        for runner in target_result.runners {
+            if let Some(existing) = runner_map.get_mut(&runner.id) {
+                merge_runner(existing, runner);
+            } else {
+                runner_map.insert(runner.id, runner);
+            }
+        }
+    }
+
+    list_requests
 }
 
 fn is_runner_offline(runner: &Runner) -> bool {
@@ -456,6 +522,11 @@ mod tests {
     use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::models::manager::RunnerManager;
     use mockito::{Matcher, Server};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+    use tokio::sync::Semaphore;
 
     fn list_response_body(id: u64, status: &str) -> String {
         format!(
@@ -571,6 +642,50 @@ mod tests {
         }
     }
 
+    fn repeated_list_body(id: u64, count: usize) -> String {
+        let runner = list_response_body(id, "online");
+        format!("[{}]", vec![runner; count].join(","))
+    }
+
+    async fn setup_simple_enrichment_mocks(
+        server: &mut Server,
+        runner_ids: &[u64],
+    ) -> Vec<mockito::Mock> {
+        let mut mocks = Vec::new();
+        for runner_id in runner_ids {
+            mocks.push(
+                server
+                    .mock("GET", format!("/api/v4/runners/{runner_id}").as_str())
+                    .with_status(200)
+                    .with_body(detail_response_body(*runner_id, "online", &[]))
+                    .create_async()
+                    .await,
+            );
+            mocks.push(
+                server
+                    .mock(
+                        "GET",
+                        format!("/api/v4/runners/{runner_id}/managers").as_str(),
+                    )
+                    .with_status(200)
+                    .with_body("[]")
+                    .create_async()
+                    .await,
+            );
+        }
+        mocks
+    }
+
+    async fn wait_for_counter(counter: &AtomicUsize, expected: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while counter.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("bounded fetches should start promptly");
+    }
+
     async fn setup_runner_mocks(
         server: &mut Server,
         runners: &[RunnerSpec<'_>],
@@ -629,12 +744,142 @@ mod tests {
     #[test]
     fn test_new() {
         let client =
-            GitLabClient::new("http://example.com".to_string(), "token".to_string()).unwrap();
+            GitLabClient::new("https://example.com".to_string(), "token".to_string()).unwrap();
         let _conductor = Conductor::new_with_mode(
             client,
             RunnerDiscoveryMode::ConfiguredTargets,
             vec![group_target("123")],
         );
+    }
+
+    #[tokio::test]
+    async fn bounded_target_collector_runs_independent_targets_concurrently() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let task_started = Arc::clone(&started);
+        let task_gate = Arc::clone(&gate);
+        let futures = (0..2).map(move |index| {
+            let started = Arc::clone(&task_started);
+            let gate = Arc::clone(&task_gate);
+            async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _permit = gate.acquire().await.expect("test gate should remain open");
+                Ok::<_, anyhow::Error>(index)
+            }
+        });
+        let collector = tokio::spawn(collect_bounded_in_input_order(futures, 2));
+
+        wait_for_counter(&started, 2).await;
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        gate.add_permits(2);
+
+        assert_eq!(collector.await.unwrap().unwrap(), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn configured_target_concurrency_never_exceeds_named_limit() {
+        let total = CONFIGURED_TARGET_CONCURRENCY + 2;
+        let started = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let task_started = Arc::clone(&started);
+        let task_gate = Arc::clone(&gate);
+        let futures = (0..total).map(move |index| {
+            let started = Arc::clone(&task_started);
+            let gate = Arc::clone(&task_gate);
+            async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _permit = gate.acquire().await.expect("test gate should remain open");
+                Ok::<_, anyhow::Error>(index)
+            }
+        });
+        let collector = tokio::spawn(collect_bounded_in_input_order(
+            futures,
+            CONFIGURED_TARGET_CONCURRENCY,
+        ));
+
+        wait_for_counter(&started, CONFIGURED_TARGET_CONCURRENCY).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            CONFIGURED_TARGET_CONCURRENCY
+        );
+        gate.add_permits(total);
+
+        assert_eq!(
+            collector.await.unwrap().unwrap(),
+            (0..total).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_order_does_not_change_duplicate_merge_or_output_order() {
+        let mut first_duplicate = test_runner(1, &[("online", None)]);
+        first_duplicate.description = Some("first target".to_string());
+        first_duplicate.tag_list = vec!["first".to_string()];
+        let mut second_duplicate = test_runner(1, &[("online", None)]);
+        second_duplicate.description = Some("second target".to_string());
+        second_duplicate.tag_list = vec!["second".to_string()];
+        let runner_two = test_runner(2, &[]);
+        let completion_order = Arc::new(Mutex::new(Vec::new()));
+        let inputs = vec![
+            (
+                0,
+                std::time::Duration::from_millis(30),
+                TargetFetchResult {
+                    runners: vec![runner_two, first_duplicate],
+                    list_requests: 2,
+                },
+            ),
+            (
+                1,
+                std::time::Duration::ZERO,
+                TargetFetchResult {
+                    runners: vec![second_duplicate],
+                    list_requests: 1,
+                },
+            ),
+        ];
+        let futures = inputs.into_iter().map(|(index, delay, result)| {
+            let completion_order = Arc::clone(&completion_order);
+            async move {
+                tokio::time::sleep(delay).await;
+                completion_order.lock().unwrap().push(index);
+                Ok::<_, anyhow::Error>(result)
+            }
+        });
+
+        let results = collect_bounded_in_input_order(futures, 2).await.unwrap();
+        assert_eq!(*completion_order.lock().unwrap(), vec![1, 0]);
+
+        let mut runner_map = BTreeMap::new();
+        let list_requests = merge_configured_target_results(results, &mut runner_map);
+        assert_eq!(list_requests, 3);
+        assert_eq!(runner_map.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        let duplicate = runner_map.get(&1).unwrap();
+        assert_eq!(duplicate.description.as_deref(), Some("first target"));
+        assert_eq!(duplicate.tag_list, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn bounded_target_collector_returns_first_error_without_partial_results() {
+        let inputs = [(0, false), (1, true), (2, false)];
+        let futures = inputs.into_iter().map(|(index, should_fail)| async move {
+            if should_fail {
+                anyhow::bail!("target {index} failed");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok(index)
+        });
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            collect_bounded_in_input_order(futures, 2),
+        )
+        .await
+        .expect("target errors should propagate without waiting for slower targets")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("target 1 failed"));
     }
 
     #[tokio::test]
@@ -718,13 +963,14 @@ mod tests {
             vec![group_target("123"), project_target("my-org/app")],
         );
 
-        let runners = conductor
-            .fetch_runners(RunnerFilters::default())
+        let outcome = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
             .await
             .unwrap();
-        let ids: Vec<u64> = runners.iter().map(|runner| runner.id).collect();
+        let ids: Vec<u64> = outcome.runners.iter().map(|runner| runner.id).collect();
 
         assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 2);
 
         group_list.assert_async().await;
         project_list.assert_async().await;
@@ -790,6 +1036,48 @@ mod tests {
 
         group_list.assert_async().await;
         project_list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn configured_target_failure_discards_partial_success() {
+        let mut server = Server::new_async().await;
+        let successful_target = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("x-next-page", "")
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let failing_target = server
+            .mock("GET", "/api/v4/projects/456/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(500)
+            .with_body(r#"{"message":"target failed"}"#)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123"), project_target("456")],
+        );
+
+        let error = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
+            .await
+            .err()
+            .expect("one failed target should fail the entire query");
+
+        assert!(format!("{error:#}").contains("500"));
+        successful_target.assert_async().await;
+        failing_target.assert_async().await;
     }
 
     #[tokio::test]
@@ -897,6 +1185,174 @@ mod tests {
 
         assert!(runners.is_empty());
         list_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn exact_full_terminal_page_uses_explicit_completion_without_probe() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("x-next-page", "")
+            .with_body(repeated_list_body(1, 100))
+            .expect(1)
+            .create_async()
+            .await;
+        let enrichment = setup_simple_enrichment_mocks(&mut server, &[1]).await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 1);
+        list.assert_async().await;
+        for mock in enrichment {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn visible_runners_follow_explicit_link_next_page() {
+        let mut server = Server::new_async().await;
+        let next_link = format!(
+            "<{}/api/v4/runners?per_page=100&page=2>; rel=\"next\"",
+            server.url()
+        );
+        let first = server
+            .mock("GET", "/api/v4/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("link", next_link.as_str())
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let second = server
+            .mock("GET", "/api/v4/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "2".into()),
+            ]))
+            .with_status(200)
+            .with_header("x-next-page", "")
+            .with_body(format!("[{}]", list_response_body(2, "online")))
+            .create_async()
+            .await;
+        let enrichment = setup_simple_enrichment_mocks(&mut server, &[1, 2]).await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor =
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::VisibleRunners, Vec::new());
+
+        let outcome = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
+            .await
+            .unwrap();
+        let mut runner_ids = outcome
+            .runners
+            .iter()
+            .map(|runner| runner.id)
+            .collect::<Vec<_>>();
+        runner_ids.sort_unstable();
+
+        assert_eq!(runner_ids, vec![1, 2]);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 2);
+        first.assert_async().await;
+        second.assert_async().await;
+        for mock in enrichment {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn all_runners_without_headers_keep_length_based_fallback() {
+        let mut server = Server::new_async().await;
+        let first = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(repeated_list_body(1, 100))
+            .create_async()
+            .await;
+        let fallback_probe = server
+            .mock("GET", "/api/v4/runners/all")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "2".into()),
+            ]))
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let enrichment = setup_simple_enrichment_mocks(&mut server, &[1]).await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor =
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::AllRunners, Vec::new());
+
+        let outcome = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 2);
+        first.assert_async().await;
+        fallback_probe.assert_async().await;
+        for mock in enrichment {
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn self_loop_pagination_header_stops_without_repeating_request() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("x-next-page", "1")
+            .with_body(repeated_list_body(1, 100))
+            .expect(1)
+            .create_async()
+            .await;
+        let enrichment = setup_simple_enrichment_mocks(&mut server, &[1]).await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_metrics(RunnerFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 1);
+        list.assert_async().await;
+        for mock in enrichment {
+            mock.assert_async().await;
+        }
     }
 
     #[tokio::test]
