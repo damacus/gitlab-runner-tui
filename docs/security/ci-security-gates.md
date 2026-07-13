@@ -97,6 +97,3 @@ To scan only commits introduced on the current branch:
 set merge_base (git merge-base origin/main HEAD)
 gitleaks git --log-opts="$merge_base..HEAD" --redact=100 --no-banner .
 ```
-
-The owner-only full-history recovery and verification procedure is documented
-in [Historical credential response and Git history rewrite](credential-history-rewrite.md).
