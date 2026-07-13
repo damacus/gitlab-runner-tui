@@ -309,12 +309,17 @@ fn is_retryable_status(status: StatusCode) -> bool {
 fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
+        return Some(Duration::from_secs(seconds).min(GET_BACKOFF_CAP));
     }
 
     let retry_at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
     let delay = retry_at.signed_duration_since(chrono::Utc::now());
-    Some(delay.to_std().unwrap_or(Duration::ZERO))
+    Some(
+        delay
+            .to_std()
+            .unwrap_or(Duration::ZERO)
+            .min(GET_BACKOFF_CAP),
+    )
 }
 
 fn exponential_backoff_with_jitter(attempt: usize) -> Duration {
@@ -719,16 +724,20 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_supports_seconds_and_http_dates() {
+    fn retry_after_supports_and_caps_seconds_and_http_dates() {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
-        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(3)));
+        assert_eq!(retry_after_delay(&headers), Some(GET_BACKOFF_CAP));
 
         headers.insert(
             RETRY_AFTER,
             HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
         );
         assert_eq!(retry_after_delay(&headers), Some(Duration::ZERO));
+
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc2822();
+        headers.insert(RETRY_AFTER, HeaderValue::try_from(future.as_str()).unwrap());
+        assert_eq!(retry_after_delay(&headers), Some(GET_BACKOFF_CAP));
     }
 
     #[tokio::test]
