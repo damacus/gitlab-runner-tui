@@ -152,6 +152,14 @@ all candidates, filter the result, and fetch runner details only for matching ro
 polls use manager data only unless a version filter requires runner detail. Status-only summary
 queries use list data without per-runner enrichment.
 
+The interactive Runners tab renders list-endpoint summaries as soon as discovery completes, then
+updates each row as its detail and manager requests finish. The selected runner is tracked by ID,
+so sorting changes during enrichment do not move the user's selection to another runner. Filters
+that require detail or manager data are applied to the final enriched snapshot. Starting another
+search, changing tabs, or saving settings cancels the previous stream and its pending retry delays.
+Specialized tabs remain correctness-first and publish their results only after their required
+manager/detail filtering is complete.
+
 `runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
 
 - `group`

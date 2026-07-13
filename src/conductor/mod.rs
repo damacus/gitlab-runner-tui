@@ -107,12 +107,17 @@ pub struct Conductor {
     pub demo_mode: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct QueryOutcome {
     pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
     /// True when AllRunners mode fell back from /runners/all to /runners due to 403.
     pub all_runners_fell_back: bool,
+}
+
+pub struct EnrichmentProgress {
+    pub runner: Runner,
+    pub metrics: LiveQueryMetrics,
 }
 
 /// Returns true when an anyhow error wraps a reqwest 403 Forbidden response.
@@ -259,6 +264,113 @@ impl Conductor {
             .await
     }
 
+    /// Enriches summary rows and publishes a complete snapshot after each runner finishes.
+    ///
+    /// Snapshots retain every discovered runner so the caller can update visible fields without
+    /// rows disappearing while client-side filters are still waiting on detail data. The returned
+    /// outcome applies all client-side filters and contains the final request counts.
+    pub async fn stream_runner_summary_enrichment<F, Fut>(
+        &self,
+        summaries: QueryOutcome,
+        filters: RunnerFilters,
+        profile: QueryProfile,
+        mut publish: F,
+    ) -> QueryOutcome
+    where
+        F: FnMut(EnrichmentProgress) -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        debug_assert_eq!(summaries.metrics.request_counts.detail_requests, 0);
+        debug_assert_eq!(summaries.metrics.request_counts.manager_requests, 0);
+
+        let started_at = summaries.metrics.started_at;
+        let mut request_counts = summaries.metrics.request_counts;
+        let required_profile = profile
+            .enrichment()
+            .union(EnrichmentProfile::for_filters(&filters));
+        let all_runners_fell_back = summaries.all_runners_fell_back;
+        let mut runners = summaries.runners;
+
+        if !required_profile.is_empty() && !runners.is_empty() && !self.demo_mode {
+            let enrichment_permits = Arc::new(Semaphore::new(self.max_enrichment_requests));
+            let runners_to_enrich = runners.clone();
+            let enrichments = stream::iter(runners_to_enrich.into_iter().enumerate().map(
+                |(index, runner)| {
+                    let client = self.client.clone();
+                    let enrichment_permits = Arc::clone(&enrichment_permits);
+                    async move {
+                        let runner = Self::enrich_runner(
+                            client,
+                            enrichment_permits,
+                            runner,
+                            required_profile,
+                        )
+                        .await;
+                        (index, runner)
+                    }
+                },
+            ))
+            .buffer_unordered(self.max_enrichment_requests);
+            tokio::pin!(enrichments);
+
+            while let Some((index, runner)) = enrichments.next().await {
+                runners[index] = runner.clone();
+                if required_profile.detail {
+                    request_counts.detail_requests += 1;
+                }
+                if required_profile.managers {
+                    request_counts.manager_requests += 1;
+                }
+
+                let progress = EnrichmentProgress {
+                    runner,
+                    metrics: self.success_metrics(
+                        started_at,
+                        runners.len(),
+                        request_counts.clone(),
+                    ),
+                };
+                if !publish(progress).await {
+                    break;
+                }
+            }
+        }
+
+        let mut local_filters = filters;
+        if !self.demo_mode {
+            local_filters.tag_list = None;
+        }
+        let runners = apply_runner_filters(&runners, &local_filters, Utc::now());
+        let metrics = self.success_metrics(started_at, runners.len(), request_counts);
+
+        QueryOutcome {
+            runners,
+            metrics,
+            all_runners_fell_back,
+        }
+    }
+
+    fn success_metrics(
+        &self,
+        started_at: DateTime<Utc>,
+        result_count: usize,
+        request_counts: QueryRequestCounts,
+    ) -> LiveQueryMetrics {
+        let finished_at = Utc::now();
+        let duration_millis = finished_at
+            .signed_duration_since(started_at)
+            .num_milliseconds()
+            .max(0) as u128;
+        LiveQueryMetrics::success(
+            started_at,
+            finished_at,
+            duration_millis,
+            result_count,
+            self.discovery_mode,
+            request_counts,
+        )
+    }
+
     async fn discover_runners(
         &self,
         filters: &RunnerFilters,
@@ -402,63 +514,70 @@ impl Conductor {
         stream::iter(runners.into_iter().map(|runner| {
             let client = self.client.clone();
             let enrichment_permits = Arc::clone(&enrichment_permits);
-            async move {
-                let runner_id = runner.id;
-
-                let (detail_res, managers_res) = tokio::join!(
-                    async {
-                        if profile.detail {
-                            Some(
-                                with_request_permit(
-                                    Arc::clone(&enrichment_permits),
-                                    client.fetch_runner_detail(runner_id),
-                                )
-                                .await,
-                            )
-                        } else {
-                            None
-                        }
-                    },
-                    async {
-                        if profile.managers {
-                            Some(
-                                with_request_permit(
-                                    Arc::clone(&enrichment_permits),
-                                    client.fetch_runner_managers(runner_id),
-                                )
-                                .await,
-                            )
-                        } else {
-                            None
-                        }
-                    }
-                );
-
-                let existing_managers = runner.managers.clone();
-                let mut enriched = match detail_res {
-                    Some(Ok(detail)) => detail,
-                    Some(Err(error)) => {
-                        tracing::warn!(runner_id, error = %error, "Failed to fetch runner detail, using list data");
-                        runner
-                    }
-                    None => runner,
-                };
-
-                match managers_res {
-                    Some(Ok(managers)) => enriched.managers = managers,
-                    Some(Err(error)) => {
-                        tracing::warn!(runner_id, error = %error, "Failed to fetch runner managers, keeping existing manager data");
-                        enriched.managers = existing_managers;
-                    }
-                    None => enriched.managers = existing_managers,
-                }
-
-                enriched
-            }
+            Self::enrich_runner(client, enrichment_permits, runner, profile)
         }))
         .buffer_unordered(self.max_enrichment_requests)
         .collect()
         .await
+    }
+
+    async fn enrich_runner(
+        client: GitLabClient,
+        enrichment_permits: Arc<Semaphore>,
+        runner: Runner,
+        profile: EnrichmentProfile,
+    ) -> Runner {
+        let runner_id = runner.id;
+
+        let (detail_res, managers_res) = tokio::join!(
+            async {
+                if profile.detail {
+                    Some(
+                        with_request_permit(
+                            Arc::clone(&enrichment_permits),
+                            client.fetch_runner_detail(runner_id),
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                }
+            },
+            async {
+                if profile.managers {
+                    Some(
+                        with_request_permit(
+                            Arc::clone(&enrichment_permits),
+                            client.fetch_runner_managers(runner_id),
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                }
+            }
+        );
+
+        let existing_managers = runner.managers.clone();
+        let mut enriched = match detail_res {
+            Some(Ok(detail)) => detail,
+            Some(Err(error)) => {
+                tracing::warn!(runner_id, error = %error, "Failed to fetch runner detail, using list data");
+                runner
+            }
+            None => runner,
+        };
+
+        match managers_res {
+            Some(Ok(managers)) => enriched.managers = managers,
+            Some(Err(error)) => {
+                tracing::warn!(runner_id, error = %error, "Failed to fetch runner managers, keeping existing manager data");
+                enriched.managers = existing_managers;
+            }
+            None => enriched.managers = existing_managers,
+        }
+
+        enriched
     }
 
     async fn fetch_configured_target(

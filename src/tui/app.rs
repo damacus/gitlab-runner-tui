@@ -1,5 +1,5 @@
 use crate::client::GitLabClient;
-use crate::conductor::{Conductor, QueryOutcome};
+use crate::conductor::{Conductor, EnrichmentProgress, QueryOutcome, QueryProfile};
 use crate::config::{
     format_runner_targets, parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode,
 };
@@ -18,6 +18,7 @@ use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
+use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Tab {
@@ -307,6 +308,42 @@ enum TabQueryMode {
     Rotating,
 }
 
+fn summary_discovery_filters(filters: &RunnerFilters) -> RunnerFilters {
+    RunnerFilters {
+        tag_list: filters.tag_list.clone(),
+        status: filters.status.clone(),
+        runner_type: filters.runner_type.clone(),
+        paused: filters.paused,
+        ..RunnerFilters::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchPhase {
+    #[default]
+    Idle,
+    Discovering,
+    Enriching,
+}
+
+enum SearchUpdateKind {
+    Summaries(QueryOutcome),
+    Enrichment(Box<EnrichmentProgress>),
+    Complete(QueryOutcome),
+    Failed(anyhow::Error),
+}
+
+struct SearchUpdate {
+    generation: u64,
+    tab: Tab,
+    kind: SearchUpdateKind,
+}
+
+struct PendingSearch {
+    handle: tokio::task::JoinHandle<()>,
+    updates: mpsc::Receiver<SearchUpdate>,
+}
+
 /// Flattened row for workers view: runner info + manager info
 #[derive(Debug, Clone)]
 pub struct ManagerRow {
@@ -381,6 +418,8 @@ pub struct App {
     pub scroll_state: ScrollbarState,
 
     pub is_loading: bool,
+    pub search_phase: SearchPhase,
+    pub has_partial_results: bool,
     pub error_message: Option<String>,
     pub spinner_frame: usize,
 
@@ -389,7 +428,8 @@ pub struct App {
     pub last_poll_at: Option<Instant>,
     pub last_refresh_at: Option<Instant>,
     pub last_fetch_failed: bool,
-    pending_search: Option<tokio::task::JoinHandle<(Tab, anyhow::Result<QueryOutcome>)>>,
+    search_generation: u64,
+    pending_search: Option<PendingSearch>,
     /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
     pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
@@ -444,6 +484,8 @@ impl App {
             table_state: TableState::default(),
             scroll_state: ScrollbarState::default(),
             is_loading: false,
+            search_phase: SearchPhase::Idle,
+            has_partial_results: false,
             error_message: None,
             spinner_frame: 0,
             polling_active: false,
@@ -451,6 +493,7 @@ impl App {
             last_poll_at: None,
             last_refresh_at: None,
             last_fetch_failed: false,
+            search_generation: 0,
             pending_search: None,
             all_runners_fell_back: false,
             settings_draft,
@@ -463,6 +506,13 @@ impl App {
 
     pub fn spinner_char(&self) -> char {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+    }
+
+    pub fn loading_status_label(&self) -> &'static str {
+        match self.search_phase {
+            SearchPhase::Enriching => "Enriching runner details",
+            SearchPhase::Discovering | SearchPhase::Idle => self.active_tab().loading_label(),
+        }
     }
 
     pub fn advance_spinner(&mut self) {
@@ -788,10 +838,14 @@ impl App {
         if self.demo_mode {
             return;
         }
-        if let Some(handle) = self.pending_search.take() {
-            handle.abort();
+        if let Some(pending) = self.pending_search.take() {
+            pending.handle.abort();
         }
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
         self.is_loading = true;
+        self.search_phase = SearchPhase::Discovering;
+        self.has_partial_results = false;
         self.error_message = None;
 
         let client = self.conductor.client().clone();
@@ -799,16 +853,81 @@ impl App {
         let targets = self.config.runner_targets.clone();
         let max_enrichment_requests = self.config.max_enrichment_requests;
         let filters = self.build_filters();
+        let summary_filters = summary_discovery_filters(&filters);
         let tab = self.active_tab();
         let threshold = self.stale_contact_threshold();
+        let (updates_tx, updates_rx) = mpsc::channel(4);
 
-        self.pending_search = Some(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let conductor = Conductor::new_with_mode_and_enrichment_limit(
                 client,
                 mode,
                 targets,
                 max_enrichment_requests,
             );
+
+            if tab == Tab::Runners {
+                match conductor
+                    .fetch_runner_summaries_with_metrics(summary_filters)
+                    .await
+                {
+                    Ok(summaries) => {
+                        if updates_tx
+                            .send(SearchUpdate {
+                                generation,
+                                tab,
+                                kind: SearchUpdateKind::Summaries(summaries.clone()),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+
+                        let progress_tx = updates_tx.clone();
+                        let outcome = conductor
+                            .stream_runner_summary_enrichment(
+                                summaries,
+                                filters,
+                                QueryProfile::Full,
+                                move |outcome| {
+                                    let progress_tx = progress_tx.clone();
+                                    async move {
+                                        progress_tx
+                                            .send(SearchUpdate {
+                                                generation,
+                                                tab,
+                                                kind: SearchUpdateKind::Enrichment(Box::new(
+                                                    outcome,
+                                                )),
+                                            })
+                                            .await
+                                            .is_ok()
+                                    }
+                                },
+                            )
+                            .await;
+                        let _ = updates_tx
+                            .send(SearchUpdate {
+                                generation,
+                                tab,
+                                kind: SearchUpdateKind::Complete(outcome),
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        let _ = updates_tx
+                            .send(SearchUpdate {
+                                generation,
+                                tab,
+                                kind: SearchUpdateKind::Failed(error),
+                            })
+                            .await;
+                    }
+                }
+                return;
+            }
+
             let result = match tab.query_mode() {
                 TabQueryMode::Full => conductor.fetch_runners_with_metrics(filters).await,
                 TabQueryMode::Offline => conductor.list_offline_runners_with_metrics(filters).await,
@@ -828,25 +947,58 @@ impl App {
                         .await
                 }
             };
-            (tab, result)
-        }));
+            let kind = match result {
+                Ok(outcome) => SearchUpdateKind::Complete(outcome),
+                Err(error) => SearchUpdateKind::Failed(error),
+            };
+            let _ = updates_tx
+                .send(SearchUpdate {
+                    generation,
+                    tab,
+                    kind,
+                })
+                .await;
+        });
+
+        self.pending_search = Some(PendingSearch {
+            handle,
+            updates: updates_rx,
+        });
     }
 
     /// Check whether the background search has finished and, if so, apply its result.
     pub async fn poll_pending_search(&mut self) {
-        let finished = self
-            .pending_search
-            .as_ref()
-            .is_some_and(|h| h.is_finished());
-        if !finished {
-            return;
+        let mut updates = Vec::new();
+        let mut task_finished = false;
+        if let Some(pending) = self.pending_search.as_mut() {
+            while let Ok(update) = pending.updates.try_recv() {
+                updates.push(update);
+            }
+            task_finished = pending.handle.is_finished();
         }
-        let handle = self.pending_search.take().unwrap();
-        match handle.await {
-            Ok((tab, result)) => self.process_search_result(tab, result),
-            Err(_) => {
-                self.is_loading = false;
-                self.error_message = Some("Search task failed unexpectedly".to_string());
+
+        let mut saw_terminal = false;
+        for update in updates {
+            saw_terminal |= matches!(
+                &update.kind,
+                SearchUpdateKind::Complete(_) | SearchUpdateKind::Failed(_)
+            );
+            self.process_search_update(update);
+        }
+
+        if saw_terminal || task_finished {
+            if let Some(pending) = self.pending_search.take() {
+                if let Err(error) = pending.handle.await {
+                    if !error.is_cancelled() && self.is_loading {
+                        self.process_search_failure(anyhow::anyhow!(
+                            "Search task failed unexpectedly: {error}"
+                        ));
+                    }
+                } else if task_finished && !saw_terminal && self.is_loading {
+                    self.process_search_failure(anyhow::anyhow!(
+                        "Search task ended without a final update"
+                    ));
+                }
             }
         }
     }
@@ -854,14 +1006,9 @@ impl App {
     /// Wait for the background search task to finish (test helper only).
     #[cfg(test)]
     pub async fn await_pending_search(&mut self) {
-        if let Some(handle) = self.pending_search.take() {
-            match handle.await {
-                Ok((tab, result)) => self.process_search_result(tab, result),
-                Err(_) => {
-                    self.is_loading = false;
-                    self.error_message = Some("Search task failed unexpectedly".to_string());
-                }
-            }
+        while self.pending_search.is_some() {
+            self.poll_pending_search().await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -869,6 +1016,8 @@ impl App {
     #[cfg(test)]
     pub async fn execute_search(&mut self) {
         self.is_loading = true;
+        self.search_phase = SearchPhase::Discovering;
+        self.has_partial_results = false;
         self.error_message = None;
         let tab = self.active_tab();
         let filters = self.build_filters();
@@ -901,49 +1050,154 @@ impl App {
         self.process_search_result(tab, result);
     }
 
+    #[cfg(test)]
     fn process_search_result(&mut self, tab: Tab, result: anyhow::Result<QueryOutcome>) {
-        self.is_loading = false;
         match result {
-            Ok(outcome) => {
-                let now = Instant::now();
-                self.loaded_tab = Some(tab);
-                self.last_refresh_at = Some(now);
-                if self.polling_active {
-                    self.last_poll_at = Some(now);
-                }
-                self.last_fetch_failed = false;
-                self.all_runners_fell_back = outcome.all_runners_fell_back;
-                self.live_query_metrics = Some(outcome.metrics);
-                self.renders_from_runners(tab, outcome.runners);
-            }
-            Err(error) => {
-                self.loaded_tab = None;
-                self.raw_runners.clear();
-                self.runners.clear();
-                self.manager_rows.clear();
-                self.health_summary = None;
-                self.version_options.clear();
-                self.tag_options.clear();
-                self.selected_tags.clear();
-                self.selected_versions.clear();
-                self.table_state.select(None);
-                self.update_scroll_state();
-                self.last_fetch_failed = true;
-                self.live_query_metrics = Some(LiveQueryMetrics::failure(
-                    Utc::now(),
-                    Utc::now(),
-                    0,
-                    self.conductor.discovery_mode(),
-                    error.to_string(),
-                ));
-                self.error_message = Some(format!("{:#}", error));
-            }
+            Ok(outcome) => self.process_search_success(tab, outcome),
+            Err(error) => self.process_search_failure(error),
         }
     }
 
+    fn process_search_update(&mut self, update: SearchUpdate) {
+        if update.generation != self.search_generation {
+            return;
+        }
+
+        match update.kind {
+            SearchUpdateKind::Summaries(outcome) => {
+                self.is_loading = true;
+                self.search_phase = SearchPhase::Enriching;
+                self.has_partial_results = true;
+                self.last_fetch_failed = false;
+                self.all_runners_fell_back = outcome.all_runners_fell_back;
+                self.live_query_metrics = Some(outcome.metrics);
+                self.render_runners_preserving_selection(
+                    update.tab,
+                    outcome.runners,
+                    Some(RunnerFilters::default()),
+                );
+                self.loaded_tab = Some(update.tab);
+            }
+            SearchUpdateKind::Enrichment(progress) => {
+                self.is_loading = true;
+                self.search_phase = SearchPhase::Enriching;
+                self.has_partial_results = true;
+                self.last_fetch_failed = false;
+                self.live_query_metrics = Some(progress.metrics);
+                let mut runners = std::mem::take(&mut self.raw_runners);
+                if let Some(index) = runners
+                    .iter()
+                    .position(|runner| runner.id == progress.runner.id)
+                {
+                    runners[index] = progress.runner;
+                }
+                self.render_runners_preserving_selection(
+                    update.tab,
+                    runners,
+                    Some(RunnerFilters::default()),
+                );
+                self.loaded_tab = Some(update.tab);
+            }
+            SearchUpdateKind::Complete(outcome) => self.process_search_success(update.tab, outcome),
+            SearchUpdateKind::Failed(error) => self.process_search_failure(error),
+        }
+    }
+
+    fn process_search_success(&mut self, tab: Tab, outcome: QueryOutcome) {
+        let now = Instant::now();
+        self.is_loading = false;
+        self.search_phase = SearchPhase::Idle;
+        self.has_partial_results = false;
+        self.last_refresh_at = Some(now);
+        if self.polling_active {
+            self.last_poll_at = Some(now);
+        }
+        self.last_fetch_failed = false;
+        self.error_message = None;
+        self.all_runners_fell_back = outcome.all_runners_fell_back;
+        self.live_query_metrics = Some(outcome.metrics);
+        self.render_runners_preserving_selection(tab, outcome.runners, None);
+        self.loaded_tab = Some(tab);
+    }
+
+    fn process_search_failure(&mut self, error: anyhow::Error) {
+        self.is_loading = false;
+        self.search_phase = SearchPhase::Idle;
+        let error_message = format!("{error:#}");
+        if !self.has_partial_results {
+            self.loaded_tab = None;
+            self.raw_runners.clear();
+            self.runners.clear();
+            self.manager_rows.clear();
+            self.health_summary = None;
+            self.version_options.clear();
+            self.tag_options.clear();
+            self.selected_tags.clear();
+            self.selected_versions.clear();
+            self.table_state.select(None);
+            self.update_scroll_state();
+        }
+        self.last_fetch_failed = true;
+        if self.has_partial_results {
+            if let Some(metrics) = self.live_query_metrics.as_mut() {
+                metrics.finished_at = Utc::now();
+                metrics.duration_millis = metrics
+                    .finished_at
+                    .signed_duration_since(metrics.started_at)
+                    .num_milliseconds()
+                    .max(0) as u128;
+                metrics.succeeded = false;
+                metrics.error_message = Some(error_message.clone());
+            }
+        } else {
+            self.live_query_metrics = Some(LiveQueryMetrics::failure(
+                Utc::now(),
+                Utc::now(),
+                0,
+                self.conductor.discovery_mode(),
+                error_message.clone(),
+            ));
+        }
+        self.error_message = Some(error_message);
+    }
+
     fn renders_from_runners(&mut self, tab: Tab, runners: Vec<Runner>) {
+        self.render_runners_preserving_selection(tab, runners, None);
+    }
+
+    fn render_runners_preserving_selection(
+        &mut self,
+        tab: Tab,
+        runners: Vec<Runner>,
+        filter_override: Option<RunnerFilters>,
+    ) {
+        let selected_runner_id = (self.loaded_tab == Some(tab))
+            .then(|| self.selected_runner().map(|runner| runner.id))
+            .flatten();
+        let preserved_filter_selections = filter_override
+            .as_ref()
+            .map(|_| (self.selected_tags.clone(), self.selected_versions.clone()));
         self.raw_runners = runners;
-        self.apply_view_state(tab);
+        match filter_override {
+            Some(filters) => self.apply_view_state_with_filters(tab, &filters),
+            None => self.apply_view_state(tab),
+        }
+
+        if let Some((selected_tags, selected_versions)) = preserved_filter_selections {
+            self.selected_tags = selected_tags;
+            self.selected_versions = selected_versions;
+        }
+
+        if let Some(selected_runner_id) = selected_runner_id {
+            if let Some(index) = self
+                .runners
+                .iter()
+                .position(|runner| runner.runner.id == selected_runner_id)
+            {
+                self.table_state.select(Some(index));
+                self.update_scroll_state();
+            }
+        }
     }
 
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
@@ -951,12 +1205,19 @@ impl App {
         self.loaded_tab = Some(Tab::Runners);
         self.last_refresh_at = Some(Instant::now());
         self.is_loading = false;
+        self.search_phase = SearchPhase::Idle;
+        self.has_partial_results = false;
         self.last_fetch_failed = false;
         self.all_runners_fell_back = false;
         self.live_query_metrics = None;
     }
 
     fn apply_view_state(&mut self, tab: Tab) {
+        let filters = self.build_filters();
+        self.apply_view_state_with_filters(tab, &filters);
+    }
+
+    fn apply_view_state_with_filters(&mut self, tab: Tab, filters: &RunnerFilters) {
         self.runners.clear();
         self.manager_rows.clear();
         self.health_summary = None;
@@ -970,7 +1231,7 @@ impl App {
             .retain(|tag| self.tag_options.contains(tag));
 
         let now = Utc::now();
-        let mut filtered = apply_runner_filters(&self.raw_runners, &self.build_filters(), now);
+        let mut filtered = apply_runner_filters(&self.raw_runners, filters, now);
 
         match tab {
             Tab::Workers => {
@@ -2076,9 +2337,12 @@ mod tests {
     use super::*;
     use crate::client::GitLabClient;
     use crate::config::{RunnerTarget, RunnerTargetKind};
+    use crate::metrics::QueryRequestCounts;
     use crate::models::manager::RunnerManager;
     use chrono::TimeZone;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use mockito::{Matcher, Server};
+    use std::time::Duration;
 
     fn test_runner_targets() -> Vec<RunnerTarget> {
         vec![RunnerTarget {
@@ -2103,6 +2367,100 @@ mod tests {
             ),
             config,
         )
+    }
+
+    fn network_test_app(host: String) -> App {
+        let targets = vec![RunnerTarget {
+            kind: RunnerTargetKind::Group,
+            id: "123".to_string(),
+            label: None,
+        }];
+        let client = GitLabClient::new(host, "token".to_string()).expect("client");
+        let config = AppConfig {
+            runner_targets: targets.clone(),
+            ..AppConfig::default()
+        };
+        App::new(
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::ConfiguredTargets, targets),
+            config,
+        )
+    }
+
+    fn list_response_body(id: u64) -> String {
+        format!(
+            r#"{{
+                "id": {id},
+                "runner_type": "group_type",
+                "active": true,
+                "paused": false,
+                "description": "Runner {id}",
+                "ip_address": "",
+                "is_shared": false,
+                "status": "online",
+                "name": null,
+                "online": true
+            }}"#
+        )
+    }
+
+    fn detail_response_body(id: u64, version: &str) -> String {
+        format!(
+            r#"{{
+                "id": {id},
+                "runner_type": "group_type",
+                "active": true,
+                "paused": false,
+                "description": "Runner {id}",
+                "ip_address": "",
+                "is_shared": false,
+                "status": "online",
+                "version": "{version}",
+                "revision": "abc123",
+                "tag_list": ["prod"]
+            }}"#
+        )
+    }
+
+    fn manager_response_body(id: u64, runner_id: u64) -> String {
+        format!(
+            r#"{{
+                "id": {id},
+                "system_id": "host-{runner_id}",
+                "created_at": "2024-01-15T10:30:00.000Z",
+                "contacted_at": "2024-01-20T14:22:00.000Z",
+                "ip_address": "10.0.1.1",
+                "status": "online",
+                "version": "17.5.0",
+                "revision": "abc123"
+            }}"#
+        )
+    }
+
+    fn test_outcome(runners: Vec<Runner>) -> QueryOutcome {
+        let now = Utc::now();
+        QueryOutcome {
+            metrics: LiveQueryMetrics::success(
+                now,
+                now,
+                0,
+                runners.len(),
+                RunnerDiscoveryMode::ConfiguredTargets,
+                QueryRequestCounts::default(),
+            ),
+            runners,
+            all_runners_fell_back: false,
+        }
+    }
+
+    async fn wait_for_partial_results(app: &mut App) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !app.has_partial_results {
+                app.poll_pending_search().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("summary rows should be published promptly");
     }
 
     #[test]
@@ -3059,5 +3417,304 @@ mod tests {
         assert!(!app.is_loading);
         assert!(app.last_refresh_at.is_some());
         assert!(!app.runners.is_empty());
+    }
+
+    #[tokio::test]
+    async fn runner_search_publishes_each_enriched_row_before_the_slowest_finishes() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .create_async()
+            .await;
+        let detail_one = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let managers_one = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(11, 1)))
+            .create_async()
+            .await;
+        let detail_two_body = detail_response_body(2, "17.2.0");
+        let detail_two = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_chunked_body(move |writer| {
+                std::thread::sleep(Duration::from_millis(300));
+                writer.write_all(detail_two_body.as_bytes())
+            })
+            .create_async()
+            .await;
+        let managers_two_body = format!("[{}]", manager_response_body(22, 2));
+        let managers_two = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_chunked_body(move |writer| {
+                std::thread::sleep(Duration::from_millis(300));
+                writer.write_all(managers_two_body.as_bytes())
+            })
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+
+        app.start_search();
+        wait_for_partial_results(&mut app).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                app.poll_pending_search().await;
+                let first = app.raw_runners.iter().find(|runner| runner.id == 1);
+                let second = app.raw_runners.iter().find(|runner| runner.id == 2);
+                if first.is_some_and(|runner| runner.version.as_deref() == Some("17.1.0"))
+                    && second.is_some_and(|runner| runner.version.is_none())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first enriched runner should be visible before the second completes");
+
+        assert!(app.is_loading);
+        assert_eq!(app.search_phase, SearchPhase::Enriching);
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .detail_requests,
+            1
+        );
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .manager_requests,
+            1
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), app.await_pending_search())
+            .await
+            .expect("enrichment should finish");
+        assert!(!app.is_loading);
+        assert_eq!(app.search_phase, SearchPhase::Idle);
+        assert!(!app.has_partial_results);
+        assert_eq!(
+            app.raw_runners
+                .iter()
+                .find(|runner| runner.id == 2)
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("17.2.0")
+        );
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .detail_requests,
+            2
+        );
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .manager_requests,
+            2
+        );
+
+        list.assert_async().await;
+        detail_one.assert_async().await;
+        managers_one.assert_async().await;
+        detail_two.assert_async().await;
+        managers_two.assert_async().await;
+    }
+
+    #[test]
+    fn progressive_enrichment_preserves_selection_by_runner_id_after_reordering() {
+        let mut app = test_app();
+        app.search_generation = 4;
+        app.loaded_tab = Some(Tab::Runners);
+        app.sort_key = RunnerSortKey::Version;
+        let mut first = test_runner(1, vec![]);
+        let mut second = test_runner(2, vec![]);
+        first.version = Some("17.1.0".to_string());
+        second.version = Some("17.2.0".to_string());
+        app.render_runners_preserving_selection(
+            Tab::Runners,
+            vec![first.clone(), second.clone()],
+            None,
+        );
+        let first_index = app
+            .runners
+            .iter()
+            .position(|runner| runner.runner.id == 1)
+            .unwrap();
+        assert_eq!(first_index, 1);
+        app.table_state.select(Some(first_index));
+
+        first.version = Some("18.0.0".to_string());
+        app.process_search_update(SearchUpdate {
+            generation: 4,
+            tab: Tab::Runners,
+            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
+                runner: first,
+                metrics: test_outcome(vec![second]).metrics,
+            })),
+        });
+
+        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn enrichment_failure_preserves_partial_rows_and_reports_error() {
+        let mut app = test_app();
+        app.search_generation = 9;
+        app.is_loading = true;
+        app.selected_tags = vec!["prod".to_string()];
+        app.selected_versions = vec!["17.5.0".to_string()];
+        let mut summary = test_runner(1, vec![]);
+        summary.version = None;
+
+        app.process_search_update(SearchUpdate {
+            generation: 9,
+            tab: Tab::Runners,
+            kind: SearchUpdateKind::Summaries(test_outcome(vec![summary])),
+        });
+        assert_eq!(app.selected_tags, vec!["prod"]);
+        assert_eq!(app.selected_versions, vec!["17.5.0"]);
+
+        let mut metrics = test_outcome(Vec::new()).metrics;
+        metrics.request_counts.detail_requests = 1;
+        metrics.request_counts.manager_requests = 1;
+        app.process_search_update(SearchUpdate {
+            generation: 9,
+            tab: Tab::Runners,
+            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
+                runner: test_runner(1, vec![test_manager(1, "online")]),
+                metrics,
+            })),
+        });
+        app.process_search_update(SearchUpdate {
+            generation: 9,
+            tab: Tab::Runners,
+            kind: SearchUpdateKind::Failed(anyhow::anyhow!("enrichment disconnected")),
+        });
+
+        assert_eq!(app.raw_runners.len(), 1);
+        assert_eq!(app.raw_runners[0].id, 1);
+        assert!(!app.is_loading);
+        assert_eq!(app.search_phase, SearchPhase::Idle);
+        assert!(app.has_partial_results);
+        assert!(app.last_fetch_failed);
+        assert_eq!(app.poll_display_state(), PollDisplayState::Error);
+        let metrics = app.live_query_metrics.as_ref().unwrap();
+        assert!(!metrics.succeeded);
+        assert_eq!(metrics.request_counts.detail_requests, 1);
+        assert_eq!(metrics.request_counts.manager_requests, 1);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("enrichment disconnected")
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_runner_search_supersedes_retrying_enrichment() {
+        let mut server = Server::new_async().await;
+        let old_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+                Matcher::UrlEncoded("tag_list[]".into(), "old".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        let old_detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(429)
+            .with_header("retry-after", "60")
+            .expect(1)
+            .create_async()
+            .await;
+        let old_managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let new_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+                Matcher::UrlEncoded("tag_list[]".into(), "new".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(2)))
+            .create_async()
+            .await;
+        let new_detail = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "18.0.0"))
+            .create_async()
+            .await;
+        let new_managers = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+
+        app.filter_input = "old".to_string();
+        app.start_search();
+        wait_for_partial_results(&mut app).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !old_detail.matched_async().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the old enrichment should enter retry backoff");
+
+        app.filter_input = "new".to_string();
+        app.start_search();
+        tokio::time::timeout(Duration::from_secs(2), app.await_pending_search())
+            .await
+            .expect("the new query should not wait for the old retry backoff");
+
+        assert_eq!(app.raw_runners.len(), 1);
+        assert_eq!(app.raw_runners[0].id, 2);
+        assert_eq!(app.raw_runners[0].version.as_deref(), Some("18.0.0"));
+        assert!(!app.is_loading);
+        assert!(app.error_message.is_none());
+
+        old_list.assert_async().await;
+        old_detail.assert_async().await;
+        old_managers.assert_async().await;
+        new_list.assert_async().await;
+        new_detail.assert_async().await;
+        new_managers.assert_async().await;
     }
 }
