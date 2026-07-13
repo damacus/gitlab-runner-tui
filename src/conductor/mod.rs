@@ -1,5 +1,8 @@
 use crate::client::GitLabClient;
-use crate::config::{RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind};
+use crate::config::{
+    RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, DEFAULT_MAX_ENRICHMENT_REQUESTS,
+    MAX_MAX_ENRICHMENT_REQUESTS, MIN_MAX_ENRICHMENT_REQUESTS,
+};
 use crate::metrics::{LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{
     apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
@@ -11,7 +14,8 @@ use futures::{
     TryStreamExt,
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, future::Future, time::Instant};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Instant};
+use tokio::sync::Semaphore;
 
 const CONFIGURED_TARGET_CONCURRENCY: usize = 4;
 
@@ -20,10 +24,86 @@ struct TargetFetchResult {
     list_requests: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum QueryProfile {
+    Summary,
+    Detail,
+    Managers,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EnrichmentProfile {
+    detail: bool,
+    managers: bool,
+}
+
+impl QueryProfile {
+    const fn enrichment(self) -> EnrichmentProfile {
+        match self {
+            Self::Summary => EnrichmentProfile {
+                detail: false,
+                managers: false,
+            },
+            Self::Detail => EnrichmentProfile {
+                detail: true,
+                managers: false,
+            },
+            Self::Managers => EnrichmentProfile {
+                detail: false,
+                managers: true,
+            },
+            Self::Full => EnrichmentProfile {
+                detail: true,
+                managers: true,
+            },
+        }
+    }
+}
+
+impl EnrichmentProfile {
+    fn for_filters(filters: &RunnerFilters) -> Self {
+        let selected_versions = filters
+            .selected_versions
+            .as_ref()
+            .is_some_and(|versions| !versions.is_empty());
+        Self {
+            detail: filters
+                .popup_tags
+                .as_ref()
+                .is_some_and(|tags| !tags.is_empty())
+                || filters.version_prefix.is_some()
+                || selected_versions
+                || filters.older_than_secs.is_some(),
+            managers: selected_versions,
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self {
+            detail: self.detail || other.detail,
+            managers: self.managers || other.managers,
+        }
+    }
+
+    const fn missing_from(self, available: Self) -> Self {
+        Self {
+            detail: self.detail && !available.detail,
+            managers: self.managers && !available.managers,
+        }
+    }
+
+    const fn is_empty(self) -> bool {
+        !self.detail && !self.managers
+    }
+}
+
 pub struct Conductor {
     client: GitLabClient,
     discovery_mode: RunnerDiscoveryMode,
     runner_targets: Vec<RunnerTarget>,
+    max_enrichment_requests: usize,
     pub demo_mode: bool,
 }
 
@@ -60,10 +140,30 @@ impl Conductor {
         discovery_mode: RunnerDiscoveryMode,
         runner_targets: Vec<RunnerTarget>,
     ) -> Self {
+        Self::new_with_mode_and_enrichment_limit(
+            client,
+            discovery_mode,
+            runner_targets,
+            DEFAULT_MAX_ENRICHMENT_REQUESTS,
+        )
+    }
+
+    pub fn new_with_mode_and_enrichment_limit(
+        client: GitLabClient,
+        discovery_mode: RunnerDiscoveryMode,
+        runner_targets: Vec<RunnerTarget>,
+        max_enrichment_requests: usize,
+    ) -> Self {
+        assert!(
+            (MIN_MAX_ENRICHMENT_REQUESTS..=MAX_MAX_ENRICHMENT_REQUESTS)
+                .contains(&max_enrichment_requests),
+            "maximum enrichment requests must be within the validated config range"
+        );
         Self {
             client,
             discovery_mode,
             runner_targets,
+            max_enrichment_requests,
             demo_mode: false,
         }
     }
@@ -83,17 +183,58 @@ impl Conductor {
         &self.client
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         Ok(self.fetch_runners_with_metrics(filters).await?.runners)
     }
 
     pub async fn fetch_runners_with_metrics(&self, filters: RunnerFilters) -> Result<QueryOutcome> {
+        self.fetch_runners_with_profile_and_metrics(filters, QueryProfile::Full)
+            .await
+    }
+
+    pub async fn fetch_runners_with_profile_and_metrics(
+        &self,
+        filters: RunnerFilters,
+        profile: QueryProfile,
+    ) -> Result<QueryOutcome> {
+        self.execute_query(filters, profile, profile, |runners| runners)
+            .await
+    }
+
+    async fn execute_query<F>(
+        &self,
+        filters: RunnerFilters,
+        base_profile: QueryProfile,
+        output_profile: QueryProfile,
+        select_results: F,
+    ) -> Result<QueryOutcome>
+    where
+        F: FnOnce(Vec<Runner>) -> Vec<Runner>,
+    {
         let started_at = Utc::now();
         let started = Instant::now();
+        let initial_profile = base_profile
+            .enrichment()
+            .union(EnrichmentProfile::for_filters(&filters));
         let (runners, mut request_counts, all_runners_fell_back) =
-            self.discover_runners(filters.clone()).await?;
-        let runners = self.enrich_runners(runners, &mut request_counts).await;
-        let runners = apply_runner_filters(&runners, &filters, Utc::now());
+            self.discover_runners(&filters).await?;
+        let runners = self
+            .enrich_runners(runners, initial_profile, &mut request_counts)
+            .await;
+
+        // `tag_list` is enforced by every GitLab list endpoint. Avoid forcing a detail request
+        // solely to repeat that filter locally; demo fixtures still need local tag filtering.
+        let mut local_filters = filters;
+        if !self.demo_mode {
+            local_filters.tag_list = None;
+        }
+        let runners = apply_runner_filters(&runners, &local_filters, Utc::now());
+        let runners = select_results(runners);
+        let final_profile = output_profile.enrichment().missing_from(initial_profile);
+        let runners = self
+            .enrich_runners(runners, final_profile, &mut request_counts)
+            .await;
         let finished_at = Utc::now();
         let metrics = LiveQueryMetrics::success(
             started_at,
@@ -114,30 +255,13 @@ impl Conductor {
         &self,
         filters: RunnerFilters,
     ) -> Result<QueryOutcome> {
-        let started_at = Utc::now();
-        let started = Instant::now();
-        let (runners, request_counts, all_runners_fell_back) =
-            self.discover_runners(filters.clone()).await?;
-        let runners = apply_runner_filters(&runners, &filters, Utc::now());
-        let finished_at = Utc::now();
-        let metrics = LiveQueryMetrics::success(
-            started_at,
-            finished_at,
-            started.elapsed().as_millis(),
-            runners.len(),
-            self.discovery_mode,
-            request_counts,
-        );
-        Ok(QueryOutcome {
-            runners,
-            metrics,
-            all_runners_fell_back,
-        })
+        self.fetch_runners_with_profile_and_metrics(filters, QueryProfile::Summary)
+            .await
     }
 
     async fn discover_runners(
         &self,
-        filters: RunnerFilters,
+        filters: &RunnerFilters,
     ) -> Result<(Vec<Runner>, QueryRequestCounts, bool)> {
         if self.demo_mode {
             return Ok((
@@ -157,7 +281,7 @@ impl Conductor {
                 // Try /runners/all (admin/auditor only). Fall back silently to /runners on 403
                 // so that non-admin tokens still work without the user changing settings.
                 request_counts.list_requests += 1;
-                let first = self.client.fetch_all_runners(&filters, 1, per_page).await;
+                let first = self.client.fetch_all_runners(filters, 1, per_page).await;
                 let use_admin = match &first {
                     Ok(_) => true,
                     Err(e) => !is_forbidden(e),
@@ -174,7 +298,7 @@ impl Conductor {
                         request_counts.list_requests += 1;
                         let runner_page = self
                             .client
-                            .fetch_all_runners(&filters, page, per_page)
+                            .fetch_all_runners(filters, page, per_page)
                             .await?;
                         if runner_page.runners.is_empty() {
                             break;
@@ -192,7 +316,7 @@ impl Conductor {
                         request_counts.list_requests += 1;
                         let runner_page = self
                             .client
-                            .fetch_available_runners(&filters, page, per_page)
+                            .fetch_available_runners(filters, page, per_page)
                             .await?;
                         if runner_page.runners.is_empty() {
                             break;
@@ -215,7 +339,7 @@ impl Conductor {
                     request_counts.list_requests += 1;
                     let runner_page = self
                         .client
-                        .fetch_available_runners(&filters, page, per_page)
+                        .fetch_available_runners(filters, page, per_page)
                         .await?;
                     if runner_page.runners.is_empty() {
                         break;
@@ -257,44 +381,82 @@ impl Conductor {
             all_runners_fell_back,
         ))
     }
-
     async fn enrich_runners(
         &self,
         runners: Vec<Runner>,
+        profile: EnrichmentProfile,
         request_counts: &mut QueryRequestCounts,
     ) -> Vec<Runner> {
-        request_counts.detail_requests = runners.len();
-        request_counts.manager_requests = runners.len();
+        if profile.is_empty() || runners.is_empty() || self.demo_mode {
+            return runners;
+        }
 
-        stream::iter(runners.into_iter().map(|r| {
+        if profile.detail {
+            request_counts.detail_requests += runners.len();
+        }
+        if profile.managers {
+            request_counts.manager_requests += runners.len();
+        }
+
+        let enrichment_permits = Arc::new(Semaphore::new(self.max_enrichment_requests));
+        stream::iter(runners.into_iter().map(|runner| {
             let client = self.client.clone();
+            let enrichment_permits = Arc::clone(&enrichment_permits);
             async move {
-                let runner_id = r.id;
+                let runner_id = runner.id;
 
                 let (detail_res, managers_res) = tokio::join!(
-                    client.fetch_runner_detail(runner_id),
-                    client.fetch_runner_managers(runner_id)
+                    async {
+                        if profile.detail {
+                            Some(
+                                with_request_permit(
+                                    Arc::clone(&enrichment_permits),
+                                    client.fetch_runner_detail(runner_id),
+                                )
+                                .await,
+                            )
+                        } else {
+                            None
+                        }
+                    },
+                    async {
+                        if profile.managers {
+                            Some(
+                                with_request_permit(
+                                    Arc::clone(&enrichment_permits),
+                                    client.fetch_runner_managers(runner_id),
+                                )
+                                .await,
+                            )
+                        } else {
+                            None
+                        }
+                    }
                 );
 
-                let mut detail = match detail_res {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!(runner_id, error = %e, "Failed to fetch runner detail, using list data");
-                        r
+                let existing_managers = runner.managers.clone();
+                let mut enriched = match detail_res {
+                    Some(Ok(detail)) => detail,
+                    Some(Err(error)) => {
+                        tracing::warn!(runner_id, error = %error, "Failed to fetch runner detail, using list data");
+                        runner
                     }
+                    None => runner,
                 };
 
                 match managers_res {
-                    Ok(managers) => detail.managers = managers,
-                    Err(e) => {
-                        tracing::warn!(runner_id, error = %e, "Failed to fetch runner managers, keeping runner without manager data");
+                    Some(Ok(managers)) => enriched.managers = managers,
+                    Some(Err(error)) => {
+                        tracing::warn!(runner_id, error = %error, "Failed to fetch runner managers, keeping existing manager data");
+                        enriched.managers = existing_managers;
                     }
+                    None => enriched.managers = existing_managers,
                 }
 
-                detail
+                enriched
             }
         }))
-        .buffer_unordered(50)
+        .buffer_unordered(self.max_enrichment_requests)
         .collect()
         .await
     }
@@ -346,10 +508,13 @@ impl Conductor {
         &self,
         filters: RunnerFilters,
     ) -> Result<QueryOutcome> {
-        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_offline_runners(outcome.runners);
-        outcome.metrics.result_count = outcome.runners.len();
-        Ok(outcome)
+        self.execute_query(
+            filters,
+            QueryProfile::Managers,
+            QueryProfile::Full,
+            filter_offline_runners,
+        )
+        .await
     }
 
     pub async fn list_uncontacted_runners_with_metrics(
@@ -357,16 +522,22 @@ impl Conductor {
         filters: RunnerFilters,
         threshold: ContactThreshold,
     ) -> Result<QueryOutcome> {
-        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_uncontacted_runners(outcome.runners, Utc::now(), threshold);
-        outcome.metrics.result_count = outcome.runners.len();
-        Ok(outcome)
+        self.execute_query(
+            filters,
+            QueryProfile::Managers,
+            QueryProfile::Full,
+            move |runners| filter_uncontacted_runners(runners, Utc::now(), threshold),
+        )
+        .await
     }
 
     /// Returns (online_count, total_count) - reserved for potential status aggregation
     #[allow(dead_code)]
     pub async fn check_runner_statuses(&self, filters: RunnerFilters) -> Result<(usize, usize)> {
-        let runners = self.fetch_runners(filters).await?;
+        let runners = self
+            .fetch_runners_with_profile_and_metrics(filters, QueryProfile::Managers)
+            .await?
+            .runners;
         let total = runners.len();
         let online = runners
             .iter()
@@ -379,21 +550,38 @@ impl Conductor {
         &self,
         filters: RunnerFilters,
     ) -> Result<QueryOutcome> {
-        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_runners_without_managers(outcome.runners);
-        outcome.metrics.result_count = outcome.runners.len();
-        Ok(outcome)
+        self.execute_query(
+            filters,
+            QueryProfile::Managers,
+            QueryProfile::Full,
+            filter_runners_without_managers,
+        )
+        .await
     }
 
     pub async fn detect_rotating_runners_with_metrics(
         &self,
         filters: RunnerFilters,
     ) -> Result<QueryOutcome> {
-        let mut outcome = self.fetch_runners_with_metrics(filters).await?;
-        outcome.runners = filter_rotating_runners(outcome.runners);
-        outcome.metrics.result_count = outcome.runners.len();
-        Ok(outcome)
+        self.execute_query(
+            filters,
+            QueryProfile::Managers,
+            QueryProfile::Full,
+            filter_rotating_runners,
+        )
+        .await
     }
+}
+
+async fn with_request_permit<T, F>(semaphore: Arc<Semaphore>, future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let _permit = semaphore
+        .acquire_owned()
+        .await
+        .expect("enrichment request semaphore is never closed");
+    future.await
 }
 
 async fn collect_bounded_in_input_order<I, F, T>(futures: I, concurrency: usize) -> Result<Vec<T>>
@@ -719,6 +907,7 @@ mod tests {
                     .mock("GET", format!("/api/v4/runners/{}", id).as_str())
                     .with_status(200)
                     .with_body(detail_response_body(*id, status, tags))
+                    .expect_at_most(1)
                     .create_async()
                     .await,
             );
@@ -750,6 +939,271 @@ mod tests {
             RunnerDiscoveryMode::ConfiguredTargets,
             vec![group_target("123")],
         );
+    }
+
+    #[tokio::test]
+    async fn summary_status_filter_uses_only_list_request() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+                Matcher::UrlEncoded("status".into(), "online".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(
+                RunnerFilters {
+                    status: Some("online".to_string()),
+                    ..RunnerFilters::default()
+                },
+                QueryProfile::Summary,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 0);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 0);
+        list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn version_filter_requests_detail_but_not_managers() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body_with_version(
+                1,
+                "online",
+                &[],
+                "17.5.0",
+            ))
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(
+                RunnerFilters {
+                    version_prefix: Some("17.5".to_string()),
+                    ..RunnerFilters::default()
+                },
+                QueryProfile::Summary,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 0);
+        list.assert_async().await;
+        detail.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manager_contact_profile_skips_detail_request() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!(
+                "[{}]",
+                manager_response_body_with_contacted_at(
+                    10,
+                    1,
+                    "online",
+                    Some("2024-01-20T14:22:00.000Z"),
+                )
+            ))
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(
+                RunnerFilters::default(),
+                QueryProfile::Managers,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners[0].managers.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 0);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 1);
+        list.assert_async().await;
+        managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn combined_filters_deduplicate_detail_and_manager_calls() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "online", &["prod"]))
+            .expect(1)
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(10, 1, "online")))
+            .expect(1)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(
+                RunnerFilters {
+                    popup_tags: Some(vec!["prod".to_string()]),
+                    selected_versions: Some(vec!["17.5.0".to_string()]),
+                    ..RunnerFilters::default()
+                },
+                QueryProfile::Full,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 1);
+        list.assert_async().await;
+        detail.assert_async().await;
+        managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn full_detail_profile_fetches_both_enrichments() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let enrichments = setup_simple_enrichment_mocks(&mut server, &[1]).await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(RunnerFilters::default(), QueryProfile::Full)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 1);
+        list.assert_async().await;
+        for enrichment in enrichments {
+            enrichment.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn thousand_runner_summary_has_zero_enrichment_requests() {
+        let mut server = Server::new_async().await;
+        let body = format!(
+            "[{}]",
+            (1..=1000)
+                .map(|id| list_response_body(id, "online"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("x-next-page", "")
+            .with_body(body)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let conductor = Conductor::new_with_mode(
+            client,
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        let outcome = conductor
+            .fetch_runners_with_profile_and_metrics(RunnerFilters::default(), QueryProfile::Summary)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.runners.len(), 1000);
+        assert_eq!(outcome.metrics.request_counts.list_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 0);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 0);
+        list.assert_async().await;
     }
 
     #[tokio::test]
@@ -809,6 +1263,45 @@ mod tests {
             collector.await.unwrap().unwrap(),
             (0..total).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn enrichment_detail_and_manager_requests_respect_request_budget() {
+        const REQUEST_BUDGET: usize = 3;
+        let semaphore = Arc::new(Semaphore::new(REQUEST_BUDGET));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+
+        let runner_enrichments = (0..8).map(|_| {
+            let semaphore = Arc::clone(&semaphore);
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            async move {
+                let request = || {
+                    let active = Arc::clone(&active);
+                    let maximum = Arc::clone(&maximum);
+                    async move {
+                        let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(now_active, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    }
+                };
+
+                tokio::join!(
+                    with_request_permit(Arc::clone(&semaphore), request()),
+                    with_request_permit(Arc::clone(&semaphore), request())
+                );
+            }
+        });
+
+        stream::iter(runner_enrichments)
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(maximum.load(Ordering::SeqCst), REQUEST_BUDGET);
     }
 
     #[tokio::test]
@@ -1505,15 +1998,17 @@ mod tests {
             vec![group_target("123")],
         );
 
-        let offline = conductor
+        let outcome = conductor
             .list_offline_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap()
-            .runners;
+            .unwrap();
+        let offline = outcome.runners;
 
         // Only runner 2 has an offline manager
         assert_eq!(offline.len(), 1);
         assert_eq!(offline[0].id, 2);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 3);
 
         for mock in &mocks {
             mock.assert_async().await;
@@ -1582,15 +2077,17 @@ mod tests {
             vec![group_target("123")],
         );
 
-        let empty = conductor
+        let outcome = conductor
             .list_runners_without_managers_with_metrics(RunnerFilters::default())
             .await
-            .unwrap()
-            .runners;
+            .unwrap();
+        let empty = outcome.runners;
 
         // Only runner 2 has no managers
         assert_eq!(empty.len(), 1);
         assert_eq!(empty[0].id, 2);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 2);
 
         for mock in &mocks {
             mock.assert_async().await;
@@ -1618,15 +2115,17 @@ mod tests {
             vec![group_target("123")],
         );
 
-        let rotating = conductor
+        let outcome = conductor
             .detect_rotating_runners_with_metrics(RunnerFilters::default())
             .await
-            .unwrap()
-            .runners;
+            .unwrap();
+        let rotating = outcome.runners;
 
         assert_eq!(rotating.len(), 1);
         assert_eq!(rotating[0].id, 1);
         assert_eq!(rotating[0].managers.len(), 2);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 2);
 
         for mock in &mocks {
             mock.assert_async().await;
@@ -1770,6 +2269,7 @@ mod tests {
             .mock("GET", "/api/v4/runners/2")
             .with_status(200)
             .with_body(detail_response_body(2, "online", &["staging"]))
+            .expect(0)
             .create_async()
             .await;
 
@@ -1801,17 +2301,19 @@ mod tests {
             vec![group_target("123")],
         );
 
-        let uncontacted = conductor
+        let outcome = conductor
             .list_uncontacted_runners_with_metrics(
                 RunnerFilters::default(),
                 ContactThreshold::OlderThanSecs(60),
             )
             .await
-            .unwrap()
-            .runners;
+            .unwrap();
+        let uncontacted = outcome.runners;
 
         assert_eq!(uncontacted.len(), 1);
         assert_eq!(uncontacted[0].id, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 2);
 
         list_mock.assert_async().await;
         detail_1.assert_async().await;
@@ -1851,6 +2353,7 @@ mod tests {
             .mock("GET", "/api/v4/runners/4")
             .with_status(200)
             .with_body(detail_response_body(4, "online", &["qa"]))
+            .expect(0)
             .create_async()
             .await;
 

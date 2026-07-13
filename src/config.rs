@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub const DEFAULT_MAX_ENRICHMENT_REQUESTS: usize = 10;
+pub const MIN_MAX_ENRICHMENT_REQUESTS: usize = 2;
+pub const MAX_MAX_ENRICHMENT_REQUESTS: usize = 64;
+
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerDiscoveryMode {
@@ -37,6 +41,7 @@ pub struct RunnerTarget {
 pub struct AppConfig {
     pub poll_interval_secs: u64,
     pub poll_timeout_secs: u64,
+    pub max_enrichment_requests: usize,
     pub gitlab_host: Option<String>,
     pub gitlab_token: Option<String>,
     pub discovery_mode: RunnerDiscoveryMode,
@@ -71,6 +76,7 @@ impl std::fmt::Debug for AppConfig {
         f.debug_struct("AppConfig")
             .field("poll_interval_secs", &self.poll_interval_secs)
             .field("poll_timeout_secs", &self.poll_timeout_secs)
+            .field("max_enrichment_requests", &self.max_enrichment_requests)
             .field("gitlab_host", &self.gitlab_host)
             .field(
                 "gitlab_token",
@@ -88,6 +94,7 @@ impl Default for AppConfig {
         Self {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
+            max_enrichment_requests: DEFAULT_MAX_ENRICHMENT_REQUESTS,
             gitlab_host: None,
             gitlab_token: None,
             discovery_mode: RunnerDiscoveryMode::AllRunners,
@@ -183,6 +190,8 @@ impl AppConfig {
             anyhow::bail!("Poll timeout must be greater than zero seconds");
         }
 
+        self.validate_enrichment_request_limit()?;
+
         if self.rotation_wait.active_contacted_within_secs == 0 {
             anyhow::bail!(
                 "Rotation wait active contact threshold must be greater than zero seconds"
@@ -195,6 +204,18 @@ impl AppConfig {
 
         if self.rotation_wait.completion_stability_polls == 0 {
             anyhow::bail!("Rotation wait completion stability polls must be greater than zero");
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_enrichment_request_limit(&self) -> Result<()> {
+        if !(MIN_MAX_ENRICHMENT_REQUESTS..=MAX_MAX_ENRICHMENT_REQUESTS)
+            .contains(&self.max_enrichment_requests)
+        {
+            anyhow::bail!(
+                "Maximum enrichment requests must be between {MIN_MAX_ENRICHMENT_REQUESTS} and {MAX_MAX_ENRICHMENT_REQUESTS}"
+            );
         }
 
         Ok(())
@@ -436,6 +457,10 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.poll_interval_secs, 30);
         assert_eq!(config.poll_timeout_secs, 1800);
+        assert_eq!(
+            config.max_enrichment_requests,
+            DEFAULT_MAX_ENRICHMENT_REQUESTS
+        );
         assert!(config.gitlab_host.is_none());
         assert!(config.gitlab_token.is_none());
         assert_eq!(config.discovery_mode, RunnerDiscoveryMode::AllRunners);
@@ -457,6 +482,7 @@ mod tests {
         let toml_str = r#"
             poll_interval_secs = 60
             poll_timeout_secs = 900
+            max_enrichment_requests = 12
             gitlab_host = "https://gitlab.example.com"
             gitlab_token = "glpat-test-token"
             discovery_mode = "visible_runners"
@@ -470,6 +496,7 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 60);
         assert_eq!(config.poll_timeout_secs, 900);
+        assert_eq!(config.max_enrichment_requests, 12);
         assert_eq!(
             config.gitlab_host,
             Some("https://gitlab.example.com".to_string())
@@ -495,6 +522,10 @@ mod tests {
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 10);
         assert_eq!(config.poll_timeout_secs, 1800);
+        assert_eq!(
+            config.max_enrichment_requests,
+            DEFAULT_MAX_ENRICHMENT_REQUESTS
+        );
         assert_eq!(config.rotation_wait.active_contacted_within_secs, 3600);
         assert_eq!(config.rotation_wait.missing_runner_grace_polls, 2);
         assert_eq!(config.rotation_wait.completion_stability_polls, 2);
@@ -678,6 +709,32 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_runtime_settings_rejects_too_small_enrichment_budget() {
+        for max_enrichment_requests in [0, 1] {
+            let config = AppConfig {
+                max_enrichment_requests,
+                discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+                ..AppConfig::default()
+            };
+
+            let error = config.validate_runtime_settings().unwrap_err().to_string();
+            assert!(error.contains("Maximum enrichment requests"));
+        }
+    }
+
+    #[test]
+    fn test_validate_runtime_settings_rejects_excessive_enrichment_budget() {
+        let config = AppConfig {
+            max_enrichment_requests: MAX_MAX_ENRICHMENT_REQUESTS + 1,
+            discovery_mode: RunnerDiscoveryMode::VisibleRunners,
+            ..AppConfig::default()
+        };
+
+        let error = config.validate_runtime_settings().unwrap_err().to_string();
+        assert!(error.contains("Maximum enrichment requests"));
+    }
+
+    #[test]
     fn test_load_from_explicit_path() {
         let directory = TestDirectory::new("explicit-load");
         fs::create_dir_all(&directory.0).unwrap();
@@ -719,6 +776,7 @@ mod tests {
         let config = AppConfig {
             poll_interval_secs: 30,
             poll_timeout_secs: 1800,
+            max_enrichment_requests: DEFAULT_MAX_ENRICHMENT_REQUESTS,
             gitlab_host: Some("https://gitlab.com".to_string()),
             gitlab_token: Some("glpat-secret-token".to_string()),
             discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,

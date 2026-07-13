@@ -3,10 +3,17 @@ use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
 use anyhow::{Context, Result};
 use reqwest::{
-    header::{HeaderMap, HeaderValue, LINK},
-    Client, Method, RequestBuilder, Url,
+    header::{HeaderMap, HeaderValue, LINK, RETRY_AFTER},
+    Client, Method, RequestBuilder, Response, StatusCode, Url,
 };
-use std::net::IpAddr;
+use std::{
+    net::IpAddr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+const GET_MAX_ATTEMPTS: usize = 4;
+const GET_BACKOFF_BASE: Duration = Duration::from_millis(100);
+const GET_BACKOFF_CAP: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pagination {
@@ -81,11 +88,50 @@ impl GitLabClient {
         self.client.request(method, &url)
     }
 
+    async fn send_get_with_retry(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+    ) -> Result<Response> {
+        for attempt in 1..=GET_MAX_ATTEMPTS {
+            let attempt_request = request
+                .try_clone()
+                .context("Failed to clone idempotent GitLab GET request")?;
+            let response = attempt_request
+                .send()
+                .await
+                .with_context(|| format!("Failed to send GitLab GET request for {operation}"))?;
+            let status = response.status();
+
+            if !is_retryable_status(status) {
+                return Ok(response);
+            }
+
+            if attempt == GET_MAX_ATTEMPTS {
+                anyhow::bail!(
+                    "GitLab GET request for {operation} exhausted {GET_MAX_ATTEMPTS} attempts after HTTP {status}"
+                );
+            }
+
+            let delay = retry_after_delay(response.headers())
+                .unwrap_or_else(|| exponential_backoff_with_jitter(attempt));
+            tracing::warn!(
+                operation,
+                %status,
+                attempt,
+                max_attempts = GET_MAX_ATTEMPTS,
+                delay_ms = delay.as_millis(),
+                "Retrying GitLab GET request"
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        unreachable!("finite retry loop always returns or reports exhaustion")
+    }
+
     pub async fn validate_token(&self) -> Result<()> {
-        self.request(Method::GET, "user")
-            .send()
-            .await
-            .context("Failed to send request")?
+        self.send_get_with_retry(self.request(Method::GET, "user"), "token validation")
+            .await?
             .error_for_status()
             .context("GitLab token validation failed")?;
 
@@ -118,7 +164,9 @@ impl GitLabClient {
             }
         }
 
-        let response = request.send().await.context("Failed to send request")?;
+        let response = self
+            .send_get_with_retry(request, &format!("runner listing at {endpoint}"))
+            .await?;
         let response = response
             .error_for_status()
             .context("GitLab API request failed")?;
@@ -207,10 +255,11 @@ impl GitLabClient {
     pub async fn fetch_runner_detail(&self, runner_id: u64) -> Result<Runner> {
         let endpoint = format!("runners/{}", runner_id);
         let response = self
-            .request(Method::GET, &endpoint)
-            .send()
-            .await
-            .context("Failed to send request")?;
+            .send_get_with_retry(
+                self.request(Method::GET, &endpoint),
+                &format!("runner {runner_id} detail"),
+            )
+            .await?;
         let response = response
             .error_for_status()
             .context("Failed to fetch runner detail")?;
@@ -224,10 +273,11 @@ impl GitLabClient {
     pub async fn fetch_runner_managers(&self, runner_id: u64) -> Result<Vec<RunnerManager>> {
         let endpoint = format!("runners/{}/managers", runner_id);
         let response = self
-            .request(Method::GET, &endpoint)
-            .send()
-            .await
-            .context("Failed to send request")?;
+            .send_get_with_retry(
+                self.request(Method::GET, &endpoint),
+                &format!("runner {runner_id} managers"),
+            )
+            .await?;
 
         // Handle 404 (no managers) as empty list
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -244,6 +294,43 @@ impl GitLabClient {
             .context("Failed to deserialize managers")?;
         Ok(managers)
     }
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let retry_at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let delay = retry_at.signed_duration_since(chrono::Utc::now());
+    Some(delay.to_std().unwrap_or(Duration::ZERO))
+}
+
+fn exponential_backoff_with_jitter(attempt: usize) -> Duration {
+    let multiplier = 1_u32 << attempt.saturating_sub(1).min(10);
+    let base = GET_BACKOFF_BASE
+        .saturating_mul(multiplier)
+        .min(GET_BACKOFF_CAP);
+    let jitter_ceiling_ms = (base.as_millis() / 4) as u64;
+    let jitter_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+        % (jitter_ceiling_ms + 1);
+
+    base.saturating_add(Duration::from_millis(jitter_ms))
+        .min(GET_BACKOFF_CAP)
 }
 
 fn pagination_from_headers(
@@ -629,6 +716,112 @@ mod tests {
             req.url().as_str(),
             "https://gitlab.example.com/api/v4/runners"
         );
+    }
+
+    #[test]
+    fn retry_after_supports_seconds_and_http_dates() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(3)));
+
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after_delay(&headers), Some(Duration::ZERO));
+    }
+
+    #[tokio::test]
+    async fn retryable_429_then_success_honors_retry_after() {
+        let mut server = Server::new_async().await;
+        let rate_limited = server
+            .mock("GET", "/api/v4/user")
+            .with_status(429)
+            .with_header("retry-after", "1")
+            .expect(1)
+            .create_async()
+            .await;
+        let success = server
+            .mock("GET", "/api/v4/user")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let started = std::time::Instant::now();
+
+        client.validate_token().await.unwrap();
+
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        rate_limited.assert_async().await;
+        success.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn retryable_503_exhaustion_reports_exact_attempt_budget() {
+        let mut server = Server::new_async().await;
+        let unavailable = server
+            .mock("GET", "/api/v4/user")
+            .with_status(503)
+            .expect(GET_MAX_ATTEMPTS)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+
+        let error = client.validate_token().await.unwrap_err();
+
+        unavailable.assert_async().await;
+        let message = format!("{error:#}");
+        assert!(message.contains("token validation"));
+        assert!(message.contains("exhausted 4 attempts"));
+        assert!(message.contains("503"));
+    }
+
+    #[tokio::test]
+    async fn authentication_and_other_statuses_are_not_retried() {
+        for status in [401, 500] {
+            let mut server = Server::new_async().await;
+            let response = server
+                .mock("GET", "/api/v4/user")
+                .with_status(status)
+                .expect(1)
+                .create_async()
+                .await;
+            let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+
+            assert!(client.validate_token().await.is_err());
+            response.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn aborting_request_task_interrupts_retry_after_backoff() {
+        let mut server = Server::new_async().await;
+        let rate_limited = server
+            .mock("GET", "/api/v4/user")
+            .with_status(429)
+            .with_header("retry-after", "60")
+            .expect(1)
+            .create_async()
+            .await;
+        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
+        let task = tokio::spawn(async move { client.validate_token().await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !rate_limited.matched_async().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first retryable response should arrive");
+
+        task.abort();
+        let join_error = tokio::time::timeout(Duration::from_millis(250), task)
+            .await
+            .expect("aborted retry sleep should finish promptly")
+            .unwrap_err();
+        assert!(join_error.is_cancelled());
+        rate_limited.assert_async().await;
     }
 
     #[tokio::test]
