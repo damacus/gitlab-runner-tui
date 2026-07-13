@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.18](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.17...v0.1.18) (2026-07-13)
+
+
+### Features
+
+* add runner summary fetch ([#153](https://github.com/damacus/gitlab-runner-tui/issues/153)) ([80a923f](https://github.com/damacus/gitlab-runner-tui/commit/80a923fe0d92dcc64e2f3d443b10589797b0d95c))
+* harden runner access and improve responsiveness ([08f4f26](https://github.com/damacus/gitlab-runner-tui/commit/08f4f2686d926e80524995adeaf0f80a0d1cb262))
+
+
+### Bug Fixes
+
+* cap server retry delays ([625a104](https://github.com/damacus/gitlab-runner-tui/commit/625a1044513559bdcac4860e00d5fa6cca2a9c54))
+* narrow synthetic secret exception ([826787f](https://github.com/damacus/gitlab-runner-tui/commit/826787fcfa8a7ef71694b987cc11255dc0ef1498))
+* populate every demo dashboard tab ([b6b33ff](https://github.com/damacus/gitlab-runner-tui/commit/b6b33ff4fcf25b8cf6aaa3a9ec2150af6c806911))
+* preserve config path in Windows replace ([354a151](https://github.com/damacus/gitlab-runner-tui/commit/354a151f51951a45bc8f43274d5fd904a762480f))
+* preserve table borders without overflow ([c9850c4](https://github.com/damacus/gitlab-runner-tui/commit/c9850c414d7e9198db2b831c3b60166e6513b93e))
+* render chrome with canonical Ratatui blocks ([7e8cdc7](https://github.com/damacus/gitlab-runner-tui/commit/7e8cdc7d25ab735b75f3e21eebeabf3e60603912))
+* render continuous TUI borders ([99353de](https://github.com/damacus/gitlab-runner-tui/commit/99353de2ae9ecc8ff58689388cef8972a77dc935))
+* restore continuous TUI rendering ([4aec15a](https://github.com/damacus/gitlab-runner-tui/commit/4aec15a2ec2bb23aa11e4548cb83d2b823c5b058))
+* restore rounded TUI borders ([7a9c010](https://github.com/damacus/gitlab-runner-tui/commit/7a9c010901462a19f7f6ee02732012f41de99e99))
+
+
+### Performance Improvements
+
+* bound and reduce GitLab API requests ([fa97f37](https://github.com/damacus/gitlab-runner-tui/commit/fa97f3733b5201fd232607e31b8f27169e1331c6))
+* reduce TUI view and redraw work ([a7aabdb](https://github.com/damacus/gitlab-runner-tui/commit/a7aabdb6bd5b1ca7ba2b321059648060967ce524))
+* reuse unchanged runner enrichment ([a0a5731](https://github.com/damacus/gitlab-runner-tui/commit/a0a5731c78c8b03bb0a5c490497cc96d78516af7))
+* stream runner enrichment into the TUI ([ed7b4cb](https://github.com/damacus/gitlab-runner-tui/commit/ed7b4cbc694f464ac9d634e537696d429a9c1d01))
+
+
+### Reverts
+
+* remove ineffective redraw gating ([83b60fa](https://github.com/damacus/gitlab-runner-tui/commit/83b60fa458f5e55c1d8e6ef075bec4a8205dc6a6))
+
 ## [0.1.17](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.16...v0.1.17) (2026-06-29)
 
 
