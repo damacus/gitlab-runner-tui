@@ -2,8 +2,9 @@ use crate::config::RunnerDiscoveryMode;
 use crate::models::runner::{RunnerSortKey, TagFilterMode};
 use crate::tui::{
     app::{
-        detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
-        manager_contact_label, App, AppMode, DetailLayoutMode, FilterPopupSection,
+        age_timestamp_refresh_after, detail_layout_mode, latest_runner_contact,
+        latest_runner_contact_label, manager_contact_detail, manager_contact_label,
+        relative_timestamp_refresh_after, App, AppMode, DetailLayoutMode, FilterPopupSection,
         PollDisplayState, ResultsViewType, SearchPhase, SettingsField, Tab,
     },
     styles,
@@ -19,6 +20,13 @@ use ratatui::{
     },
     Frame,
 };
+use std::{ops::Range, time::Instant};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+static RENDERED_RUNNER_ROWS: AtomicUsize = AtomicUsize::new(0);
 
 // ⚡ Bolt: Return `&str` instead of `String`
 // This avoids calling `.to_string()` and creating heap allocations
@@ -36,6 +44,28 @@ fn display_or_dash(value: &str) -> &str {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
+    app.begin_frame();
+    if let Some(last_refresh_at) = app.last_refresh_at {
+        app.schedule_age_refresh(last_refresh_at);
+    } else if let Some(last_poll_at) = app.last_poll_at {
+        app.schedule_age_refresh(last_poll_at);
+    }
+    if app.polling_active {
+        // The countdown displays exact seconds near the polling boundary.
+        app.schedule_visible_refresh_at(Instant::now() + std::time::Duration::from_secs(1));
+    }
+    let now = Utc::now();
+    let selected_registered_at = app
+        .selected_runner()
+        .and_then(|runner| runner.created_at.as_deref())
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.with_timezone(&Utc));
+    if let Some(registered_at) = selected_registered_at {
+        app.schedule_visible_refresh_at(
+            Instant::now() + age_timestamp_refresh_after(registered_at, now),
+        );
+    }
+
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(1),
@@ -59,6 +89,33 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         AppMode::FilterPopup => render_filter_popup(app, frame),
         _ => {}
     }
+}
+
+fn visible_row_range(
+    total: usize,
+    selected: Option<usize>,
+    current_offset: usize,
+    capacity: usize,
+) -> Range<usize> {
+    if total == 0 || capacity == 0 {
+        return 0..0;
+    }
+
+    let capacity = capacity.min(total);
+    let max_offset = total.saturating_sub(capacity);
+    let mut offset = current_offset.min(max_offset);
+    if let Some(selected) = selected.map(|index| index.min(total - 1)) {
+        if selected < offset {
+            offset = selected;
+        } else if selected >= offset + capacity {
+            offset = selected + 1 - capacity;
+        }
+    }
+    offset..(offset + capacity).min(total)
+}
+
+fn table_viewport_capacity(area: Rect) -> usize {
+    area.height.saturating_sub(3) as usize
 }
 
 fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
@@ -437,6 +494,22 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     let now = Utc::now();
     let active_tab = app.active_tab();
     let active_sort = app.effective_sort_key();
+    let visible_range = visible_row_range(
+        app.runners.len(),
+        app.table_state.selected(),
+        app.table_state.offset(),
+        table_viewport_capacity(area),
+    );
+    *app.table_state.offset_mut() = visible_range.start;
+    let refresh_origin = Instant::now();
+    let refresh_delay = app.runners[visible_range.clone()]
+        .iter()
+        .filter_map(|row| latest_runner_contact(&app.raw_runners[row.runner_index]))
+        .map(|contact| relative_timestamp_refresh_after(contact, now))
+        .min();
+    if let Some(delay) = refresh_delay {
+        app.schedule_visible_refresh_at(refresh_origin + delay);
+    }
     let header = if rotating {
         Row::new(vec![
             Cell::from("ID"),
@@ -485,8 +558,11 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     }
     .style(styles::table_header_style());
 
-    let rows = app.runners.iter().map(|uirunner| {
-        let runner = &uirunner.runner;
+    let raw_runners = &app.raw_runners;
+    let rows = app.runners[visible_range.clone()].iter().map(|uirunner| {
+        #[cfg(test)]
+        RENDERED_RUNNER_ROWS.fetch_add(1, Ordering::Relaxed);
+        let runner = &raw_runners[uirunner.runner_index];
         if rotating {
             let oldest = runner
                 .managers
@@ -613,6 +689,13 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
 
     let col_idx = sort_column_index(rotating, active_tab, active_sort);
     app.table_state.select_column(col_idx);
+    let mut viewport_state = ratatui::widgets::TableState::new()
+        .with_selected(
+            app.table_state
+                .selected()
+                .and_then(|selected| selected.checked_sub(visible_range.start)),
+        )
+        .with_selected_column(col_idx);
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -622,7 +705,7 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         .highlight_spacing(HighlightSpacing::Always)
         .block(styles::block(app.current_tab_title()));
 
-    frame.render_stateful_widget(table, area, &mut app.table_state);
+    frame.render_stateful_widget(table, area, &mut viewport_state);
     render_table_scrollbar(app, frame, area);
 }
 
@@ -658,6 +741,26 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
 fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     let now = Utc::now();
     let active_sort = app.effective_sort_key();
+    let visible_range = visible_row_range(
+        app.manager_rows.len(),
+        app.table_state.selected(),
+        app.table_state.offset(),
+        table_viewport_capacity(area),
+    );
+    *app.table_state.offset_mut() = visible_range.start;
+    let refresh_origin = Instant::now();
+    let refresh_delay = app.manager_rows[visible_range.clone()]
+        .iter()
+        .filter_map(|row| {
+            crate::models::runner::parse_manager_contacted_at(
+                &app.raw_runners[row.runner_index].managers[row.manager_index],
+            )
+        })
+        .map(|contact| relative_timestamp_refresh_after(contact, now))
+        .min();
+    if let Some(delay) = refresh_delay {
+        app.schedule_visible_refresh_at(refresh_origin + delay);
+    }
     let header = Row::new(vec![
         Cell::from("Runner"),
         Cell::from("Worker"),
@@ -667,13 +770,16 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     ])
     .style(styles::table_header_style());
 
-    let rows = app.manager_rows.iter().map(|row| {
+    let raw_runners = &app.raw_runners;
+    let rows = app.manager_rows[visible_range.clone()].iter().map(|row| {
+        let runner = &raw_runners[row.runner_index];
+        let manager = &runner.managers[row.manager_index];
         Row::new(vec![
-            Cell::from(row.runner_id.to_string()).style(styles::muted_style()),
-            Cell::from(row.manager.id.to_string()).style(styles::muted_style()),
-            Cell::from(row.manager.system_id.as_str()),
-            Cell::from(styles::status_line(row.manager.status.as_str())),
-            Cell::from(manager_contact_label(&row.manager, now)),
+            Cell::from(runner.id.to_string()).style(styles::muted_style()),
+            Cell::from(manager.id.to_string()).style(styles::muted_style()),
+            Cell::from(manager.system_id.as_str()),
+            Cell::from(styles::status_line(manager.status.as_str())),
+            Cell::from(manager_contact_label(manager, now)),
         ])
     });
 
@@ -690,6 +796,13 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
 
     let col_idx = sort_column_index(false, Tab::Workers, app.effective_sort_key());
     app.table_state.select_column(col_idx);
+    let mut viewport_state = ratatui::widgets::TableState::new()
+        .with_selected(
+            app.table_state
+                .selected()
+                .and_then(|selected| selected.checked_sub(visible_range.start)),
+        )
+        .with_selected_column(col_idx);
 
     let table = table
         .header(header)
@@ -699,7 +812,7 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
         .highlight_spacing(HighlightSpacing::Always)
         .block(styles::block(app.current_tab_title()));
 
-    frame.render_stateful_widget(table, area, &mut app.table_state);
+    frame.render_stateful_widget(table, area, &mut viewport_state);
     render_table_scrollbar(app, frame, area);
 }
 
@@ -733,7 +846,9 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         frame.render_widget(paragraph, area);
         return;
     };
-    let runner = &ui_runner.runner;
+    let Some(runner) = app.runner_for_ui(ui_runner) else {
+        return;
+    };
 
     let now = Utc::now();
 
@@ -868,7 +983,7 @@ fn render_worker_detail(app: &App, frame: &mut Frame, area: Rect) {
         ListItem::new(format!("System ID: {}", row.manager.system_id)),
         ListItem::new(format!(
             "Contacted: {}",
-            manager_contact_detail(&row.manager)
+            manager_contact_detail(row.manager)
         )),
         ListItem::new(format!(
             "IP: {}",
@@ -1253,12 +1368,13 @@ fn render_diagnostics_section(app: &App, frame: &mut Frame, area: Rect) {
                     ""
                 };
                 lines.push(Line::from(format!(
-                    "{} rows -> filter {}us | sort {}us | flatten {}us | workers {}{}",
+                    "{} rows -> filter {}us | sort {}us | flatten {}us | workers {} | runner clones {}{}",
                     measurement.sample_size,
                     measurement.filter_duration_micros,
                     measurement.sort_duration_micros,
                     measurement.flatten_duration_micros,
                     measurement.worker_row_count,
+                    measurement.deep_runner_clones,
                     blazing,
                 )));
             }
@@ -1701,10 +1817,11 @@ mod tests {
                 test_manager(255373, "s_old", "offline", Some("2024-01-20T08:15:00.000Z")),
             ],
         );
+        app.raw_runners = vec![runner.clone()];
         app.runners = vec![crate::tui::app::UIRunner {
+            runner_index: 0,
             formatted_tags: runner.tag_list.join(", "),
             formatted_groups: None,
-            runner,
         }];
         app.table_state.select(Some(0));
 
@@ -1743,14 +1860,20 @@ READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c
         let mut app = test_app();
         app.select_tab(Tab::Workers);
         app.loaded_tab = Some(Tab::Workers);
-        app.manager_rows = vec![ManagerRow {
-            runner_id: 326759,
-            manager: test_manager(
+        app.raw_runners = vec![test_runner(
+            326759,
+            "online",
+            &[],
+            vec![test_manager(
                 256551,
                 "s_859060915507",
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
-            ),
+            )],
+        )];
+        app.manager_rows = vec![ManagerRow {
+            runner_index: 0,
+            manager_index: 0,
         }];
         app.table_state.select(Some(0));
 
@@ -1782,10 +1905,11 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
                 Some("2024-01-21T09:15:00.000Z"),
             )],
         );
+        app.raw_runners = vec![runner.clone()];
         app.runners = vec![crate::tui::app::UIRunner {
+            runner_index: 0,
             formatted_tags: runner.tag_list.join(", "),
             formatted_groups: None,
-            runner,
         }];
         app.health_summary = Some(HealthSummary {
             online_count: 1,
@@ -1855,10 +1979,11 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
                 Some("2024-01-21T09:15:00.000Z"),
             )],
         );
+        app.raw_runners = vec![runner.clone()];
         app.runners = vec![crate::tui::app::UIRunner {
+            runner_index: 0,
             formatted_tags: runner.tag_list.join(", "),
             formatted_groups: None,
-            runner,
         }];
 
         let rendered = render_to_string(&mut app, 72, 18);
@@ -1909,5 +2034,56 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
 
         assert!(rendered.contains("Token"));
         assert!(!rendered.contains("glpat-"));
+    }
+
+    #[test]
+    fn viewport_range_tracks_selection_without_materializing_hidden_rows() {
+        assert_eq!(visible_row_range(1_000, Some(0), 0, 14), 0..14);
+        assert_eq!(visible_row_range(1_000, Some(14), 0, 14), 1..15);
+        assert_eq!(visible_row_range(1_000, Some(999), 1, 14), 986..1_000);
+        assert_eq!(visible_row_range(5, Some(4), 0, 14), 0..5);
+    }
+
+    #[test]
+    fn thousand_row_frame_only_projects_the_visible_viewport() {
+        let mut app = test_app();
+        let runners = (0..1_000)
+            .map(|id| {
+                test_runner(
+                    id,
+                    "online",
+                    &["platform"],
+                    vec![test_manager(
+                        id,
+                        &format!("s_{id}"),
+                        "online",
+                        Some("2024-01-21T09:15:00.000Z"),
+                    )],
+                )
+            })
+            .collect();
+        app.seed_demo_data(runners);
+        crate::models::runner::reset_runner_clone_count();
+        RENDERED_RUNNER_ROWS.store(0, Ordering::Relaxed);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let started = Instant::now();
+        let (_, allocations) = crate::allocation_counter::count_allocations(|| {
+            terminal
+                .draw(|frame| render(&mut app, frame))
+                .expect("draw");
+        });
+        let elapsed = started.elapsed();
+        let rendered_rows = RENDERED_RUNNER_ROWS.load(Ordering::Relaxed);
+
+        assert_eq!(rendered_rows, 14);
+        assert_eq!(crate::models::runner::runner_clone_count(), 0);
+        assert!(allocations < 3_000, "frame allocated {allocations} times");
+        assert!(elapsed < std::time::Duration::from_secs(1));
+        eprintln!(
+            "1,000-row frame rendered {rendered_rows} visible rows in {}us with {allocations} allocations and 0 deep clones",
+            elapsed.as_micros()
+        );
     }
 }

@@ -2,9 +2,12 @@
 mod tests {
     use crate::models::manager::RunnerManager;
     use crate::models::runner::{
-        benchmark_runner_processing, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey,
+        apply_runner_filters, benchmark_runner_processing, reset_runner_clone_count,
+        runner_clone_count, sort_runners, LocalBenchmarkSnapshot, Runner, RunnerFilters,
+        RunnerSortKey,
     };
     use chrono::Utc;
+    use std::time::Instant;
 
     fn build_runners(total: u64) -> Vec<Runner> {
         let mut runners = vec![];
@@ -79,5 +82,58 @@ mod tests {
         );
 
         assert_eq!(snapshot, LocalBenchmarkSnapshot::default());
+    }
+
+    #[test]
+    fn projected_view_benchmarks_cover_one_thousand_and_ten_thousand_without_deep_clones() {
+        let runners = build_runners(10_000);
+        let filters = RunnerFilters {
+            selected_versions: Some(vec!["17.5.0".to_string()]),
+            ..RunnerFilters::default()
+        };
+
+        let mut legacy_evidence = Vec::new();
+        for sample_size in [1_000, 10_000] {
+            reset_runner_clone_count();
+            let legacy_started = Instant::now();
+            let mut legacy_view =
+                apply_runner_filters(&runners[..sample_size], &filters, Utc::now());
+            sort_runners(&mut legacy_view, RunnerSortKey::LastContact, Utc::now());
+            let legacy_micros = legacy_started.elapsed().as_micros();
+            let legacy_clones = runner_clone_count();
+            assert_eq!(legacy_clones, sample_size);
+            legacy_evidence.push((sample_size, legacy_micros, legacy_clones));
+        }
+
+        reset_runner_clone_count();
+        let projected_started = Instant::now();
+        let snapshot =
+            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, Utc::now());
+        let projected_micros = projected_started.elapsed().as_micros();
+
+        for (sample_size, budget_micros) in [(1_000, 2_000_000_u128), (10_000, 10_000_000)] {
+            let measurement = snapshot
+                .measurements
+                .iter()
+                .find(|measurement| measurement.sample_size == sample_size)
+                .expect("large projection benchmark");
+            let total_micros = measurement.filter_duration_micros
+                + measurement.sort_duration_micros
+                + measurement.flatten_duration_micros;
+            assert_eq!(measurement.deep_runner_clones, 0);
+            assert!(
+                total_micros < budget_micros,
+                "{sample_size}-runner projection took {total_micros}us, budget {budget_micros}us"
+            );
+            let (_, legacy_micros, legacy_clones) = legacy_evidence
+                .iter()
+                .find(|(legacy_size, _, _)| *legacy_size == sample_size)
+                .unwrap();
+            eprintln!(
+                "{sample_size} runners: legacy {legacy_micros}us/{legacy_clones} deep clones; projected {total_micros}us/0 deep clones"
+            );
+        }
+        assert_eq!(runner_clone_count(), 0);
+        eprintln!("all projected samples completed in {projected_micros}us");
     }
 }
