@@ -8,8 +8,8 @@ use crate::config::{
 use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{
-    apply_runner_filters, benchmark_runner_processing, extract_runner_tags,
-    extract_runner_versions, parse_manager_contacted_at, parse_stale_cutoff, sort_runners,
+    benchmark_runner_processing, extract_runner_tags, extract_runner_versions,
+    parse_manager_contacted_at, parse_stale_cutoff, runner_matches_filters, sort_runner_indices,
     ContactThreshold, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
 };
 use anyhow::{Context, Result};
@@ -19,7 +19,7 @@ use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -351,11 +351,16 @@ struct PendingSearch {
     updates: mpsc::Receiver<SearchUpdate>,
 }
 
-/// Flattened row for workers view: runner info + manager info
-#[derive(Debug, Clone)]
+/// Lightweight projection into the canonical runner and manager store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerRow {
+    pub runner_index: usize,
+    pub manager_index: usize,
+}
+
+pub struct ResolvedManagerRow<'a> {
     pub runner_id: u64,
-    pub manager: RunnerManager,
+    pub manager: &'a RunnerManager,
 }
 
 /// Health check summary for the health tab.
@@ -384,9 +389,29 @@ impl HealthSummary {
 /// so they do not need to be recalculated on every render loop tick.
 #[derive(Debug, Clone)]
 pub struct UIRunner {
-    pub runner: Runner,
+    pub runner_index: usize,
     pub formatted_tags: String,
     pub formatted_groups: Option<String>,
+}
+
+fn build_runner_view_row(runner_index: usize, runner: &Runner) -> UIRunner {
+    let formatted_groups = if runner.groups.is_empty() {
+        None
+    } else {
+        Some(
+            runner
+                .groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    UIRunner {
+        runner_index,
+        formatted_tags: runner.tag_list.join(", "),
+        formatted_groups,
+    }
 }
 
 pub struct App {
@@ -446,6 +471,9 @@ pub struct App {
     pub local_benchmarks: Option<LocalBenchmarkSnapshot>,
     /// When true, all network operations are suppressed (used in --demo mode).
     pub demo_mode: bool,
+    redraw_requested: bool,
+    next_visible_refresh_at: Option<Instant>,
+    terminal_size: Option<(u16, u16)>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -510,6 +538,58 @@ impl App {
             live_query_metrics: None,
             local_benchmarks: None,
             demo_mode: false,
+            redraw_requested: true,
+            next_visible_refresh_at: None,
+            terminal_size: None,
+        }
+    }
+
+    /// Request a frame after application state that is visible to the user changes.
+    pub(crate) fn request_redraw(&mut self) {
+        self.redraw_requested = true;
+    }
+
+    /// Consume the current redraw request. The main loop draws only when this returns true.
+    pub(crate) fn take_redraw_request(&mut self) -> bool {
+        std::mem::take(&mut self.redraw_requested)
+    }
+
+    /// Start collecting deadlines for relative-time labels in the frame being rendered.
+    pub(crate) fn begin_frame(&mut self) {
+        self.next_visible_refresh_at = None;
+    }
+
+    /// Schedule the next frame for a label whose text changes at `deadline`.
+    pub(crate) fn schedule_visible_refresh_at(&mut self, deadline: Instant) {
+        self.next_visible_refresh_at = Some(
+            self.next_visible_refresh_at
+                .map_or(deadline, |current| current.min(deadline)),
+        );
+    }
+
+    /// Schedule a refresh when a duration rendered from an `Instant` reaches its next label.
+    pub(crate) fn schedule_age_refresh(&mut self, started_at: Instant) {
+        let elapsed = started_at.elapsed().as_secs();
+        self.schedule_visible_refresh_at(
+            started_at + Duration::from_secs(next_age_label_boundary(elapsed)),
+        );
+    }
+
+    pub(crate) fn handle_resize(&mut self, width: u16, height: u16) {
+        let size = (width, height);
+        if self.terminal_size != Some(size) {
+            self.terminal_size = Some(size);
+            self.request_redraw();
+        }
+    }
+
+    fn request_redraw_if_deadline_elapsed(&mut self, now: Instant) {
+        if self
+            .next_visible_refresh_at
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.next_visible_refresh_at = None;
+            self.request_redraw();
         }
     }
 
@@ -526,6 +606,7 @@ impl App {
 
     pub fn advance_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+        self.request_redraw();
     }
 
     pub fn active_tab(&self) -> Tab {
@@ -739,7 +820,12 @@ impl App {
     }
 
     pub fn selected_runner(&self) -> Option<&Runner> {
-        self.selected_ui_runner().map(|u| &u.runner)
+        self.selected_ui_runner()
+            .and_then(|row| self.runner_for_ui(row))
+    }
+
+    pub fn runner_for_ui(&self, row: &UIRunner) -> Option<&Runner> {
+        self.raw_runners.get(row.runner_index)
     }
 
     pub fn selected_ui_runner(&self) -> Option<&UIRunner> {
@@ -756,7 +842,16 @@ impl App {
         }
     }
 
-    pub fn selected_manager_row(&self) -> Option<&ManagerRow> {
+    pub fn resolve_manager_row(&self, row: &ManagerRow) -> Option<ResolvedManagerRow<'_>> {
+        let runner = self.raw_runners.get(row.runner_index)?;
+        let manager = runner.managers.get(row.manager_index)?;
+        Some(ResolvedManagerRow {
+            runner_id: runner.id,
+            manager,
+        })
+    }
+
+    pub fn selected_manager_row(&self) -> Option<ResolvedManagerRow<'_>> {
         if !self.has_loaded_active_tab()
             || self.current_results_view_type() != ResultsViewType::Workers
         {
@@ -766,6 +861,7 @@ impl App {
         self.table_state
             .selected()
             .and_then(|index| self.manager_rows.get(index))
+            .and_then(|row| self.resolve_manager_row(row))
     }
 
     pub fn compact_selection_summary(&self) -> Option<String> {
@@ -854,6 +950,7 @@ impl App {
         if self.demo_mode {
             return;
         }
+        self.request_redraw();
         if let Some(pending) = self.pending_search.take() {
             pending.handle.abort();
         }
@@ -1088,6 +1185,8 @@ impl App {
             return;
         }
 
+        self.request_redraw();
+
         match update.kind {
             SearchUpdateKind::Summaries(outcome) => {
                 self.is_loading = true;
@@ -1109,17 +1208,20 @@ impl App {
                 self.has_partial_results = true;
                 self.last_fetch_failed = false;
                 self.live_query_metrics = Some(progress.metrics);
-                let mut runners = std::mem::take(&mut self.raw_runners);
-                if let Some(index) = runners
+                let selected_runner_id = (self.loaded_tab == Some(update.tab))
+                    .then(|| self.selected_runner().map(|runner| runner.id))
+                    .flatten();
+                if let Some(index) = self
+                    .raw_runners
                     .iter()
                     .position(|runner| runner.id == progress.runner.id)
                 {
-                    runners[index] = progress.runner;
+                    self.raw_runners[index] = progress.runner;
                 }
-                self.render_runners_preserving_selection(
+                self.rebuild_view_preserving_selection(
                     update.tab,
-                    runners,
                     Some(RunnerFilters::default()),
+                    selected_runner_id,
                 );
                 self.loaded_tab = Some(update.tab);
             }
@@ -1134,6 +1236,7 @@ impl App {
     }
 
     fn process_search_success(&mut self, tab: Tab, outcome: QueryOutcome) {
+        self.request_redraw();
         let now = Instant::now();
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
@@ -1151,6 +1254,7 @@ impl App {
     }
 
     fn process_search_failure(&mut self, error: anyhow::Error) {
+        self.request_redraw();
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
         let error_message = format!("{error:#}");
@@ -1204,10 +1308,19 @@ impl App {
         let selected_runner_id = (self.loaded_tab == Some(tab))
             .then(|| self.selected_runner().map(|runner| runner.id))
             .flatten();
+        self.raw_runners = runners;
+        self.rebuild_view_preserving_selection(tab, filter_override, selected_runner_id);
+    }
+
+    fn rebuild_view_preserving_selection(
+        &mut self,
+        tab: Tab,
+        filter_override: Option<RunnerFilters>,
+        selected_runner_id: Option<u64>,
+    ) {
         let preserved_filter_selections = filter_override
             .as_ref()
             .map(|_| (self.selected_tags.clone(), self.selected_versions.clone()));
-        self.raw_runners = runners;
         match filter_override {
             Some(filters) => self.apply_view_state_with_filters(tab, &filters),
             None => self.apply_view_state(tab),
@@ -1219,11 +1332,11 @@ impl App {
         }
 
         if let Some(selected_runner_id) = selected_runner_id {
-            if let Some(index) = self
-                .runners
-                .iter()
-                .position(|runner| runner.runner.id == selected_runner_id)
-            {
+            if let Some(index) = self.runners.iter().position(|row| {
+                self.raw_runners
+                    .get(row.runner_index)
+                    .is_some_and(|runner| runner.id == selected_runner_id)
+            }) {
                 self.table_state.select(Some(index));
                 self.update_scroll_state();
             }
@@ -1231,6 +1344,7 @@ impl App {
     }
 
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
+        self.request_redraw();
         self.enrichment_cache.clear();
         self.renders_from_runners(Tab::Runners, runners);
         self.loaded_tab = Some(Tab::Runners);
@@ -1262,50 +1376,73 @@ impl App {
             .retain(|tag| self.tag_options.contains(tag));
 
         let now = Utc::now();
-        let mut filtered = apply_runner_filters(&self.raw_runners, filters, now);
+        let mut filtered_indices: Vec<usize> = self
+            .raw_runners
+            .iter()
+            .enumerate()
+            .filter_map(|(index, runner)| {
+                runner_matches_filters(runner, filters, now).then_some(index)
+            })
+            .collect();
 
         match tab {
             Tab::Workers => {
-                let mut manager_rows: Vec<ManagerRow> = filtered
+                let mut manager_rows: Vec<ManagerRow> = filtered_indices
                     .into_iter()
-                    .flat_map(|runner| {
-                        runner.managers.into_iter().map(move |manager| ManagerRow {
-                            runner_id: runner.id,
-                            manager,
-                        })
+                    .flat_map(|runner_index| {
+                        (0..self.raw_runners[runner_index].managers.len()).map(
+                            move |manager_index| ManagerRow {
+                                runner_index,
+                                manager_index,
+                            },
+                        )
                     })
                     .collect();
                 let sort_key = self.effective_sort_key();
+                let raw_runners = &self.raw_runners;
                 if sort_key == RunnerSortKey::LastContact {
                     manager_rows.sort_by(|left, right| {
-                        let left_contact = parse_manager_contacted_at(&left.manager);
-                        let right_contact = parse_manager_contacted_at(&right.manager);
+                        let left_runner = &raw_runners[left.runner_index];
+                        let right_runner = &raw_runners[right.runner_index];
+                        let left_manager = &left_runner.managers[left.manager_index];
+                        let right_manager = &right_runner.managers[right.manager_index];
+                        let left_contact = parse_manager_contacted_at(left_manager);
+                        let right_contact = parse_manager_contacted_at(right_manager);
                         match (left_contact, right_contact) {
                             (Some(l), Some(r)) => l.cmp(&r),
                             (None, Some(_)) => std::cmp::Ordering::Less,
                             (Some(_), None) => std::cmp::Ordering::Greater,
                             (None, None) => std::cmp::Ordering::Equal,
                         }
-                        .then_with(|| left.runner_id.cmp(&right.runner_id))
-                        .then_with(|| left.manager.id.cmp(&right.manager.id))
+                        .then_with(|| left_runner.id.cmp(&right_runner.id))
+                        .then_with(|| left_manager.id.cmp(&right_manager.id))
                     });
                 } else if sort_key == RunnerSortKey::Status {
                     manager_rows.sort_by(|left, right| {
-                        left.manager
+                        let left_runner = &raw_runners[left.runner_index];
+                        let right_runner = &raw_runners[right.runner_index];
+                        let left_manager = &left_runner.managers[left.manager_index];
+                        let right_manager = &right_runner.managers[right.manager_index];
+                        left_manager
                             .status
-                            .cmp(&right.manager.status)
-                            .then_with(|| left.runner_id.cmp(&right.runner_id))
-                            .then_with(|| left.manager.id.cmp(&right.manager.id))
+                            .cmp(&right_manager.status)
+                            .then_with(|| left_runner.id.cmp(&right_runner.id))
+                            .then_with(|| left_manager.id.cmp(&right_manager.id))
                     });
                 }
                 self.manager_rows = manager_rows;
             }
             Tab::Health => {
-                sort_runners(&mut filtered, self.effective_sort_key(), now);
-                let online_count = filtered
+                sort_runner_indices(
+                    &self.raw_runners,
+                    &mut filtered_indices,
+                    self.effective_sort_key(),
+                    now,
+                );
+                let online_count = filtered_indices
                     .iter()
-                    .filter(|runner| {
-                        runner
+                    .filter(|index| {
+                        self.raw_runners[**index]
                             .managers
                             .iter()
                             .any(|manager| manager.status == "online")
@@ -1313,54 +1450,23 @@ impl App {
                     .count();
                 self.health_summary = Some(HealthSummary {
                     online_count,
-                    total_count: filtered.len(),
+                    total_count: filtered_indices.len(),
                 });
-                self.runners = filtered
+                self.runners = filtered_indices
                     .into_iter()
-                    .map(|runner| {
-                        let formatted_tags = runner.tag_list.join(", ");
-
-                        // ⚡ Bolt: Pre-calculate formatted groups during state update
-                        // This prevents creating `Vec<&str>` and joining strings 60 times a second
-                        // in the hot UI render loop (inside `render_runner_detail`).
-                        let formatted_groups = if !runner.groups.is_empty() {
-                            let group_names: Vec<&str> =
-                                runner.groups.iter().map(|g| g.name.as_str()).collect();
-                            Some(group_names.join(", "))
-                        } else {
-                            None
-                        };
-                        UIRunner {
-                            runner,
-                            formatted_tags,
-                            formatted_groups,
-                        }
-                    })
+                    .map(|index| build_runner_view_row(index, &self.raw_runners[index]))
                     .collect();
             }
             _ => {
-                sort_runners(&mut filtered, self.effective_sort_key(), now);
-                self.runners = filtered
+                sort_runner_indices(
+                    &self.raw_runners,
+                    &mut filtered_indices,
+                    self.effective_sort_key(),
+                    now,
+                );
+                self.runners = filtered_indices
                     .into_iter()
-                    .map(|runner| {
-                        let formatted_tags = runner.tag_list.join(", ");
-
-                        // ⚡ Bolt: Pre-calculate formatted groups during state update
-                        // This prevents creating `Vec<&str>` and joining strings 60 times a second
-                        // in the hot UI render loop (inside `render_runner_detail`).
-                        let formatted_groups = if !runner.groups.is_empty() {
-                            let group_names: Vec<&str> =
-                                runner.groups.iter().map(|g| g.name.as_str()).collect();
-                            Some(group_names.join(", "))
-                        } else {
-                            None
-                        };
-                        UIRunner {
-                            runner,
-                            formatted_tags,
-                            formatted_groups,
-                        }
-                    })
+                    .map(|index| build_runner_view_row(index, &self.raw_runners[index]))
                     .collect();
             }
         }
@@ -1681,6 +1787,7 @@ impl App {
     }
 
     pub fn toggle_polling(&mut self) {
+        self.request_redraw();
         if self.polling_active {
             self.polling_active = false;
             self.poll_started_at = None;
@@ -1718,6 +1825,8 @@ impl App {
     }
 
     pub async fn tick(&mut self) {
+        self.request_redraw_if_deadline_elapsed(Instant::now());
+
         if self.is_loading {
             self.advance_spinner();
         }
@@ -1731,10 +1840,12 @@ impl App {
 
         if self.polling_active && self.poll_timed_out() {
             self.polling_active = false;
+            self.request_redraw();
         }
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
+        self.request_redraw();
         if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return;
@@ -2358,6 +2469,50 @@ fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Str
     }
 }
 
+/// The whole-second age at which `format_age`-style labels next change.
+pub(crate) fn next_age_label_boundary(seconds: u64) -> u64 {
+    match seconds {
+        0..=89 => seconds + 1,
+        90..=3599 => (seconds / 60 + 1) * 60,
+        3600..=86_399 => (seconds / 3600 + 1) * 3600,
+        _ => (seconds / 86_400 + 1) * 86_400,
+    }
+}
+
+/// Time remaining until a runner/manager relative timestamp produces different text.
+pub(crate) fn relative_timestamp_refresh_after(
+    timestamp: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Duration {
+    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0) as u64;
+    let next_seconds = match seconds {
+        0..=89 => 90,
+        90..=3599 => (seconds / 60 + 1) * 60,
+        3600..=86_399 => (seconds / 3600 + 1) * 3600,
+        _ => (seconds / 86_400 + 1) * 86_400,
+    };
+    let boundary = timestamp + chrono::Duration::seconds(next_seconds as i64);
+    let millis = boundary
+        .signed_duration_since(now)
+        .num_milliseconds()
+        .max(1) as u64;
+    Duration::from_millis(millis)
+}
+
+/// Time remaining until a timestamp rendered with `format_age` changes text.
+pub(crate) fn age_timestamp_refresh_after(
+    timestamp: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Duration {
+    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0) as u64;
+    let boundary = timestamp + chrono::Duration::seconds(next_age_label_boundary(seconds) as i64);
+    let millis = boundary
+        .signed_duration_since(now)
+        .num_milliseconds()
+        .max(1) as u64;
+    Duration::from_millis(millis)
+}
+
 fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
@@ -2528,10 +2683,11 @@ mod tests {
     fn select_test_runner(app: &mut App, runner_id: u64) {
         let runner = test_runner(runner_id, vec![test_manager(1, "online")]);
         app.loaded_tab = Some(Tab::Runners);
+        app.raw_runners = vec![runner.clone()];
         app.runners = vec![UIRunner {
+            runner_index: 0,
             formatted_tags: runner.tag_list.join(", "),
             formatted_groups: None,
-            runner,
         }];
         app.table_state.select(Some(0));
     }
@@ -3301,9 +3457,10 @@ mod tests {
         let mut app = test_app();
         app.select_tab(Tab::Workers);
         app.loaded_tab = Some(Tab::Workers);
+        app.raw_runners = vec![test_runner(42, vec![test_manager(7, "online")])];
         app.manager_rows = vec![ManagerRow {
-            runner_id: 42,
-            manager: test_manager(7, "online"),
+            runner_index: 0,
+            manager_index: 0,
         }];
         app.table_state.select(Some(0));
 
@@ -3317,10 +3474,11 @@ mod tests {
         let mut app = test_app();
         app.loaded_tab = Some(Tab::Runners);
         let runner = test_runner(42, vec![test_manager(1, "online")]);
+        app.raw_runners = vec![runner.clone()];
         app.runners = vec![UIRunner {
+            runner_index: 0,
             formatted_tags: runner.tag_list.join(", "),
             formatted_groups: None,
-            runner,
         }];
         app.table_state.select(Some(0));
         assert!(app
@@ -3330,9 +3488,10 @@ mod tests {
 
         app.select_tab(Tab::Workers);
         app.loaded_tab = Some(Tab::Workers);
+        app.raw_runners = vec![test_runner(42, vec![test_manager(7, "online")])];
         app.manager_rows = vec![ManagerRow {
-            runner_id: 42,
-            manager: test_manager(7, "online"),
+            runner_index: 0,
+            manager_index: 0,
         }];
         app.table_state.select(Some(0));
         assert!(app
@@ -3425,6 +3584,80 @@ mod tests {
             "2h ago"
         );
         assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");
+    }
+
+    #[test]
+    fn relative_time_deadlines_match_the_next_visible_label_boundary() {
+        assert_eq!(next_age_label_boundary(0), 1);
+        assert_eq!(next_age_label_boundary(89), 90);
+        assert_eq!(next_age_label_boundary(90), 120);
+        assert_eq!(next_age_label_boundary(3_599), 3_600);
+        assert_eq!(next_age_label_boundary(3_600), 7_200);
+
+        let now = Utc.with_ymd_and_hms(2024, 1, 21, 10, 15, 0).unwrap();
+        assert_eq!(
+            relative_timestamp_refresh_after(now - chrono::Duration::seconds(89), now),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            relative_timestamp_refresh_after(now - chrono::Duration::seconds(90), now),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            age_timestamp_refresh_after(now - chrono::Duration::seconds(89), now),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_ticks_do_not_request_redundant_frames() {
+        let mut app = test_app();
+        assert!(app.take_redraw_request(), "initial frame");
+
+        for _ in 0..20 {
+            app.tick().await;
+            assert!(!app.take_redraw_request());
+        }
+    }
+
+    #[tokio::test]
+    async fn input_and_elapsed_visible_deadlines_request_frames_immediately() {
+        let mut app = test_app();
+        app.take_redraw_request();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+            .await;
+        assert!(app.take_redraw_request());
+
+        app.schedule_visible_refresh_at(Instant::now());
+        app.tick().await;
+        assert!(app.take_redraw_request());
+    }
+
+    #[tokio::test]
+    async fn starting_a_query_requests_loading_feedback_immediately() {
+        let mut app = test_app();
+        app.take_redraw_request();
+
+        app.start_search();
+        assert!(app.take_redraw_request());
+        assert!(app.is_loading);
+        if let Some(pending) = app.pending_search.take() {
+            pending.handle.abort();
+        }
+    }
+
+    #[test]
+    fn resize_requests_one_frame_per_distinct_terminal_size() {
+        let mut app = test_app();
+        app.take_redraw_request();
+
+        app.handle_resize(120, 40);
+        assert!(app.take_redraw_request());
+        app.handle_resize(120, 40);
+        assert!(!app.take_redraw_request());
+        app.handle_resize(121, 40);
+        assert!(app.take_redraw_request());
     }
 
     #[test]
@@ -3591,13 +3824,13 @@ mod tests {
             vec![first.clone(), second.clone()],
             None,
         );
-        let first_index = app
+        let selected_index = app
             .runners
             .iter()
-            .position(|runner| runner.runner.id == 1)
+            .position(|row| app.raw_runners[row.runner_index].id == 2)
             .unwrap();
-        assert_eq!(first_index, 1);
-        app.table_state.select(Some(first_index));
+        assert_eq!(selected_index, 0);
+        app.table_state.select(Some(selected_index));
 
         first.version = Some("18.0.0".to_string());
         app.process_search_update(SearchUpdate {
@@ -3609,8 +3842,8 @@ mod tests {
             })),
         });
 
-        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
-        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(2));
+        assert_eq!(app.table_state.selected(), Some(1));
     }
 
     #[test]
@@ -4122,7 +4355,7 @@ mod tests {
         let selected_index = app
             .runners
             .iter()
-            .position(|runner| runner.runner.id == 1)
+            .position(|row| app.raw_runners[row.runner_index].id == 1)
             .unwrap();
         app.table_state.select(Some(selected_index));
         let second_list = server
@@ -4283,5 +4516,56 @@ mod tests {
         retrying_detail.assert_async().await;
         changed_managers.assert_async().await;
         restored_list.assert_async().await;
+    }
+
+    #[test]
+    fn repeated_view_rebuilds_do_not_clone_canonical_runner_payloads() {
+        let mut app = test_app();
+        app.raw_runners = (0..1_000)
+            .map(|id| test_runner(id, vec![test_manager(id, "online")]))
+            .collect();
+        app.loaded_tab = Some(Tab::Runners);
+        crate::models::runner::reset_runner_clone_count();
+
+        app.sort_key = RunnerSortKey::Version;
+        app.apply_view_state(Tab::Runners);
+        app.sort_key = RunnerSortKey::LastContact;
+        app.apply_view_state(Tab::Runners);
+        app.selected_tags = vec!["prod".to_string()];
+        app.apply_view_state(Tab::Runners);
+
+        assert_eq!(app.runners.len(), 1_000);
+        assert_eq!(crate::models::runner::runner_clone_count(), 0);
+    }
+
+    #[test]
+    fn progressive_update_rebuilds_projection_and_derived_display_fields() {
+        let mut app = test_app();
+        app.search_generation = 12;
+        app.loaded_tab = Some(Tab::Runners);
+        let mut runner = test_runner(1, vec![]);
+        runner.tag_list = vec!["old-tag".to_string()];
+        app.render_runners_preserving_selection(Tab::Runners, vec![runner.clone()], None);
+        app.table_state.select(Some(0));
+        assert_eq!(app.runners[0].formatted_tags, "old-tag");
+
+        runner.tag_list = vec!["new-tag".to_string(), "linux".to_string()];
+        app.take_redraw_request();
+        app.process_search_update(SearchUpdate {
+            generation: 12,
+            tab: Tab::Runners,
+            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
+                runner,
+                metrics: test_outcome(Vec::new()).metrics,
+            })),
+        });
+
+        assert_eq!(app.runners[0].formatted_tags, "new-tag, linux");
+        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
+        assert_eq!(app.runners[0].runner_index, 0);
+        assert!(
+            app.take_redraw_request(),
+            "progress must be visible immediately"
+        );
     }
 }

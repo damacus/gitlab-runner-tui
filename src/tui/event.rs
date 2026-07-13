@@ -15,16 +15,18 @@ const EVENT_QUEUE_CAPACITY: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Key(KeyEvent),
+    Resize(u16, u16),
     Tick,
 }
 
 /// Sends events without allowing periodic ticks to consume the queue.
 ///
-/// Key events are lossless and retain FIFO order. When the bounded queue is
-/// full, the producer applies backpressure and stops polling the terminal until
-/// capacity is available. Ticks never wait for capacity: one pending tick is
-/// retained, additional ticks are coalesced, and a tick attempted while the
-/// queue is full is discarded so keys can drain first.
+/// Key and resize events are lossless and retain FIFO order. When the bounded
+/// queue is full, the producer applies backpressure and stops polling the
+/// terminal until capacity is available. Ticks never wait for capacity: one
+/// pending tick is retained, additional ticks are coalesced, and a tick
+/// attempted while the queue is full is discarded so terminal events can drain
+/// first.
 #[derive(Clone)]
 struct EventSender {
     sender: mpsc::Sender<Event>,
@@ -33,9 +35,13 @@ struct EventSender {
 
 impl EventSender {
     async fn send_key(&self, key: KeyEvent, token: &CancellationToken) -> bool {
+        self.send_event(Event::Key(key), token).await
+    }
+
+    async fn send_event(&self, event: Event, token: &CancellationToken) -> bool {
         tokio::select! {
             _ = token.cancelled() => false,
-            result = self.sender.send(Event::Key(key)) => result.is_ok(),
+            result = self.sender.send(event) => result.is_ok(),
         }
     }
 
@@ -132,6 +138,11 @@ async fn run_event_producer<S>(
             event = reader.next() => match event {
                 Some(Ok(CrosstermEvent::Key(key))) => {
                     if !sender.send_key(key, &token).await {
+                        break;
+                    }
+                }
+                Some(Ok(CrosstermEvent::Resize(width, height))) => {
+                    if !sender.send_event(Event::Resize(width, height), &token).await {
                         break;
                     }
                 }
@@ -280,5 +291,14 @@ mod tests {
         assert_eq!(handler.next().await, Some(Event::Key(key('x'))));
         handler.stop().await;
         assert!(handler.producer.is_none());
+    }
+
+    #[tokio::test]
+    async fn producer_delivers_resize_events() {
+        let reader = stream::iter([Ok(CrosstermEvent::Resize(132, 43))]);
+        let mut handler = EventHandler::with_stream(Duration::from_secs(60), 2, reader);
+
+        assert_eq!(handler.next().await, Some(Event::Resize(132, 43)));
+        handler.stop().await;
     }
 }

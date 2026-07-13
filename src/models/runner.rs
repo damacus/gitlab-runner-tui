@@ -10,7 +10,7 @@ pub struct RunnerGroup {
     pub web_url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Runner {
     pub id: u64,
     pub runner_type: String,
@@ -29,6 +29,45 @@ pub struct Runner {
     pub managers: Vec<RunnerManager>,
     #[serde(default)]
     pub groups: Vec<RunnerGroup>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RUNNER_CLONE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Clone for Runner {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        RUNNER_CLONE_COUNT.with(|count| count.set(count.get() + 1));
+
+        Self {
+            id: self.id,
+            runner_type: self.runner_type.clone(),
+            active: self.active,
+            paused: self.paused,
+            description: self.description.clone(),
+            created_at: self.created_at.clone(),
+            ip_address: self.ip_address.clone(),
+            is_shared: self.is_shared,
+            status: self.status.clone(),
+            version: self.version.clone(),
+            revision: self.revision.clone(),
+            tag_list: self.tag_list.clone(),
+            managers: self.managers.clone(),
+            groups: self.groups.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn reset_runner_clone_count() {
+    RUNNER_CLONE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub fn runner_clone_count() -> usize {
+    RUNNER_CLONE_COUNT.with(std::cell::Cell::get)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -103,6 +142,7 @@ pub struct LocalBenchmarkMeasurement {
     pub filter_duration_micros: u128,
     pub sort_duration_micros: u128,
     pub flatten_duration_micros: u128,
+    pub deep_runner_clones: usize,
 }
 
 #[allow(dead_code)]
@@ -334,6 +374,55 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTi
     let _ = now;
 }
 
+pub fn sort_runner_indices(
+    runners: &[Runner],
+    indices: &mut [usize],
+    sort_key: RunnerSortKey,
+    now: DateTime<Utc>,
+) {
+    match sort_key {
+        RunnerSortKey::None => {}
+        RunnerSortKey::Status => indices.sort_by(|left, right| {
+            let left = &runners[*left];
+            let right = &runners[*right];
+            left.status
+                .cmp(&right.status)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        RunnerSortKey::Version => indices.sort_by(|left, right| {
+            let left = &runners[*left];
+            let right = &runners[*right];
+            compare_versions_desc(
+                left.version.as_deref().unwrap_or(""),
+                right.version.as_deref().unwrap_or(""),
+            )
+            .then_with(|| left.id.cmp(&right.id))
+        }),
+        RunnerSortKey::LastContact => indices.sort_by_cached_key(|index| {
+            let runner = &runners[*index];
+            (latest_runner_contact_at(runner).map(Reverse), runner.id)
+        }),
+        RunnerSortKey::Tags => indices.sort_by(|left, right| {
+            let left = &runners[*left];
+            let right = &runners[*right];
+            left.tag_list
+                .cmp(&right.tag_list)
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+        RunnerSortKey::Managers => indices.sort_by(|left, right| {
+            let left = &runners[*left];
+            let right = &runners[*right];
+            right
+                .managers
+                .len()
+                .cmp(&left.managers.len())
+                .then_with(|| left.id.cmp(&right.id))
+        }),
+    }
+
+    let _ = now;
+}
+
 fn sort_runners_by_last_contact_with<F>(runners: &mut [Runner], mut contact_key: F)
 where
     F: FnMut(&Runner) -> Option<DateTime<Utc>>,
@@ -359,7 +448,7 @@ pub fn benchmark_runner_processing(
     sort_key: RunnerSortKey,
     now: DateTime<Utc>,
 ) -> LocalBenchmarkSnapshot {
-    const SAMPLE_SIZES: [usize; 3] = [10, 50, 100];
+    const SAMPLE_SIZES: [usize; 5] = [10, 50, 100, 1_000, 10_000];
     let mut measurements = Vec::new();
     let mut seen_sample_sizes = Vec::new();
 
@@ -373,37 +462,45 @@ pub fn benchmark_runner_processing(
         }
         seen_sample_sizes.push(sample_size);
 
-        let sample = runners[..sample_size].to_vec();
-
         let filter_started = Instant::now();
-        let filtered = apply_runner_filters(&sample, filters, now);
+        let mut filtered: Vec<usize> = runners[..sample_size]
+            .iter()
+            .enumerate()
+            .filter_map(|(index, runner)| {
+                runner_matches_filters(runner, filters, now).then_some(index)
+            })
+            .collect();
         let filter_duration_micros = filter_started.elapsed().as_micros();
 
         let sort_started = Instant::now();
-        let mut sorted = filtered.clone();
-        sort_runners(&mut sorted, sort_key, now);
+        sort_runner_indices(runners, &mut filtered, sort_key, now);
         let sort_duration_micros = sort_started.elapsed().as_micros();
 
         let flatten_started = Instant::now();
-        let worker_row_count = sorted.iter().map(|runner| runner.managers.len()).sum();
-        let _flattened: Vec<(u64, u64)> = sorted
+        let worker_row_count = filtered
             .iter()
-            .flat_map(|runner| {
-                runner
+            .map(|index| runners[*index].managers.len())
+            .sum();
+        let _flattened: Vec<(usize, usize)> = filtered
+            .iter()
+            .flat_map(|runner_index| {
+                runners[*runner_index]
                     .managers
                     .iter()
-                    .map(move |manager| (runner.id, manager.id))
+                    .enumerate()
+                    .map(move |(manager_index, _)| (*runner_index, manager_index))
             })
             .collect();
         let flatten_duration_micros = flatten_started.elapsed().as_micros();
 
         measurements.push(LocalBenchmarkMeasurement {
             sample_size,
-            filtered_count: sorted.len(),
+            filtered_count: filtered.len(),
             worker_row_count,
             filter_duration_micros,
             sort_duration_micros,
             flatten_duration_micros,
+            deep_runner_clones: 0,
         });
     }
 
@@ -958,6 +1055,50 @@ mod tests {
         sort_runners(&mut runners, RunnerSortKey::Version, now);
 
         assert_eq!(runners[0].id, newer.id);
+    }
+
+    #[test]
+    fn projected_index_sort_matches_owned_runner_sort_for_every_key() {
+        let mut runners = vec![
+            create_test_runner(4, "offline", Some("offline")),
+            create_test_runner(2, "online", Some("online")),
+            create_test_runner(3, "online", None),
+            create_test_runner(1, "stale", Some("online")),
+        ];
+        runners[0].version = Some("17.1.0".to_string());
+        runners[1].version = Some("18.0.0".to_string());
+        runners[2].version = None;
+        runners[0].tag_list = vec!["z".to_string()];
+        runners[1].tag_list = vec!["a".to_string()];
+        let extra_manager = runners[3].managers[0].clone();
+        runners[3].managers.push(extra_manager);
+        let now = Utc::now();
+
+        for sort_key in [
+            RunnerSortKey::None,
+            RunnerSortKey::Status,
+            RunnerSortKey::Version,
+            RunnerSortKey::LastContact,
+            RunnerSortKey::Tags,
+            RunnerSortKey::Managers,
+        ] {
+            let mut owned = runners.clone();
+            sort_runners(&mut owned, sort_key, now);
+            let mut indices: Vec<usize> = (0..runners.len()).collect();
+            sort_runner_indices(&runners, &mut indices, sort_key, now);
+
+            assert_eq!(
+                indices
+                    .into_iter()
+                    .map(|index| runners[index].id)
+                    .collect::<Vec<_>>(),
+                owned
+                    .into_iter()
+                    .map(|runner| runner.id)
+                    .collect::<Vec<_>>(),
+                "projection order differs for {sort_key:?}"
+            );
+        }
     }
 
     #[test]

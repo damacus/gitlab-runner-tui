@@ -7,6 +7,50 @@ mod models;
 mod rotation_wait;
 mod tui;
 
+#[cfg(test)]
+mod allocation_counter {
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+    };
+
+    thread_local! {
+        static ENABLED: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub struct CountingAllocator;
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            ENABLED.with(|enabled| {
+                if enabled.get() {
+                    ALLOCATIONS.with(|count| count.set(count.get() + 1));
+                }
+            });
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) }
+        }
+    }
+
+    pub fn count_allocations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+        ALLOCATIONS.with(|count| count.set(0));
+        ENABLED.with(|enabled| enabled.set(true));
+        let result = operation();
+        ENABLED.with(|enabled| enabled.set(false));
+        let allocations = ALLOCATIONS.with(Cell::get);
+        (result, allocations)
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: allocation_counter::CountingAllocator =
+    allocation_counter::CountingAllocator;
+
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
 use anyhow::{Context, Result};
@@ -203,11 +247,14 @@ async fn run_tui(mut app: App) -> Result<()> {
     let mut event_handler = EventHandler::new(std::time::Duration::from_millis(250));
 
     loop {
-        terminal.draw(|frame| ui::render(&mut app, frame))?;
+        if app.take_redraw_request() {
+            terminal.draw(|frame| ui::render(&mut app, frame))?;
+        }
 
         if let Some(event) = event_handler.next().await {
             match event {
                 Event::Key(key) => app.handle_key(key).await,
+                Event::Resize(width, height) => app.handle_resize(width, height),
                 Event::Tick => app.tick().await,
             }
         }

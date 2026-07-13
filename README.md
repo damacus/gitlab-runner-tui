@@ -169,6 +169,13 @@ after the current search completes, so a canceled refresh cannot replace known-g
 `metrics.request_counts` continues to report HTTP calls only, while
 `metrics.reused_enrichments.detail_enrichments` and `manager_enrichments` report cache reuse.
 
+The TUI keeps each enriched runner only once in its canonical session store. Filtered and sorted
+runner tables contain lightweight indices into that store, and worker tables contain runner/manager
+index pairs; rebuilding a view therefore does not clone runner, manager, tag, or string payloads.
+Selection is restored by runner ID whenever streamed updates rebuild or reorder those projections.
+The settings benchmark includes 1,000- and 10,000-runner samples and reports the deep Runner clone
+count alongside filtering, sorting, and worker-flattening latency.
+
 `runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
 
 - `group`
