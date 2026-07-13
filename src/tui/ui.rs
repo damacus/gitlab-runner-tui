@@ -4,7 +4,7 @@ use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
         manager_contact_label, App, AppMode, DetailLayoutMode, FilterPopupSection,
-        PollDisplayState, ResultsViewType, SettingsField, Tab,
+        PollDisplayState, ResultsViewType, SearchPhase, SettingsField, Tab,
     },
     styles,
 };
@@ -84,7 +84,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
         format!(
             "GitLab Runner TUI {} {}",
             app.spinner_char(),
-            app.active_tab().loading_label()
+            app.loading_status_label()
         )
     } else {
         "GitLab Runner TUI".to_string()
@@ -1376,13 +1376,16 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         } else {
             format!("tags [{}]", app.filter_input.trim())
         };
+        let status = match app.search_phase {
+            SearchPhase::Enriching => app.loading_status_label().to_string(),
+            SearchPhase::Discovering | SearchPhase::Idle => {
+                format!("Refreshing {}", app.active_tab())
+            }
+        };
         Line::from(vec![
             styles::status_chip(format!("{} LIVE", app.spinner_char()), "live"),
             Span::raw(" "),
-            Span::styled(
-                format!("Refreshing {} with {}", app.active_tab(), filter),
-                styles::accent_style(),
-            ),
+            Span::styled(format!("{status} with {filter}"), styles::accent_style()),
         ])
     } else if let Some(error) = &app.error_message {
         Line::from(vec![
@@ -1813,6 +1816,16 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         let rendered = render_to_string(&mut app, 220, 18);
         assert!(rendered.contains("Refreshing Runners"));
         assert!(rendered.contains("prod,linux"));
+    }
+
+    #[test]
+    fn status_bar_distinguishes_progressive_enrichment() {
+        let mut app = test_app();
+        app.is_loading = true;
+        app.search_phase = SearchPhase::Enriching;
+
+        let rendered = render_to_string(&mut app, 220, 18);
+        assert!(rendered.contains("Enriching runner details"));
     }
 
     #[test]
