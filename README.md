@@ -160,6 +160,15 @@ search, changing tabs, or saving settings cancels the previous stream and its pe
 Specialized tabs remain correctness-first and publish their results only after their required
 manager/detail filtering is complete.
 
+Within an interactive Runners session, successful detail and manager enrichment is cached for the
+current discovery scope. The cache compares the stable runner ID and the complete list-endpoint
+runner record; an unchanged poll reuses enrichment, while a changed or new runner fetches only its
+missing data. Runners absent from the next result in the same scope are evicted. Changing the host,
+token, discovery mode, targets, or saved settings clears the cache. Cache updates are committed only
+after the current search completes, so a canceled refresh cannot replace known-good data.
+`metrics.request_counts` continues to report HTTP calls only, while
+`metrics.reused_enrichments.detail_enrichments` and `manager_enrichments` report cache reuse.
+
 `runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
 
 - `group`

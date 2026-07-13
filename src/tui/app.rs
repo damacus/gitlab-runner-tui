@@ -1,5 +1,7 @@
 use crate::client::GitLabClient;
-use crate::conductor::{Conductor, EnrichmentProgress, QueryOutcome, QueryProfile};
+use crate::conductor::{
+    Conductor, EnrichmentProgress, QueryOutcome, QueryProfile, RunnerEnrichmentCache,
+};
 use crate::config::{
     format_runner_targets, parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode,
 };
@@ -329,8 +331,13 @@ pub enum SearchPhase {
 enum SearchUpdateKind {
     Summaries(QueryOutcome),
     Enrichment(Box<EnrichmentProgress>),
-    Complete(QueryOutcome),
+    Complete(Box<SearchCompletion>),
     Failed(anyhow::Error),
+}
+
+struct SearchCompletion {
+    outcome: QueryOutcome,
+    cache: Option<RunnerEnrichmentCache>,
 }
 
 struct SearchUpdate {
@@ -430,6 +437,7 @@ pub struct App {
     pub last_fetch_failed: bool,
     search_generation: u64,
     pending_search: Option<PendingSearch>,
+    enrichment_cache: RunnerEnrichmentCache,
     /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
     pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
@@ -495,6 +503,7 @@ impl App {
             last_fetch_failed: false,
             search_generation: 0,
             pending_search: None,
+            enrichment_cache: RunnerEnrichmentCache::default(),
             all_runners_fell_back: false,
             settings_draft,
             settings_message: None,
@@ -652,6 +661,13 @@ impl App {
         );
         self.settings_draft.discovery_mode = next;
         self.loaded_tab = None;
+        self.enrichment_cache.clear();
+    }
+
+    fn install_runtime_configuration(&mut self, config: AppConfig, conductor: Conductor) {
+        self.config = config;
+        self.conductor = conductor;
+        self.enrichment_cache.clear();
     }
 
     pub fn has_loaded_active_tab(&self) -> bool {
@@ -854,6 +870,7 @@ impl App {
         let max_enrichment_requests = self.config.max_enrichment_requests;
         let filters = self.build_filters();
         let summary_filters = summary_discovery_filters(&filters);
+        let enrichment_cache = self.enrichment_cache.clone();
         let tab = self.active_tab();
         let threshold = self.stale_contact_threshold();
         let (updates_tx, updates_rx) = mpsc::channel(4);
@@ -868,7 +885,7 @@ impl App {
 
             if tab == Tab::Runners {
                 match conductor
-                    .fetch_runner_summaries_with_metrics(summary_filters)
+                    .fetch_runner_summaries_with_metrics(summary_filters.clone())
                     .await
                 {
                     Ok(summaries) => {
@@ -885,11 +902,13 @@ impl App {
                         }
 
                         let progress_tx = updates_tx.clone();
-                        let outcome = conductor
+                        let cached_outcome = conductor
                             .stream_runner_summary_enrichment(
                                 summaries,
                                 filters,
+                                summary_filters,
                                 QueryProfile::Full,
+                                enrichment_cache,
                                 move |outcome| {
                                     let progress_tx = progress_tx.clone();
                                     async move {
@@ -911,7 +930,10 @@ impl App {
                             .send(SearchUpdate {
                                 generation,
                                 tab,
-                                kind: SearchUpdateKind::Complete(outcome),
+                                kind: SearchUpdateKind::Complete(Box::new(SearchCompletion {
+                                    outcome: cached_outcome.outcome,
+                                    cache: Some(cached_outcome.cache),
+                                })),
                             })
                             .await;
                     }
@@ -948,7 +970,10 @@ impl App {
                 }
             };
             let kind = match result {
-                Ok(outcome) => SearchUpdateKind::Complete(outcome),
+                Ok(outcome) => SearchUpdateKind::Complete(Box::new(SearchCompletion {
+                    outcome,
+                    cache: None,
+                })),
                 Err(error) => SearchUpdateKind::Failed(error),
             };
             let _ = updates_tx
@@ -1098,7 +1123,12 @@ impl App {
                 );
                 self.loaded_tab = Some(update.tab);
             }
-            SearchUpdateKind::Complete(outcome) => self.process_search_success(update.tab, outcome),
+            SearchUpdateKind::Complete(completion) => {
+                if let Some(cache) = completion.cache {
+                    self.enrichment_cache = cache;
+                }
+                self.process_search_success(update.tab, completion.outcome);
+            }
             SearchUpdateKind::Failed(error) => self.process_search_failure(error),
         }
     }
@@ -1201,6 +1231,7 @@ impl App {
     }
 
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
+        self.enrichment_cache.clear();
         self.renders_from_runners(Tab::Runners, runners);
         self.loaded_tab = Some(Tab::Runners);
         self.last_refresh_at = Some(Instant::now());
@@ -1625,8 +1656,7 @@ impl App {
 
         match result {
             Ok((new_config, conductor)) => {
-                self.config = new_config;
-                self.conductor = conductor;
+                self.install_runtime_configuration(new_config, conductor);
                 self.mode = AppMode::Dashboard;
                 self.settings_message = None;
                 self.loaded_tab = None;
@@ -3716,5 +3746,542 @@ mod tests {
         new_list.assert_async().await;
         new_detail.assert_async().await;
         new_managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn identical_second_poll_reuses_all_enrichment_without_http_requests() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("per_page".into(), "100".into()),
+                Matcher::UrlEncoded("page".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .expect(2)
+            .create_async()
+            .await;
+        let detail_one = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .expect(1)
+            .create_async()
+            .await;
+        let managers_one = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .expect(1)
+            .create_async()
+            .await;
+        let detail_two = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "17.2.0"))
+            .expect(1)
+            .create_async()
+            .await;
+        let managers_two = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .expect(1)
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+
+        app.start_search();
+        app.await_pending_search().await;
+        assert_eq!(app.enrichment_cache.len(), 2);
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .detail_requests,
+            2
+        );
+
+        app.start_search();
+        app.await_pending_search().await;
+        let metrics = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(metrics.request_counts.list_requests, 1);
+        assert_eq!(metrics.request_counts.detail_requests, 0);
+        assert_eq!(metrics.request_counts.manager_requests, 0);
+        assert_eq!(metrics.reused_enrichments.detail_enrichments, 2);
+        assert_eq!(metrics.reused_enrichments.manager_enrichments, 2);
+
+        list.assert_async().await;
+        detail_one.assert_async().await;
+        managers_one.assert_async().await;
+        detail_two.assert_async().await;
+        managers_two.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn changed_list_metadata_refreshes_only_that_runner() {
+        let mut server = Server::new_async().await;
+        let first_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .create_async()
+            .await;
+        let first_detail_one = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let first_managers_one = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let first_detail_two = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "17.2.0"))
+            .create_async()
+            .await;
+        let first_managers_two = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+
+        app.start_search();
+        app.await_pending_search().await;
+        first_list.assert_async().await;
+        first_detail_one.assert_async().await;
+        first_managers_one.assert_async().await;
+        first_detail_two.assert_async().await;
+        first_managers_two.assert_async().await;
+        drop(first_list);
+        drop(first_detail_one);
+        drop(first_managers_one);
+        drop(first_detail_two);
+        drop(first_managers_two);
+
+        let changed_runner = list_response_body(1).replace("Runner 1", "Runner 1 changed");
+        let second_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{changed_runner},{}]", list_response_body(2)))
+            .create_async()
+            .await;
+        let refreshed_detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.1"))
+            .expect(1)
+            .create_async()
+            .await;
+        let refreshed_managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .expect(1)
+            .create_async()
+            .await;
+
+        app.start_search();
+        app.await_pending_search().await;
+        let metrics = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(metrics.request_counts.detail_requests, 1);
+        assert_eq!(metrics.request_counts.manager_requests, 1);
+        assert_eq!(metrics.reused_enrichments.detail_enrichments, 1);
+        assert_eq!(metrics.reused_enrichments.manager_enrichments, 1);
+        assert_eq!(
+            app.raw_runners
+                .iter()
+                .find(|runner| runner.id == 1)
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("17.1.1")
+        );
+
+        second_list.assert_async().await;
+        refreshed_detail.assert_async().await;
+        refreshed_managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn removed_runner_is_evicted_and_refetched_if_it_returns() {
+        let mut server = Server::new_async().await;
+        let first_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .create_async()
+            .await;
+        let detail_one = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let managers_one = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let detail_two = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "17.2.0"))
+            .create_async()
+            .await;
+        let managers_two = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+
+        app.start_search();
+        app.await_pending_search().await;
+        assert_eq!(app.enrichment_cache.len(), 2);
+        first_list.assert_async().await;
+        detail_one.assert_async().await;
+        managers_one.assert_async().await;
+        detail_two.assert_async().await;
+        managers_two.assert_async().await;
+        drop(first_list);
+        drop(detail_one);
+        drop(managers_one);
+        drop(detail_two);
+        drop(managers_two);
+
+        let second_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        app.start_search();
+        app.await_pending_search().await;
+        assert_eq!(app.enrichment_cache.len(), 1);
+        assert_eq!(
+            app.live_query_metrics
+                .as_ref()
+                .unwrap()
+                .request_counts
+                .detail_requests,
+            0
+        );
+        second_list.assert_async().await;
+        drop(second_list);
+
+        let third_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .create_async()
+            .await;
+        let returned_detail = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_body(detail_response_body(2, "17.2.1"))
+            .expect(1)
+            .create_async()
+            .await;
+        let returned_managers = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_body("[]")
+            .expect(1)
+            .create_async()
+            .await;
+        app.start_search();
+        app.await_pending_search().await;
+        let metrics = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(metrics.request_counts.detail_requests, 1);
+        assert_eq!(metrics.request_counts.manager_requests, 1);
+        assert_eq!(metrics.reused_enrichments.detail_enrichments, 1);
+
+        third_list.assert_async().await;
+        returned_detail.assert_async().await;
+        returned_managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn installing_changed_host_and_targets_clears_session_cache() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+        app.start_search();
+        app.await_pending_search().await;
+        assert_eq!(app.enrichment_cache.len(), 1);
+
+        let targets = vec![RunnerTarget {
+            kind: RunnerTargetKind::Project,
+            id: "456".to_string(),
+            label: None,
+        }];
+        let config = AppConfig {
+            gitlab_host: Some("https://gitlab.example.test".to_string()),
+            gitlab_token: Some("replacement-token".to_string()),
+            runner_targets: targets.clone(),
+            ..AppConfig::default()
+        };
+        let client = GitLabClient::new(
+            "https://gitlab.example.test".to_string(),
+            "replacement-token".to_string(),
+        )
+        .unwrap();
+        let conductor =
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::ConfiguredTargets, targets);
+        app.install_runtime_configuration(config, conductor);
+
+        assert!(app.enrichment_cache.is_empty());
+        list.assert_async().await;
+        detail.assert_async().await;
+        managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn mixed_cache_hits_render_before_uncached_enrichment_and_keep_selection() {
+        let mut server = Server::new_async().await;
+        let first_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        let first_detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let first_managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body(format!("[{}]", manager_response_body(11, 1)))
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+        app.start_search();
+        app.await_pending_search().await;
+        first_list.assert_async().await;
+        first_detail.assert_async().await;
+        first_managers.assert_async().await;
+        drop(first_list);
+        drop(first_detail);
+        drop(first_managers);
+
+        let selected_index = app
+            .runners
+            .iter()
+            .position(|runner| runner.runner.id == 1)
+            .unwrap();
+        app.table_state.select(Some(selected_index));
+        let second_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!(
+                "[{},{}]",
+                list_response_body(1),
+                list_response_body(2)
+            ))
+            .create_async()
+            .await;
+        let second_detail_body = detail_response_body(2, "17.2.0");
+        let second_detail = server
+            .mock("GET", "/api/v4/runners/2")
+            .with_status(200)
+            .with_chunked_body(move |writer| {
+                std::thread::sleep(Duration::from_millis(300));
+                writer.write_all(second_detail_body.as_bytes())
+            })
+            .create_async()
+            .await;
+        let second_managers_body = format!("[{}]", manager_response_body(22, 2));
+        let second_managers = server
+            .mock("GET", "/api/v4/runners/2/managers")
+            .with_status(200)
+            .with_chunked_body(move |writer| {
+                std::thread::sleep(Duration::from_millis(300));
+                writer.write_all(second_managers_body.as_bytes())
+            })
+            .create_async()
+            .await;
+
+        app.start_search();
+        wait_for_partial_results(&mut app).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                app.poll_pending_search().await;
+                let cached = app.raw_runners.iter().find(|runner| runner.id == 1);
+                let uncached = app.raw_runners.iter().find(|runner| runner.id == 2);
+                if cached.is_some_and(|runner| runner.version.as_deref() == Some("17.1.0"))
+                    && uncached.is_some_and(|runner| runner.version.is_none())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cached enrichment should render before uncached requests finish");
+
+        let progress = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(progress.request_counts.detail_requests, 0);
+        assert_eq!(progress.request_counts.manager_requests, 0);
+        assert_eq!(progress.reused_enrichments.detail_enrichments, 1);
+        assert_eq!(progress.reused_enrichments.manager_enrichments, 1);
+        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
+
+        app.await_pending_search().await;
+        let final_metrics = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(final_metrics.request_counts.detail_requests, 1);
+        assert_eq!(final_metrics.request_counts.manager_requests, 1);
+        assert_eq!(final_metrics.reused_enrichments.detail_enrichments, 1);
+        assert_eq!(final_metrics.reused_enrichments.manager_enrichments, 1);
+        assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
+
+        second_list.assert_async().await;
+        second_detail.assert_async().await;
+        second_managers.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn canceled_changed_refresh_cannot_replace_committed_cache() {
+        let mut server = Server::new_async().await;
+        let first_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        let first_detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let first_managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+        app.start_search();
+        app.await_pending_search().await;
+        first_list.assert_async().await;
+        first_detail.assert_async().await;
+        first_managers.assert_async().await;
+        drop(first_list);
+        drop(first_detail);
+        drop(first_managers);
+
+        let changed_runner = list_response_body(1).replace("Runner 1", "Runner 1 changed");
+        let changed_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{changed_runner}]"))
+            .create_async()
+            .await;
+        let retrying_detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(429)
+            .with_header("retry-after", "60")
+            .expect(1)
+            .create_async()
+            .await;
+        let changed_managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        app.start_search();
+        wait_for_partial_results(&mut app).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !retrying_detail.matched_async().await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("changed enrichment should enter retry backoff");
+        changed_list.assert_async().await;
+        drop(changed_list);
+
+        let restored_list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        app.start_search();
+        tokio::time::timeout(Duration::from_secs(2), app.await_pending_search())
+            .await
+            .expect("restored query should reuse the last committed cache");
+
+        let metrics = app.live_query_metrics.as_ref().unwrap();
+        assert_eq!(metrics.request_counts.detail_requests, 0);
+        assert_eq!(metrics.request_counts.manager_requests, 0);
+        assert_eq!(metrics.reused_enrichments.detail_enrichments, 1);
+        assert_eq!(metrics.reused_enrichments.manager_enrichments, 1);
+        assert_eq!(app.raw_runners[0].version.as_deref(), Some("17.1.0"));
+        assert_eq!(app.enrichment_cache.len(), 1);
+
+        retrying_detail.assert_async().await;
+        changed_managers.assert_async().await;
+        restored_list.assert_async().await;
     }
 }
