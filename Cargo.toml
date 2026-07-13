@@ -1,6 +1,6 @@
 [package]
 name = "gitlab-runner-tui"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 description = "A terminal UI for monitoring GitLab CI runners"
 license = "MIT"
