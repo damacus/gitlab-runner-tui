@@ -1776,7 +1776,7 @@ mod tests {
     }
 
     fn sanitize_rendered_output(rendered: &str) -> String {
-        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█╭╮╯╰▕▏▔▁]").expect("border regex");
+        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█╭╮╯╰]").expect("border regex");
         let spaces = Regex::new(r"\s{2,}").expect("spaces regex");
 
         rendered
@@ -2063,7 +2063,7 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
     }
 
     #[test]
-    fn fitting_rows_leave_the_table_border_unmodified() {
+    fn fitting_rows_keep_the_rounded_table_border() {
         let mut app = test_app();
         app.runners = (0..14)
             .map(|runner_index| crate::tui::app::UIRunner {
@@ -2084,9 +2084,16 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
             .expect("draw");
 
         let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "╭");
+        assert_eq!(buffer[(179, 0)].symbol(), "╮");
+        assert_eq!(buffer[(0, 131)].symbol(), "╰");
+        assert_eq!(buffer[(179, 131)].symbol(), "╯");
+        for x in 1..179 {
+            assert_eq!(buffer[(x, 131)].symbol(), "─");
+        }
         for y in 1..131 {
-            assert_eq!(buffer[(0, y)].symbol(), "▕");
-            assert_eq!(buffer[(179, y)].symbol(), "▏");
+            assert_eq!(buffer[(0, y)].symbol(), "│");
+            assert_eq!(buffer[(179, y)].symbol(), "│");
         }
     }
 
@@ -2112,9 +2119,16 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
             .expect("draw");
 
         let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "╭");
+        assert_eq!(buffer[(39, 0)].symbol(), "╮");
+        assert_eq!(buffer[(0, 9)].symbol(), "╰");
+        assert_eq!(buffer[(39, 9)].symbol(), "╯");
+        for x in 1..39 {
+            assert_eq!(buffer[(x, 9)].symbol(), "─");
+        }
         for y in 1..9 {
-            assert_eq!(buffer[(0, y)].symbol(), "▕");
-            assert_eq!(buffer[(39, y)].symbol(), "▏");
+            assert_eq!(buffer[(0, y)].symbol(), "│");
+            assert_eq!(buffer[(39, y)].symbol(), "│");
         }
         assert!((1..9).any(|y| buffer[(38, y)].symbol() != " "));
     }
