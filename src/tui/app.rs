@@ -113,7 +113,7 @@ impl Tab {
 
     fn query_mode(self) -> TabQueryMode {
         match self {
-            Tab::Runners | Tab::Health | Tab::Workers => TabQueryMode::FetchRunners,
+            Tab::Runners | Tab::Health | Tab::Workers => TabQueryMode::Full,
             Tab::Offline => TabQueryMode::Offline,
             Tab::Uncontacted => TabQueryMode::Uncontacted,
             Tab::Empty => TabQueryMode::Empty,
@@ -231,6 +231,7 @@ pub struct SettingsDraft {
     pub runner_targets_input: String,
     pub poll_interval_input: String,
     pub poll_timeout_input: String,
+    max_enrichment_requests: usize,
     pub rotation_wait: RotationWaitConfig,
     pub selected_field: SettingsField,
 }
@@ -247,6 +248,7 @@ impl SettingsDraft {
             runner_targets_input: format_runner_targets(&config.runner_targets),
             poll_interval_input: config.poll_interval_secs.to_string(),
             poll_timeout_input: config.poll_timeout_secs.to_string(),
+            max_enrichment_requests: config.max_enrichment_requests,
             rotation_wait: config.rotation_wait.clone(),
             selected_field: SettingsField::Host,
         }
@@ -273,6 +275,7 @@ impl SettingsDraft {
         let config = AppConfig {
             poll_interval_secs,
             poll_timeout_secs,
+            max_enrichment_requests: self.max_enrichment_requests,
             gitlab_host: Some(self.host.trim().to_string()),
             gitlab_token: Some(self.token.trim().to_string()),
             discovery_mode: self.discovery_mode,
@@ -297,7 +300,7 @@ impl SettingsDraft {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabQueryMode {
-    FetchRunners,
+    Full,
     Offline,
     Uncontacted,
     Empty,
@@ -591,10 +594,11 @@ impl App {
             RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
         };
         self.config.discovery_mode = next;
-        self.conductor = Conductor::new_with_mode(
+        self.conductor = Conductor::new_with_mode_and_enrichment_limit(
             self.conductor.client().clone(),
             next,
             self.config.runner_targets.clone(),
+            self.config.max_enrichment_requests,
         );
         self.settings_draft.discovery_mode = next;
         self.loaded_tab = None;
@@ -793,14 +797,20 @@ impl App {
         let client = self.conductor.client().clone();
         let mode = self.conductor.discovery_mode();
         let targets = self.config.runner_targets.clone();
+        let max_enrichment_requests = self.config.max_enrichment_requests;
         let filters = self.build_filters();
         let tab = self.active_tab();
         let threshold = self.stale_contact_threshold();
 
         self.pending_search = Some(tokio::spawn(async move {
-            let conductor = Conductor::new_with_mode(client, mode, targets);
+            let conductor = Conductor::new_with_mode_and_enrichment_limit(
+                client,
+                mode,
+                targets,
+                max_enrichment_requests,
+            );
             let result = match tab.query_mode() {
-                TabQueryMode::FetchRunners => conductor.fetch_runners_with_metrics(filters).await,
+                TabQueryMode::Full => conductor.fetch_runners_with_metrics(filters).await,
                 TabQueryMode::Offline => conductor.list_offline_runners_with_metrics(filters).await,
                 TabQueryMode::Uncontacted => {
                     conductor
@@ -865,7 +875,7 @@ impl App {
         let threshold = self.stale_contact_threshold();
 
         let result = match tab.query_mode() {
-            TabQueryMode::FetchRunners => self.conductor.fetch_runners_with_metrics(filters).await,
+            TabQueryMode::Full => self.conductor.fetch_runners_with_metrics(filters).await,
             TabQueryMode::Offline => {
                 self.conductor
                     .list_offline_runners_with_metrics(filters)
@@ -1340,10 +1350,11 @@ impl App {
                 .context("GitLab token is required")?;
 
             let client = GitLabClient::new(host, token)?;
-            let conductor = Conductor::new_with_mode(
+            let conductor = Conductor::new_with_mode_and_enrichment_limit(
                 client,
                 new_config.discovery_mode,
                 new_config.runner_targets.clone(),
+                new_config.max_enrichment_requests,
             );
             conductor.validate_token().await?;
             new_config.save_to_canonical_path()?;
@@ -2094,6 +2105,19 @@ mod tests {
         )
     }
 
+    #[test]
+    fn settings_draft_preserves_config_only_enrichment_limit() {
+        let config = AppConfig {
+            max_enrichment_requests: 12,
+            ..AppConfig::default()
+        };
+
+        let draft = SettingsDraft::from_config(&config);
+        let validated = draft.validate().unwrap();
+
+        assert_eq!(validated.max_enrichment_requests, 12);
+    }
+
     fn test_runner(id: u64, managers: Vec<RunnerManager>) -> Runner {
         Runner {
             id,
@@ -2339,9 +2363,9 @@ mod tests {
 
     #[test]
     fn test_active_tab_query_mapping() {
-        assert_eq!(Tab::Runners.query_mode(), TabQueryMode::FetchRunners);
-        assert_eq!(Tab::Health.query_mode(), TabQueryMode::FetchRunners);
-        assert_eq!(Tab::Workers.query_mode(), TabQueryMode::FetchRunners);
+        assert_eq!(Tab::Runners.query_mode(), TabQueryMode::Full);
+        assert_eq!(Tab::Health.query_mode(), TabQueryMode::Full);
+        assert_eq!(Tab::Workers.query_mode(), TabQueryMode::Full);
         assert_eq!(Tab::Offline.query_mode(), TabQueryMode::Offline);
         assert_eq!(Tab::Uncontacted.query_mode(), TabQueryMode::Uncontacted);
         assert_eq!(Tab::Empty.query_mode(), TabQueryMode::Empty);

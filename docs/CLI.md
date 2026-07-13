@@ -77,6 +77,42 @@ completion_stability_polls = 2
 
 A runner counts as rotated when a manager was created at or after the effective rotation window start, or when a later poll observes a manager `system_id` that was not present in that runner's baseline. Runners that stop appearing during deployment stop blocking after `missing_runner_grace_polls`.
 
+## API Retry and Enrichment Limits
+
+All idempotent GitLab GET requests retry only HTTP `429`, `502`, `503`, and `504`, with four
+total attempts. The client honors a valid `Retry-After` value and otherwise uses capped
+exponential backoff with jitter. Authentication failures and all other statuses fail without a
+retry. Cancelling a TUI search interrupts any pending backoff sleep.
+
+Runner detail and manager enrichment share a configurable in-flight HTTP request budget:
+
+```toml
+# Default: 10; valid range: 2-64.
+max_enrichment_requests = 10
+```
+
+This config-only value counts each detail request and each manager request separately, so the two
+lookups started for one runner cannot bypass the limit.
+
+### Query profiles and request counts
+
+Let `N` be the number of runners returned by discovery and `M` the number left after a specialized
+manager-based filter:
+
+| Query | Detail requests | Manager requests |
+| --- | ---: | ---: |
+| `fetch` and full TUI views | `N` | `N` |
+| `switch`, `flames`, `empty`, `rotating` | `M` | `N` |
+| `rotating --wait` | `0` | `N` |
+| Summary with status filtering | `0` | `0` |
+| Summary with a runner-version prefix | `N` | `0` |
+
+The list request count still depends on discovery mode, configured targets, and pagination.
+`rotating --wait --version ...` adds `N` detail requests to preserve runner-version filtering.
+Filters are combined as one requirements set, so a query never repeats a detail or manager call
+for the same runner in one pass. Full output rows remain fully enriched; the savings come from not
+fetching detail data for runners that specialized commands will discard.
+
 ---
 
 ## Integration with `jq`

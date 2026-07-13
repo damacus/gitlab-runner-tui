@@ -74,6 +74,8 @@ gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+# Bounds concurrent runner-detail and manager API requests (valid range: 2-64).
+max_enrichment_requests = 10
 discovery_mode = "configured_targets"
 
 [[runner_targets]]
@@ -113,6 +115,7 @@ Example:
 ```toml
 poll_interval_secs = 30
 poll_timeout_secs = 1800
+max_enrichment_requests = 10
 gitlab_host = "https://gitlab.com"
 gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 discovery_mode = "configured_targets"
@@ -132,6 +135,22 @@ active_contacted_within_secs = 3600
 missing_runner_grace_polls = 2
 completion_stability_polls = 2
 ```
+
+GitLab GET requests retry HTTP `429`, `502`, `503`, and `504` responses up to four total
+attempts. A valid `Retry-After` header controls the delay; otherwise the client uses capped
+exponential backoff with jitter. Authentication failures and other HTTP statuses are not retried.
+Aborting or replacing an interactive search also cancels a pending retry delay.
+
+`max_enrichment_requests` is config-only and defaults to `10`. It is the combined in-flight
+request budget for runner detail and manager lookups, including the two lookups started for each
+runner; values from `2` through `64` are accepted.
+
+Queries now use explicit enrichment profiles instead of always issuing both follow-up requests.
+The full Runners, Health, and Workers views still fetch detail and manager data because their
+tables and detail panes display both. Offline, Stale, Idle, and Rotating queries fetch managers for
+all candidates, filter the result, and fetch runner details only for matching rows. Rotation wait
+polls use manager data only unless a version filter requires runner detail. Status-only summary
+queries use list data without per-runner enrichment.
 
 `runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
 

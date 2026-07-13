@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use client::GitLabClient;
-use conductor::{Conductor, QueryOutcome};
+use conductor::{Conductor, QueryOutcome, QueryProfile};
 use config::{
     parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode, RunnerTarget,
 };
@@ -117,6 +117,7 @@ async fn main() -> Result<()> {
         None => AppConfig::load()?,
     };
     validate_cli_args(&args)?;
+    config.validate_enrichment_request_limit()?;
 
     // Setup logging
     let file_appender = tracing_appender::rolling::daily("logs", "gitlab-runner-tui.log");
@@ -133,8 +134,12 @@ async fn main() -> Result<()> {
 
     let conductor = if args.demo {
         let client = GitLabClient::new(DEMO_HOST.to_string(), "demo-token".to_string())?;
-        let mut c =
-            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
+        let mut c = Conductor::new_with_mode_and_enrichment_limit(
+            client,
+            config.discovery_mode,
+            config.runner_targets.clone(),
+            config.max_enrichment_requests,
+        );
         c.demo_mode = true;
         c
     } else {
@@ -142,7 +147,12 @@ async fn main() -> Result<()> {
         config = resolved_config;
         if is_command_mode {
             let client = GitLabClient::new(host, token)?;
-            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone())
+            Conductor::new_with_mode_and_enrichment_limit(
+                client,
+                config.discovery_mode,
+                config.runner_targets.clone(),
+                config.max_enrichment_requests,
+            )
         } else {
             bootstrap_interactive_conductor(host, token, config.clone()).await?
         }
@@ -234,8 +244,12 @@ async fn bootstrap_interactive_conductor(
 ) -> Result<Conductor> {
     loop {
         let client = GitLabClient::new(host.clone(), token.clone())?;
-        let conductor =
-            Conductor::new_with_mode(client, config.discovery_mode, config.runner_targets.clone());
+        let conductor = Conductor::new_with_mode_and_enrichment_limit(
+            client,
+            config.discovery_mode,
+            config.runner_targets.clone(),
+            config.max_enrichment_requests,
+        );
 
         match validate_interactive_credentials(&conductor).await {
             Ok(()) => return Ok(conductor),
@@ -500,7 +514,7 @@ async fn run_rotation_wait(
 
     loop {
         let outcome = conductor
-            .fetch_runners_with_metrics(filters.clone())
+            .fetch_runners_with_profile_and_metrics(filters.clone(), QueryProfile::Managers)
             .await?;
         let event = state.observe(&outcome.runners, Utc::now());
         println!("{}", serde_json::to_string(&event)?);
@@ -705,6 +719,7 @@ mod tests {
     async fn setup_command_runner_mocks(
         server: &mut Server,
         tags: Option<&str>,
+        expected_detail_ids: &[u64],
     ) -> Vec<mockito::Mock> {
         let list_body = format!(
             "[{},{}]",
@@ -735,6 +750,7 @@ mod tests {
                     .mock("GET", format!("/api/v4/runners/{}", id).as_str())
                     .with_status(200)
                     .with_body(detail_response_body(id, "online", &["prod"]))
+                    .expect(usize::from(expected_detail_ids.contains(&id)))
                     .create_async()
                     .await,
             );
@@ -887,7 +903,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_command_returns_json_envelope_for_all_runners() {
         let mut server = Server::new_async().await;
-        let mocks = setup_command_runner_mocks(&mut server, None).await;
+        let mocks = setup_command_runner_mocks(&mut server, None, &[1, 2]).await;
         let conductor = command_test_conductor(server.url());
 
         let outcome = run_cli_query(
@@ -904,6 +920,8 @@ mod tests {
 
         assert_eq!(outcome.runners.len(), 2);
         assert_eq!(outcome.metrics.result_count, 2);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 2);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 2);
         assert!(parsed.get("runners").is_some());
         assert!(parsed.get("metrics").is_some());
         assert!(parsed.get("all_runners_fell_back").is_some());
@@ -995,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn rotating_command_returns_filtered_json_envelope() {
         let mut server = Server::new_async().await;
-        let mocks = setup_command_runner_mocks(&mut server, Some("prod")).await;
+        let mocks = setup_command_runner_mocks(&mut server, Some("prod"), &[1]).await;
         let conductor = command_test_conductor(server.url());
 
         let outcome = run_cli_query(
@@ -1014,6 +1032,8 @@ mod tests {
         assert_eq!(outcome.runners.len(), 1);
         assert_eq!(outcome.runners[0].id, 1);
         assert_eq!(outcome.metrics.result_count, 1);
+        assert_eq!(outcome.metrics.request_counts.detail_requests, 1);
+        assert_eq!(outcome.metrics.request_counts.manager_requests, 2);
         assert_eq!(runners.len(), 1);
         assert_eq!(runners[0]["id"], 1);
 
@@ -1040,6 +1060,7 @@ mod tests {
             .mock("GET", "/api/v4/runners/1")
             .with_status(200)
             .with_body(detail_response_body(1, "online", &["prod"]))
+            .expect(0)
             .create_async()
             .await;
         let managers = server
