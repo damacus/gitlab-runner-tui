@@ -19,7 +19,7 @@ use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -471,9 +471,6 @@ pub struct App {
     pub local_benchmarks: Option<LocalBenchmarkSnapshot>,
     /// When true, all network operations are suppressed (used in --demo mode).
     pub demo_mode: bool,
-    redraw_requested: bool,
-    next_visible_refresh_at: Option<Instant>,
-    terminal_size: Option<(u16, u16)>,
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -538,58 +535,6 @@ impl App {
             live_query_metrics: None,
             local_benchmarks: None,
             demo_mode: false,
-            redraw_requested: true,
-            next_visible_refresh_at: None,
-            terminal_size: None,
-        }
-    }
-
-    /// Request a frame after application state that is visible to the user changes.
-    pub(crate) fn request_redraw(&mut self) {
-        self.redraw_requested = true;
-    }
-
-    /// Consume the current redraw request. The main loop draws only when this returns true.
-    pub(crate) fn take_redraw_request(&mut self) -> bool {
-        std::mem::take(&mut self.redraw_requested)
-    }
-
-    /// Start collecting deadlines for relative-time labels in the frame being rendered.
-    pub(crate) fn begin_frame(&mut self) {
-        self.next_visible_refresh_at = None;
-    }
-
-    /// Schedule the next frame for a label whose text changes at `deadline`.
-    pub(crate) fn schedule_visible_refresh_at(&mut self, deadline: Instant) {
-        self.next_visible_refresh_at = Some(
-            self.next_visible_refresh_at
-                .map_or(deadline, |current| current.min(deadline)),
-        );
-    }
-
-    /// Schedule a refresh when a duration rendered from an `Instant` reaches its next label.
-    pub(crate) fn schedule_age_refresh(&mut self, started_at: Instant) {
-        let elapsed = started_at.elapsed().as_secs();
-        self.schedule_visible_refresh_at(
-            started_at + Duration::from_secs(next_age_label_boundary(elapsed)),
-        );
-    }
-
-    pub(crate) fn handle_resize(&mut self, width: u16, height: u16) {
-        let size = (width, height);
-        if self.terminal_size != Some(size) {
-            self.terminal_size = Some(size);
-            self.request_redraw();
-        }
-    }
-
-    fn request_redraw_if_deadline_elapsed(&mut self, now: Instant) {
-        if self
-            .next_visible_refresh_at
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.next_visible_refresh_at = None;
-            self.request_redraw();
         }
     }
 
@@ -606,7 +551,6 @@ impl App {
 
     pub fn advance_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
-        self.request_redraw();
     }
 
     pub fn active_tab(&self) -> Tab {
@@ -950,7 +894,6 @@ impl App {
         if self.demo_mode {
             self.conductor.demo_mode = true;
         }
-        self.request_redraw();
         if let Some(pending) = self.pending_search.take() {
             pending.handle.abort();
         }
@@ -1187,8 +1130,6 @@ impl App {
             return;
         }
 
-        self.request_redraw();
-
         match update.kind {
             SearchUpdateKind::Summaries(outcome) => {
                 self.is_loading = true;
@@ -1238,7 +1179,6 @@ impl App {
     }
 
     fn process_search_success(&mut self, tab: Tab, outcome: QueryOutcome) {
-        self.request_redraw();
         let now = Instant::now();
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
@@ -1256,7 +1196,6 @@ impl App {
     }
 
     fn process_search_failure(&mut self, error: anyhow::Error) {
-        self.request_redraw();
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
         let error_message = format!("{error:#}");
@@ -1346,7 +1285,6 @@ impl App {
     }
 
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
-        self.request_redraw();
         self.enrichment_cache.clear();
         self.renders_from_runners(Tab::Runners, runners);
         self.loaded_tab = Some(Tab::Runners);
@@ -1789,7 +1727,6 @@ impl App {
     }
 
     pub fn toggle_polling(&mut self) {
-        self.request_redraw();
         if self.polling_active {
             self.polling_active = false;
             self.poll_started_at = None;
@@ -1827,8 +1764,6 @@ impl App {
     }
 
     pub async fn tick(&mut self) {
-        self.request_redraw_if_deadline_elapsed(Instant::now());
-
         if self.is_loading {
             self.advance_spinner();
         }
@@ -1842,12 +1777,10 @@ impl App {
 
         if self.polling_active && self.poll_timed_out() {
             self.polling_active = false;
-            self.request_redraw();
         }
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
-        self.request_redraw();
         if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return;
@@ -2469,50 +2402,6 @@ fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Str
         3600..=86_399 => format!("{}h ago", seconds / 3600),
         _ => format!("{}d ago", seconds / 86_400),
     }
-}
-
-/// The whole-second age at which `format_age`-style labels next change.
-pub(crate) fn next_age_label_boundary(seconds: u64) -> u64 {
-    match seconds {
-        0..=89 => seconds + 1,
-        90..=3599 => (seconds / 60 + 1) * 60,
-        3600..=86_399 => (seconds / 3600 + 1) * 3600,
-        _ => (seconds / 86_400 + 1) * 86_400,
-    }
-}
-
-/// Time remaining until a runner/manager relative timestamp produces different text.
-pub(crate) fn relative_timestamp_refresh_after(
-    timestamp: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> Duration {
-    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0) as u64;
-    let next_seconds = match seconds {
-        0..=89 => 90,
-        90..=3599 => (seconds / 60 + 1) * 60,
-        3600..=86_399 => (seconds / 3600 + 1) * 3600,
-        _ => (seconds / 86_400 + 1) * 86_400,
-    };
-    let boundary = timestamp + chrono::Duration::seconds(next_seconds as i64);
-    let millis = boundary
-        .signed_duration_since(now)
-        .num_milliseconds()
-        .max(1) as u64;
-    Duration::from_millis(millis)
-}
-
-/// Time remaining until a timestamp rendered with `format_age` changes text.
-pub(crate) fn age_timestamp_refresh_after(
-    timestamp: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> Duration {
-    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0) as u64;
-    let boundary = timestamp + chrono::Duration::seconds(next_age_label_boundary(seconds) as i64);
-    let millis = boundary
-        .signed_duration_since(now)
-        .num_milliseconds()
-        .max(1) as u64;
-    Duration::from_millis(millis)
 }
 
 fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
@@ -3588,80 +3477,6 @@ mod tests {
         assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");
     }
 
-    #[test]
-    fn relative_time_deadlines_match_the_next_visible_label_boundary() {
-        assert_eq!(next_age_label_boundary(0), 1);
-        assert_eq!(next_age_label_boundary(89), 90);
-        assert_eq!(next_age_label_boundary(90), 120);
-        assert_eq!(next_age_label_boundary(3_599), 3_600);
-        assert_eq!(next_age_label_boundary(3_600), 7_200);
-
-        let now = Utc.with_ymd_and_hms(2024, 1, 21, 10, 15, 0).unwrap();
-        assert_eq!(
-            relative_timestamp_refresh_after(now - chrono::Duration::seconds(89), now),
-            Duration::from_secs(1)
-        );
-        assert_eq!(
-            relative_timestamp_refresh_after(now - chrono::Duration::seconds(90), now),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            age_timestamp_refresh_after(now - chrono::Duration::seconds(89), now),
-            Duration::from_secs(1)
-        );
-    }
-
-    #[tokio::test]
-    async fn idle_ticks_do_not_request_redundant_frames() {
-        let mut app = test_app();
-        assert!(app.take_redraw_request(), "initial frame");
-
-        for _ in 0..20 {
-            app.tick().await;
-            assert!(!app.take_redraw_request());
-        }
-    }
-
-    #[tokio::test]
-    async fn input_and_elapsed_visible_deadlines_request_frames_immediately() {
-        let mut app = test_app();
-        app.take_redraw_request();
-
-        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
-            .await;
-        assert!(app.take_redraw_request());
-
-        app.schedule_visible_refresh_at(Instant::now());
-        app.tick().await;
-        assert!(app.take_redraw_request());
-    }
-
-    #[tokio::test]
-    async fn starting_a_query_requests_loading_feedback_immediately() {
-        let mut app = test_app();
-        app.take_redraw_request();
-
-        app.start_search();
-        assert!(app.take_redraw_request());
-        assert!(app.is_loading);
-        if let Some(pending) = app.pending_search.take() {
-            pending.handle.abort();
-        }
-    }
-
-    #[test]
-    fn resize_requests_one_frame_per_distinct_terminal_size() {
-        let mut app = test_app();
-        app.take_redraw_request();
-
-        app.handle_resize(120, 40);
-        assert!(app.take_redraw_request());
-        app.handle_resize(120, 40);
-        assert!(!app.take_redraw_request());
-        app.handle_resize(121, 40);
-        assert!(app.take_redraw_request());
-    }
-
     #[tokio::test]
     async fn demo_mode_loads_every_tab_from_the_fixture_fleet() {
         let mut app = test_app();
@@ -4583,7 +4398,6 @@ mod tests {
         assert_eq!(app.runners[0].formatted_tags, "old-tag");
 
         runner.tag_list = vec!["new-tag".to_string(), "linux".to_string()];
-        app.take_redraw_request();
         app.process_search_update(SearchUpdate {
             generation: 12,
             tab: Tab::Runners,
@@ -4596,9 +4410,5 @@ mod tests {
         assert_eq!(app.runners[0].formatted_tags, "new-tag, linux");
         assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
         assert_eq!(app.runners[0].runner_index, 0);
-        assert!(
-            app.take_redraw_request(),
-            "progress must be visible immediately"
-        );
     }
 }
