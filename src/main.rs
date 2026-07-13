@@ -29,6 +29,7 @@ use rotation_wait::{RotationWaitOptions, RotationWaitState};
 use std::{
     env,
     io::{self, Write},
+    path::PathBuf,
 };
 use tui::{
     app::App,
@@ -67,8 +68,13 @@ struct Args {
     #[arg(long, env("GITLAB_HOST"), global = true)]
     host: Option<String>,
 
-    #[arg(long, env("GITLAB_TOKEN"), hide_env_values = true, global = true)]
-    token: Option<String>,
+    /// Load configuration from this explicitly trusted file instead of the canonical user config
+    #[arg(long, value_name = "PATH", global = true)]
+    config: Option<PathBuf>,
+
+    /// Load environment variables from this explicitly trusted dotenv file
+    #[arg(long, value_name = "PATH", global = true)]
+    dotenv: Option<PathBuf>,
 
     /// Comma-separated tags to filter runners
     #[arg(long, global = true)]
@@ -91,7 +97,8 @@ impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Args")
             .field("host", &self.host)
-            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("config", &self.config)
+            .field("dotenv", &self.dotenv)
             .field("command", &self.command)
             .field("tags", &self.tags)
             .field("version", &self.version_filter)
@@ -103,9 +110,12 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
     let args = Args::parse();
-    let mut config = AppConfig::load().unwrap_or_default();
+    load_explicit_dotenv(args.dotenv.as_deref())?;
+    let mut config = match args.config.as_deref() {
+        Some(path) => AppConfig::load_from_path(path)?,
+        None => AppConfig::load()?,
+    };
     validate_cli_args(&args)?;
 
     // Setup logging
@@ -197,7 +207,7 @@ async fn run_tui(mut app: App) -> Result<()> {
         }
     }
 
-    event_handler.stop();
+    event_handler.stop().await;
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -276,17 +286,12 @@ fn resolve_runtime_settings_with_env(
         .or_else(|| config.gitlab_host.clone())
         .unwrap_or_else(|| "https://gitlab.com".to_string());
 
-    let token = args
-        .token
-        .clone()
-        .or(env_token)
-        .or_else(|| config.gitlab_token.clone());
+    let token = env_token.or_else(|| config.gitlab_token.clone());
 
     if args.command.is_some() {
         config.validate_runtime_settings()?;
-        let token = token.context(
-            "GITLAB_TOKEN must be set via environment variable, --token flag, or config.toml",
-        )?;
+        let token = token
+            .context("GITLAB_TOKEN must be set via environment variable or trusted config.toml")?;
         return Ok((host, token, config));
     }
 
@@ -294,6 +299,14 @@ fn resolve_runtime_settings_with_env(
         Some(token) => Ok((host, token, config)),
         None => run_first_time_setup(host, &mut config),
     }
+}
+
+fn load_explicit_dotenv(path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = path {
+        dotenvy::from_path(path)
+            .with_context(|| format!("Failed to load dotenv file {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn run_first_time_setup(
@@ -800,6 +813,42 @@ mod tests {
         assert!(Args::try_parse_from(["gitlab-runner-tui", "--once", "fetch"]).is_err());
         assert!(Args::try_parse_from(["gitlab-runner-tui", "--json", "fetch"]).is_err());
         assert!(Args::try_parse_from(["gitlab-runner-tui", "--command", "fetch"]).is_err());
+        assert!(Args::try_parse_from(["gitlab-runner-tui", "--token", "sentinel-secret"]).is_err());
+    }
+
+    #[test]
+    fn parses_only_explicit_local_config_and_dotenv_paths() {
+        let args = Args::try_parse_from([
+            "gitlab-runner-tui",
+            "--config",
+            "/trusted/config.toml",
+            "--dotenv",
+            "/trusted/runtime.env",
+        ])
+        .unwrap();
+
+        assert_eq!(args.config, Some(PathBuf::from("/trusted/config.toml")));
+        assert_eq!(args.dotenv, Some(PathBuf::from("/trusted/runtime.env")));
+    }
+
+    #[test]
+    fn dotenv_file_is_ignored_unless_explicitly_selected() {
+        const VARIABLE: &str = "GITLAB_RUNNER_TUI_EXPLICIT_DOTENV_TEST";
+        let path = std::env::temp_dir().join(format!(
+            "gitlab-runner-tui-explicit-dotenv-{}.env",
+            std::process::id()
+        ));
+        std::fs::write(&path, format!("{VARIABLE}=loaded-explicitly\n")).unwrap();
+        std::env::remove_var(VARIABLE);
+
+        load_explicit_dotenv(None).unwrap();
+        assert!(std::env::var(VARIABLE).is_err());
+
+        load_explicit_dotenv(Some(&path)).unwrap();
+        assert_eq!(std::env::var(VARIABLE).unwrap(), "loaded-explicitly");
+
+        std::env::remove_var(VARIABLE);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
@@ -1186,7 +1235,8 @@ mod tests {
         let args = Args {
             command: None,
             host: None,
-            token: None,
+            config: None,
+            dotenv: None,
             tags: None,
             version_filter: None,
             stale_cutoff: None,
@@ -1216,7 +1266,8 @@ mod tests {
         let args = Args {
             command: Some(CliCommand::Fetch { summary: false }),
             host: None,
-            token: None,
+            config: None,
+            dotenv: None,
             tags: None,
             version_filter: None,
             stale_cutoff: None,
@@ -1235,15 +1286,21 @@ mod tests {
         let args = Args {
             command: Some(CliCommand::Fetch { summary: false }),
             host: None,
-            token: Some("glpat-test".to_string()),
+            config: None,
+            dotenv: None,
             tags: None,
             version_filter: None,
             stale_cutoff: None,
             demo: false,
         };
 
-        let (host, token, config) =
-            resolve_runtime_settings_with_env(&args, AppConfig::default(), None, None).unwrap();
+        let (host, token, config) = resolve_runtime_settings_with_env(
+            &args,
+            AppConfig::default(),
+            None,
+            Some("glpat-test".to_string()),
+        )
+        .unwrap();
 
         assert_eq!(host, "https://gitlab.com");
         assert_eq!(token, "glpat-test");
@@ -1255,7 +1312,8 @@ mod tests {
         let args = Args {
             command: Some(CliCommand::Rotating { wait: true }),
             host: None,
-            token: Some("glpat-test".to_string()),
+            config: None,
+            dotenv: None,
             tags: Some("prod".to_string()),
             version_filter: None,
             stale_cutoff: None,
@@ -1269,9 +1327,10 @@ mod tests {
             ..AppConfig::default()
         };
 
-        let error = resolve_runtime_settings_with_env(&args, config, None, None)
-            .unwrap_err()
-            .to_string();
+        let error =
+            resolve_runtime_settings_with_env(&args, config, None, Some("glpat-test".to_string()))
+                .unwrap_err()
+                .to_string();
 
         assert!(error.contains("active contact threshold"));
     }

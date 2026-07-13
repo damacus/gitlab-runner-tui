@@ -142,3 +142,9 @@ export GITLAB_TOKEN="your-token"
 
 gitlab-runner-tui fetch
 ```
+
+The token is not accepted as a command-line argument because process arguments and shell history
+can expose secrets. Interactive setup reads the token without echoing it. The canonical user config
+is loaded by default; current-directory `.env` and `config.toml` files are ignored. Use `--dotenv
+/trusted/path/runtime.env` or `--config /trusted/path/config.toml` only for files you trust, because
+they can select the GitLab host that receives the token.

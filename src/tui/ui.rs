@@ -1149,13 +1149,7 @@ fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
         RunnerDiscoveryMode::ConfiguredTargets => "Targets",
     };
     let is_token_selected = app.settings_draft.selected_field == SettingsField::Token;
-    let token_display = if is_token_selected {
-        if app.settings_draft.token.is_empty() {
-            "-".to_string()
-        } else {
-            app.settings_draft.token.clone()
-        }
-    } else if app.settings_draft.token.is_empty() {
+    let token_display = if app.settings_draft.token.is_empty() {
         "-".to_string()
     } else {
         "•".repeat(app.settings_draft.token.chars().count().min(24))
@@ -1871,5 +1865,36 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         assert!(rendered.contains("type:search"));
         assert!(!rendered.contains("a:clear all"));
         assert!(!rendered.contains("a clear all"));
+    }
+
+    #[test]
+    fn settings_never_render_token_plaintext_when_focused_or_unfocused() {
+        const SENTINEL: &str = "glpat-sentinel-must-never-render";
+        let mut app = test_app();
+        app.mode = AppMode::Settings;
+        app.settings_draft.token = SENTINEL.to_string();
+
+        app.settings_draft.selected_field = SettingsField::Token;
+        let focused = render_to_string(&mut app, 120, 40);
+        assert!(!focused.contains(SENTINEL));
+        assert!(focused.contains("••••••••••••••••••••••••"));
+
+        app.settings_draft.selected_field = SettingsField::Host;
+        let unfocused = render_to_string(&mut app, 120, 40);
+        assert!(!unfocused.contains(SENTINEL));
+        assert!(unfocused.contains("••••••••••••••••••••••••"));
+    }
+
+    #[test]
+    fn settings_render_empty_token_without_exposing_data() {
+        let mut app = test_app();
+        app.mode = AppMode::Settings;
+        app.settings_draft.selected_field = SettingsField::Token;
+        app.settings_draft.token.clear();
+
+        let rendered = render_to_string(&mut app, 120, 40);
+
+        assert!(rendered.contains("Token"));
+        assert!(!rendered.contains("glpat-"));
     }
 }

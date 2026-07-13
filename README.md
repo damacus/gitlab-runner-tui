@@ -53,12 +53,19 @@ export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
 export GITLAB_HOST="https://gitlab.com"  # Optional, defaults to gitlab.com
 ```
 
-Or create a `.env` file:
+Or load an explicitly trusted dotenv file:
 
 ```env
 GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 GITLAB_HOST=https://gitlab.com
 ```
+
+```bash
+gitlab-runner-tui --dotenv /trusted/path/gitlab-runner-tui.env
+```
+
+Dotenv files are never discovered from the current working directory. Only use `--dotenv` with a
+file you trust; its host and token values control where credentials are sent.
 
 Or create a config file at `~/.config/gitlab-runner-tui/config.toml`:
 
@@ -92,10 +99,14 @@ If you launch the interactive TUI without a configured token, with a stale/inval
 
 Runner discovery now comes from configured group/project targets instead of instance-wide runner listing. This is what makes normal GitLab.com usage possible.
 
-Optional `config.toml` file locations (checked in this order):
+By default, configuration is loaded only from the canonical user path:
 
-1. `./config.toml` (current working directory)
-2. `~/.config/gitlab-runner-tui/config.toml` (canonical)
+- `~/.config/gitlab-runner-tui/config.toml` on Linux
+- the equivalent platform user-config directory on macOS and Windows
+
+The application does not discover `./config.toml`. To use another file, select it explicitly with
+`--config /trusted/path/config.toml`. Treat explicitly selected config and dotenv files as trusted
+because they can choose the GitLab host that receives your token.
 
 Example:
 
@@ -141,8 +152,8 @@ group:my-org/platform,project:my-org/app
 # Using environment variables
 gitlab-runner-tui
 
-# Or specify via CLI flags
-gitlab-runner-tui --host https://gitlab.example.com --token glpat-xxx
+# Or override only the host via CLI; tokens are never accepted through argv
+GITLAB_TOKEN=glpat-xxx gitlab-runner-tui --host https://gitlab.example.com
 ```
 
 ## Dashboard Tabs
@@ -236,8 +247,12 @@ gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
 ### CLI Flags
 
 ```bash
-# Override host and token
-gitlab-runner-tui --host <URL> --token <TOKEN>
+# Override the host (provide tokens through GITLAB_TOKEN or secure interactive setup)
+gitlab-runner-tui --host <URL>
+
+# Explicitly load trusted local configuration
+gitlab-runner-tui --config /trusted/path/config.toml
+gitlab-runner-tui --dotenv /trusted/path/runtime.env
 
 # Command mode (non-interactive, JSON output)
 gitlab-runner-tui fetch --tags production

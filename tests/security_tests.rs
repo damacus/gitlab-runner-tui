@@ -16,9 +16,9 @@ fn test_help_output_does_not_leak_token() {
         "GITLAB_TOKEN leaked in --help output!"
     );
 
-    // Verify that the environment variable is acknowledged as set but value is hidden
+    // The unsafe argv token option has been removed entirely.
     assert!(
-        stdout.contains("[env: GITLAB_TOKEN]"),
-        "GITLAB_TOKEN should be shown as an env var but hidden"
+        !stdout.contains("--token") && !stdout.contains("[env: GITLAB_TOKEN]"),
+        "help must not advertise a token argument or echo credential state"
     );
 }
