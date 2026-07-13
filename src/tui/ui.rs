@@ -118,6 +118,11 @@ fn table_viewport_capacity(area: Rect) -> usize {
     area.height.saturating_sub(3) as usize
 }
 
+fn table_needs_scrollbar(content_length: usize, area: Rect) -> bool {
+    let viewport = table_viewport_capacity(area);
+    viewport > 0 && content_length > viewport
+}
+
 fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
     let vert = Layout::vertical([
         Constraint::Percentage((100 - height_percent) / 2),
@@ -817,13 +822,14 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_table_scrollbar(app: &mut App, frame: &mut Frame, area: Rect) {
-    if app.active_result_len() <= 1 {
+    let content_length = app.active_result_len();
+    if !table_needs_scrollbar(content_length, area) {
         return;
     }
-    let viewport = area.height.saturating_sub(3) as usize;
-    app.scroll_state = ScrollbarState::new(app.active_result_len())
+    let viewport = table_viewport_capacity(area);
+    app.scroll_state = ScrollbarState::new(content_length)
         .position(app.table_state.offset())
-        .viewport_content_length(viewport.max(1));
+        .viewport_content_length(viewport);
 
     frame.render_stateful_widget(
         Scrollbar::default()
@@ -2042,6 +2048,45 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         assert_eq!(visible_row_range(1_000, Some(14), 0, 14), 1..15);
         assert_eq!(visible_row_range(1_000, Some(999), 1, 14), 986..1_000);
         assert_eq!(visible_row_range(5, Some(4), 0, 14), 0..5);
+    }
+
+    #[test]
+    fn table_scrollbar_is_only_needed_when_rows_overflow_the_viewport() {
+        let tall_table = Rect::new(0, 0, 180, 132);
+        assert!(!table_needs_scrollbar(14, tall_table));
+
+        let seven_row_viewport = Rect::new(0, 0, 120, 10);
+        assert!(!table_needs_scrollbar(7, seven_row_viewport));
+        assert!(table_needs_scrollbar(8, seven_row_viewport));
+
+        assert!(!table_needs_scrollbar(1, Rect::new(0, 0, 120, 3)));
+    }
+
+    #[test]
+    fn fitting_rows_leave_the_table_border_unmodified() {
+        let mut app = test_app();
+        app.runners = (0..14)
+            .map(|runner_index| crate::tui::app::UIRunner {
+                runner_index,
+                formatted_tags: String::new(),
+                formatted_groups: None,
+            })
+            .collect();
+
+        let backend = TestBackend::new(180, 132);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(styles::block("Runners"), area);
+                render_table_scrollbar(&mut app, frame, area);
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        for y in 1..131 {
+            assert_eq!(buffer[(179, y)].symbol(), "│");
+        }
     }
 
     #[test]
