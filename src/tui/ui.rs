@@ -2,9 +2,8 @@ use crate::config::RunnerDiscoveryMode;
 use crate::models::runner::{RunnerSortKey, TagFilterMode};
 use crate::tui::{
     app::{
-        age_timestamp_refresh_after, detail_layout_mode, latest_runner_contact,
-        latest_runner_contact_label, manager_contact_detail, manager_contact_label,
-        relative_timestamp_refresh_after, App, AppMode, DetailLayoutMode, FilterPopupSection,
+        detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
+        manager_contact_label, App, AppMode, DetailLayoutMode, FilterPopupSection,
         PollDisplayState, ResultsViewType, SearchPhase, SettingsField, Tab,
     },
     styles,
@@ -20,7 +19,7 @@ use ratatui::{
     },
     Frame,
 };
-use std::{ops::Range, time::Instant};
+use std::ops::Range;
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,28 +43,6 @@ fn display_or_dash(value: &str) -> &str {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
-    app.begin_frame();
-    if let Some(last_refresh_at) = app.last_refresh_at {
-        app.schedule_age_refresh(last_refresh_at);
-    } else if let Some(last_poll_at) = app.last_poll_at {
-        app.schedule_age_refresh(last_poll_at);
-    }
-    if app.polling_active {
-        // The countdown displays exact seconds near the polling boundary.
-        app.schedule_visible_refresh_at(Instant::now() + std::time::Duration::from_secs(1));
-    }
-    let now = Utc::now();
-    let selected_registered_at = app
-        .selected_runner()
-        .and_then(|runner| runner.created_at.as_deref())
-        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|timestamp| timestamp.with_timezone(&Utc));
-    if let Some(registered_at) = selected_registered_at {
-        app.schedule_visible_refresh_at(
-            Instant::now() + age_timestamp_refresh_after(registered_at, now),
-        );
-    }
-
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(1),
@@ -506,15 +483,6 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         table_viewport_capacity(area),
     );
     *app.table_state.offset_mut() = visible_range.start;
-    let refresh_origin = Instant::now();
-    let refresh_delay = app.runners[visible_range.clone()]
-        .iter()
-        .filter_map(|row| latest_runner_contact(&app.raw_runners[row.runner_index]))
-        .map(|contact| relative_timestamp_refresh_after(contact, now))
-        .min();
-    if let Some(delay) = refresh_delay {
-        app.schedule_visible_refresh_at(refresh_origin + delay);
-    }
     let header = if rotating {
         Row::new(vec![
             Cell::from("ID"),
@@ -753,19 +721,6 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
         table_viewport_capacity(area),
     );
     *app.table_state.offset_mut() = visible_range.start;
-    let refresh_origin = Instant::now();
-    let refresh_delay = app.manager_rows[visible_range.clone()]
-        .iter()
-        .filter_map(|row| {
-            crate::models::runner::parse_manager_contacted_at(
-                &app.raw_runners[row.runner_index].managers[row.manager_index],
-            )
-        })
-        .map(|contact| relative_timestamp_refresh_after(contact, now))
-        .min();
-    if let Some(delay) = refresh_delay {
-        app.schedule_visible_refresh_at(refresh_origin + delay);
-    }
     let header = Row::new(vec![
         Cell::from("Runner"),
         Cell::from("Worker"),
