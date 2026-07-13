@@ -838,7 +838,7 @@ fn render_table_scrollbar(app: &mut App, frame: &mut Frame, area: Rect) {
             .end_symbol(None),
         area.inner(Margin {
             vertical: 1,
-            horizontal: 0,
+            horizontal: 1,
         }),
         &mut app.scroll_state,
     );
@@ -1776,7 +1776,7 @@ mod tests {
     }
 
     fn sanitize_rendered_output(rendered: &str) -> String {
-        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█╭╮╯╰]").expect("border regex");
+        let border_chars = Regex::new(r"[│┌┐└┘├┤┬┴┼─█╭╮╯╰▕▏▔▁]").expect("border regex");
         let spaces = Regex::new(r"\s{2,}").expect("spaces regex");
 
         rendered
@@ -2085,8 +2085,38 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
 
         let buffer = terminal.backend().buffer();
         for y in 1..131 {
-            assert_eq!(buffer[(179, y)].symbol(), "│");
+            assert_eq!(buffer[(0, y)].symbol(), "▕");
+            assert_eq!(buffer[(179, y)].symbol(), "▏");
         }
+    }
+
+    #[test]
+    fn overflowing_rows_keep_the_scrollbar_inside_the_table_border() {
+        let mut app = test_app();
+        app.runners = (0..8)
+            .map(|runner_index| crate::tui::app::UIRunner {
+                runner_index,
+                formatted_tags: String::new(),
+                formatted_groups: None,
+            })
+            .collect();
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(styles::block("Runners"), area);
+                render_table_scrollbar(&mut app, frame, area);
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        for y in 1..9 {
+            assert_eq!(buffer[(0, y)].symbol(), "▕");
+            assert_eq!(buffer[(39, y)].symbol(), "▏");
+        }
+        assert!((1..9).any(|y| buffer[(38, y)].symbol() != " "));
     }
 
     #[test]
