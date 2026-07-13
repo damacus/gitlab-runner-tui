@@ -2,8 +2,14 @@ use crate::models::{
     manager::RunnerManager,
     runner::{Runner, RunnerGroup},
 };
+use chrono::{Duration, SecondsFormat, Utc};
 
 pub fn demo_runners() -> Vec<Runner> {
+    let now = Utc::now();
+    let contacted_minutes_ago = |minutes| {
+        Some((now - Duration::minutes(minutes)).to_rfc3339_opts(SecondsFormat::Millis, true))
+    };
+
     vec![
         // --- ONLINE runners (6) ---
         Runner {
@@ -27,7 +33,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200001,
                 system_id: "s_aabbccdd1122".to_string(),
                 created_at: "2022-06-15T08:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T09:45:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(15),
                 ip_address: Some("10.0.1.10".to_string()),
                 status: "online".to_string(),
                 version: Some("18.1.0".to_string()),
@@ -62,7 +68,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200002,
                 system_id: "s_bbccddee2233".to_string(),
                 created_at: "2022-06-15T08:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T09:50:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(10),
                 ip_address: Some("10.0.1.11".to_string()),
                 status: "online".to_string(),
                 version: Some("18.1.0".to_string()),
@@ -94,7 +100,7 @@ pub fn demo_runners() -> Vec<Runner> {
                     id: 200003,
                     system_id: "s_ccddee334455".to_string(),
                     created_at: "2023-01-10T12:00:00.000Z".to_string(),
-                    contacted_at: Some("2026-03-19T09:30:00.000Z".to_string()),
+                    contacted_at: contacted_minutes_ago(30),
                     ip_address: Some("10.0.2.5".to_string()),
                     status: "online".to_string(),
                     version: Some("17.9.0".to_string()),
@@ -106,7 +112,7 @@ pub fn demo_runners() -> Vec<Runner> {
                     id: 200004,
                     system_id: "s_ddeeff445566".to_string(),
                     created_at: "2023-01-10T12:00:00.000Z".to_string(),
-                    contacted_at: Some("2026-03-19T08:00:00.000Z".to_string()),
+                    contacted_at: contacted_minutes_ago(45),
                     ip_address: Some("10.0.2.6".to_string()),
                     status: "online".to_string(),
                     version: Some("17.9.0".to_string()),
@@ -138,7 +144,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200005,
                 system_id: "s_eeff00556677".to_string(),
                 created_at: "2023-03-20T09:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T09:55:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(5),
                 ip_address: Some("10.0.3.1".to_string()),
                 status: "online".to_string(),
                 version: Some("17.8.2".to_string()),
@@ -173,7 +179,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200006,
                 system_id: "s_ff0011667788".to_string(),
                 created_at: "2021-11-05T14:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T07:22:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(20),
                 ip_address: Some("10.0.4.2".to_string()),
                 status: "online".to_string(),
                 version: Some("16.11.5".to_string()),
@@ -200,7 +206,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200007,
                 system_id: "s_001122778899".to_string(),
                 created_at: "2024-02-01T10:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T09:58:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(2),
                 ip_address: Some("10.0.5.10".to_string()),
                 status: "online".to_string(),
                 version: Some("18.0.1".to_string()),
@@ -232,7 +238,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200008,
                 system_id: "s_112233889900".to_string(),
                 created_at: "2022-08-01T08:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-18T22:10:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(25),
                 ip_address: Some("10.0.1.12".to_string()),
                 status: "offline".to_string(),
                 version: Some("17.5.0".to_string()),
@@ -263,7 +269,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200009,
                 system_id: "s_223344990011".to_string(),
                 created_at: "2020-05-12T00:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-17T14:00:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(35),
                 ip_address: None,
                 status: "offline".to_string(),
                 version: Some("15.4.0".to_string()),
@@ -290,7 +296,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200010,
                 system_id: "s_334455001122".to_string(),
                 created_at: "2023-07-19T11:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-19T04:30:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(40),
                 ip_address: Some("10.0.3.5".to_string()),
                 status: "offline".to_string(),
                 version: Some("17.2.1".to_string()),
@@ -322,7 +328,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200011,
                 system_id: "s_445566112233".to_string(),
                 created_at: "2022-04-01T00:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-17T10:00:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(120),
                 ip_address: Some("10.0.6.1".to_string()),
                 status: "offline".to_string(),
                 version: Some("17.0.0".to_string()),
@@ -349,7 +355,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200012,
                 system_id: "s_556677223344".to_string(),
                 created_at: "2021-09-14T00:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-14T06:00:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(4_320),
                 ip_address: None,
                 status: "offline".to_string(),
                 version: Some("16.8.0".to_string()),
@@ -376,7 +382,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 id: 200013,
                 system_id: "s_667788334455".to_string(),
                 created_at: "2020-11-30T00:00:00.000Z".to_string(),
-                contacted_at: Some("2026-03-09T12:00:00.000Z".to_string()),
+                contacted_at: contacted_minutes_ago(14_400),
                 ip_address: Some("10.0.7.99".to_string()),
                 status: "offline".to_string(),
                 version: Some("16.5.2".to_string()),
