@@ -247,7 +247,7 @@ async fn run_tui(mut app: App) -> Result<()> {
     let mut event_handler = EventHandler::new(std::time::Duration::from_millis(250));
 
     loop {
-        if app.take_redraw_request() {
+        if should_draw_frame(app.take_redraw_request()) {
             terminal.draw(|frame| ui::render(&mut app, frame))?;
         }
 
@@ -273,6 +273,11 @@ async fn run_tui(mut app: App) -> Result<()> {
     )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+/// Keep Ratatui's normal continuous draw loop; the flag remains a hint for visible-state tests.
+fn should_draw_frame(_redraw_requested: bool) -> bool {
+    true
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -686,6 +691,12 @@ mod tests {
     use super::*;
     use crate::config::RunnerTargetKind;
     use mockito::{Matcher, Server};
+
+    #[test]
+    fn tui_draw_policy_matches_main_even_without_visible_state_changes() {
+        assert!(should_draw_frame(true));
+        assert!(should_draw_frame(false));
+    }
 
     fn list_response_body(id: u64, status: &str) -> String {
         format!(
