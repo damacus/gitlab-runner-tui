@@ -1,0 +1,14 @@
+[graph]
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+git-fetch-with-cli = true
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "all"
+unused-ignored-advisory = "deny"
+
+# Advisory exceptions require an ID, an expiry/removal condition, and a
+# repository issue documenting the reviewed risk. No exceptions are approved.
+ignore = []

@@ -63,13 +63,12 @@ protection endpoint returns 404 because the repository ruleset is the active
 protection mechanism. An authorized repository owner must arrange a temporary
 bypass or disable the ruleset before the force-push, then restore and verify it.
 
-The scan also detects a non-secret, token-shaped test sentinel in
-`src/tui/ui.rs`. That finding is separate from the incident but currently
-prevents a zero-finding current-tree or full-history gate. Before enabling the
-gate in issue #174, replace that fixture with a value that does not match a
-credential rule and ensure the rewrite also removes its historical form, or
-add a narrowly reviewed ignore for only the rewritten fingerprint. Never
-ignore the `.env` finding.
+The scan also detects the already-pushed historical form of a non-secret,
+token-shaped test sentinel in `src/tui/ui.rs`. Issue #174 replaces the current
+fixture so current-tree and new-commit scans can pass, but the old commit still
+prevents a zero-finding full-history gate. During the rewrite, remove that
+historical form too, or add a narrowly reviewed ignore for only the rewritten
+synthetic fingerprint. Never ignore the `.env` finding.
 
 ## Required authorizations and external actions
 
