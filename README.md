@@ -196,6 +196,9 @@ Pass a command to fetch data once and exit with a JSON response:
 # Fetch all runners as JSON
 gitlab-runner-tui fetch
 
+# Fetch list endpoint data only, without per-runner enrichment
+gitlab-runner-tui fetch --summary
+
 # List only rotating runners as JSON
 gitlab-runner-tui rotating --tags production
 
@@ -223,6 +226,13 @@ gitlab-runner-tui fetch | \
 gitlab-runner-tui fetch | jq '.metrics'
 ```
 
+**Fast inventory for large estates:**
+```bash
+gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
+```
+
+`fetch --summary` keeps the normal JSON envelope but skips per-runner detail and manager requests. It is useful for quick inventory, IDs, status counts, and checking discovery scope. It does not include manager rows, manager contact timestamps, manager versions, or full runner detail.
+
 ### CLI Flags
 
 ```bash
@@ -231,6 +241,7 @@ gitlab-runner-tui --host <URL> --token <TOKEN>
 
 # Command mode (non-interactive, JSON output)
 gitlab-runner-tui fetch --tags production
+gitlab-runner-tui fetch --summary
 gitlab-runner-tui rotating --tags production
 gitlab-runner-tui rotating --wait --tags production
 
@@ -241,6 +252,8 @@ gitlab-runner-tui --demo fetch
 
 - Commands: `fetch`, `switch`, `flames`, `empty`, `rotating`.
 - `--tags <TAGS>`: Comma-separated list of tags for filtering.
+- `fetch --summary`: List-only output for fast inventory. For 390 runners this avoids 390 detail requests and 390 manager requests.
+- `fetch --summary` cannot be combined with `--version` because version filtering is local-only and requires enriched runner data.
 - `--stale-cutoff <TIME>`: For `flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
 - `rotating` requires `--tags` to avoid estate-wide rotation scans.
 - `rotating --wait` polls until all currently eligible matching runners have rotated, emitting newline-delimited JSON progress events.

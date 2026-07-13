@@ -10,10 +10,17 @@ To fetch runners once and output JSON:
 gitlab-runner-tui fetch
 ```
 
+To fetch only list endpoint data without per-runner detail or manager requests:
+
+```bash
+gitlab-runner-tui fetch --summary
+```
+
 ### Filtering by Tags
 
 ```bash
 gitlab-runner-tui fetch --tags linux,docker
+gitlab-runner-tui fetch --summary --tags linux,docker
 ```
 
 ### Specialized Commands
@@ -25,6 +32,8 @@ You can use the same specialized commands available in the TUI:
 - `flames`: List uncontacted runners (haven't checked in for > 1 hour, or after `--stale-cutoff` when provided).
 - `empty`: List runners with no registered managers.
 - `rotating`: List runners with more than one manager (potential overlapping process). Requires `--tags`.
+
+`fetch` keeps full enriched JSON by default for compatibility. Use `fetch --summary` for fast inventory, IDs, status counts, or discovery checks. Summary mode keeps the normal JSON envelope but does not include manager rows, manager contact timestamps, manager versions, or full runner detail. It cannot be combined with `--version` because version filtering is local-only and needs enriched runner data.
 
 Example:
 ```bash
@@ -94,6 +103,14 @@ gitlab-runner-tui fetch | jq '.runners[] | select(.paused == true)'
 ```bash
 gitlab-runner-tui fetch | jq '.metrics.result_count'
 ```
+
+### Check request counts for large estates
+
+```bash
+gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
+```
+
+For 390 runners, summary mode avoids 390 detail requests and 390 manager requests. The expected `detail_requests` and `manager_requests` values are `0`.
 
 ### List managers for a specific runner
 
