@@ -2,6 +2,14 @@
 
 This project uses **GitHub Issues** for issue tracking.
 
+## Local Tooling
+
+- Use `mise install` to install the Rust toolchain and local development tools.
+- Use `mise run <task>` for local project commands, including builds, tests, formatting, linting, security checks, and container builds.
+- Do not run `cargo`, `rustup`, or locally installed Rust tools directly.
+- If `mise.toml` does not provide a required local command, add a reusable task before running it.
+- Use `mise tasks` to list the available commands.
+
 ## Quick Reference
 
 ```bash
