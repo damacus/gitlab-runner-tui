@@ -445,7 +445,7 @@ fn encode_target_id(id: &str) -> String {
     encoded
 }
 
-fn normalize_host(host: &str, allow_insecure_loopback: bool) -> Result<String> {
+pub(crate) fn normalize_host(host: &str, allow_insecure_loopback: bool) -> Result<String> {
     let trimmed = host.trim().trim_end_matches('/');
     let normalized = if trimmed.contains("://") {
         trimmed.to_string()

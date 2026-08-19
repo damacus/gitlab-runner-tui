@@ -10,6 +10,7 @@ COPY src/ src/
 RUN touch src/main.rs && cargo build --release && strip target/release/gitlab-runner-tui
 
 FROM scratch
+ENV GITLAB_RUNNER_TUI_CONTAINER=1
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /app/target/release/gitlab-runner-tui /usr/local/bin/gitlab-runner-tui
 

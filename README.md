@@ -123,7 +123,18 @@ sent. See Docker's documentation for [`docker run`](https://docs.docker.com/refe
 
 ### Configuration
 
-Set required environment variables:
+For interactive use outside Docker, start the application without a token. The masked setup prompt
+stores the token in the operating system credential store:
+
+- macOS Keychain
+- Windows Credential Manager
+- Secret Service on Linux and other Unix desktops
+
+The canonical `config.toml` stores the GitLab host and non-secret settings. If an existing
+canonical config contains `gitlab_token`, the next normal local launch moves it to the system
+credential store and rewrites the config without the token.
+
+For automation, set environment variables:
 
 ```bash
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
@@ -144,11 +155,10 @@ gitlab-runner-tui --dotenv /trusted/path/gitlab-runner-tui.env
 Dotenv files are never discovered from the current working directory. Only use `--dotenv` with a
 file you trust; its host and token values control where credentials are sent.
 
-Or create a config file at `~/.config/gitlab-runner-tui/config.toml`:
+You can keep non-secret settings in `~/.config/gitlab-runner-tui/config.toml`:
 
 ```toml
 gitlab_host = "https://gitlab.com"
-gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 poll_interval_secs = 30
 poll_timeout_secs = 1800
 # Bounds concurrent runner-detail and manager API requests (valid range: 2-64).
@@ -174,7 +184,10 @@ missing_runner_grace_polls = 2
 completion_stability_polls = 2
 ```
 
-If you launch the interactive TUI without a configured token, with a stale/invalid token, or without runner targets, the app now runs a setup flow and writes the canonical config file for you before entering the dashboard.
+If you launch the interactive TUI without a configured token, with a stale or invalid token, or
+without runner targets, the app runs setup before entering the dashboard. Local setup stores the
+token in the system credential store. The official Docker image has no system credential store, so
+its setup flow stores the token in the mounted configuration volume instead.
 
 Runner discovery now comes from configured group/project targets instead of instance-wide runner listing. This is what makes normal GitLab.com usage possible.
 
@@ -194,7 +207,6 @@ poll_interval_secs = 30
 poll_timeout_secs = 1800
 max_enrichment_requests = 10
 gitlab_host = "https://gitlab.com"
-gitlab_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 discovery_mode = "configured_targets"
 
 [[runner_targets]]
@@ -310,10 +322,12 @@ GITLAB_TOKEN=glpat-xxx gitlab-runner-tui --host https://gitlab.example.com
 
 | Variable       | Required | Default              | Description                                    |
 |----------------|----------|----------------------|------------------------------------------------|
-| `GITLAB_TOKEN` | Yes      | -                    | Personal access token with the required [runner permissions](docs/security/gitlab-token-scopes.md) |
+| `GITLAB_TOKEN` | No       | System credential store | Personal access token override with the required [runner permissions](docs/security/gitlab-token-scopes.md) |
 | `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
 
-`runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal and are persisted back to the canonical config file.
+`runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal
+and are persisted back to the canonical config file. Outside Docker, token changes are saved to the
+system credential store instead of `config.toml`.
 
 ## CLI & Automation
 

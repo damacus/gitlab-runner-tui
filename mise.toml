@@ -61,6 +61,10 @@ run = "cargo update"
 description = "Build the local container image"
 run = "docker build --tag gitlab-runner-tui:local ."
 
+[tasks."docker:demo"]
+description = "Smoke-test the local container image with demo data"
+run = "docker run --rm gitlab-runner-tui:local --demo fetch --summary"
+
 [tasks."diff:check"]
 description = "Check the working tree for whitespace errors"
 run = "git diff --check"
