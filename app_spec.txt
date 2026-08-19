@@ -1167,7 +1167,7 @@ All core logic (Models, Conductor, Client) MUST be developed using TDD.
 
 ### 10.2 Native Rust Testing
 
-Use Rust's built-in testing framework (`cargo test`) for all tests.
+Use Rust's built-in testing framework through `mise run test` for all tests.
 
 **Categories**:
 
@@ -1298,43 +1298,40 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 **Build Commands**:
 ```bash
 # Development build
-cargo build
+mise run build
 
 # Release build (optimized)
-cargo build --release
+mise run build:release
 
 # Run tests
-cargo test
+mise run test
 
 # Run with logging
-RUST_LOG=debug cargo run
+RUST_LOG=debug mise run dev
 ```
 
 **Cross-Compilation** (for different OS/architectures):
 ```bash
-# Install cross-compilation tool
-cargo install cross
-
 # Build for Linux x86_64
-cross build --release --target x86_64-unknown-linux-gnu
+mise run build:cross --target x86_64-unknown-linux-gnu
 
 # Build for macOS x86_64
-cross build --release --target x86_64-apple-darwin
+mise run build:cross --target x86_64-apple-darwin
 
 # Build for macOS ARM64 (M1/M2)
-cross build --release --target aarch64-apple-darwin
+mise run build:cross --target aarch64-apple-darwin
 
 # Build for Windows x86_64
-cross build --release --target x86_64-pc-windows-gnu
+mise run build:cross --target x86_64-pc-windows-gnu
 ```
 
 **Static Linking** (for portable binary):
 ```bash
 # Linux (using musl for static linking)
-cargo build --release --target x86_64-unknown-linux-musl
+mise run build:musl
 
 # Set RUSTFLAGS for fully static binary
-RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-musl
+mise run build:musl-static
 ```
 
 ```bash

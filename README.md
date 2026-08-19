@@ -387,9 +387,11 @@ RUST_LOG=debug mise run dev
 This repo uses `lefthook` for local git hooks.
 
 ```bash
-brew install lefthook
-lefthook install
+mise run hooks:install
 ```
+
+The hook process must be able to find `mise` on `PATH`. Configure GUI Git clients to use the
+same `PATH` as your mise-enabled shell.
 
 Configured hooks:
 

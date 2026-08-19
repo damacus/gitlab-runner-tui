@@ -30,13 +30,13 @@ Located in [src/models/](src/models/):
 
 ```bash
 # Build
-cargo build --release    # Binary output: target/release/igor
+mise run build:release    # Binary output: target/release/gitlab-runner-tui
 
 # Run (requires GitLab credentials)
-GITLAB_HOST=https://gitlab.example.com GITLAB_TOKEN=xxx cargo run
+GITLAB_HOST=https://gitlab.example.com GITLAB_TOKEN=xxx mise run dev
 
 # Tests
-cargo test
+mise run test
 ```
 
 ## Configuration
@@ -100,7 +100,7 @@ Follow **GitHub Flow**:
 ## Deployment
 
 - Binary published to **GitHub Releases**
-- Build: `cargo build --release` → `target/release/igor`
+- Build: `mise run build:release` → `target/release/gitlab-runner-tui`
 
 ## Logging
 
