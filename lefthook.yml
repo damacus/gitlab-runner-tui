@@ -2,11 +2,11 @@ pre-commit:
   parallel: true
   commands:
     fmt:
-      run: cargo fmt --check
+      run: mise run fmt
     clippy:
-      run: cargo clippy --all-targets -- -D warnings
+      run: mise run lint
 
 pre-push:
   commands:
     test:
-      run: cargo test
+      run: mise run test

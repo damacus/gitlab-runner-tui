@@ -366,17 +366,20 @@ gitlab-runner-tui flames --stale-cutoff 11:00
 ### Building
 
 ```bash
+# Install the pinned Rust toolchain and development tools
+mise install
+
 # Development build
-cargo build
+mise run build
 
 # Release build (optimized)
-cargo build --release
+mise run build:release
 
 # Run tests
-cargo test
+mise run test
 
 # Run with debug logging
-RUST_LOG=debug cargo run
+RUST_LOG=debug mise run dev
 ```
 
 ### Git Hooks
@@ -390,20 +393,20 @@ lefthook install
 
 Configured hooks:
 
-- `pre-commit`: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
-- `pre-push`: `cargo test`
+- `pre-commit`: `mise run fmt` and `mise run lint`
+- `pre-push`: `mise run test`
 
 ### Testing
 
 ```bash
 # Run all tests
-cargo test
+mise run test
 
 # Run with output
-cargo test -- --nocapture
+mise run test:nocapture
 
 # Run specific test
-cargo test test_name
+mise run test test_name
 ```
 
 ## Troubleshooting

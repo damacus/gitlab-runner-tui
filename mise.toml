@@ -1,0 +1,55 @@
+[tools]
+rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
+"cargo:cargo-deny" = "0.20.2"
+
+[tasks.build]
+description = "Build the debug binary"
+run = "cargo build --verbose"
+
+[tasks.dev]
+description = "Run the application with a debug build"
+run = "cargo run"
+
+[tasks."build:release"]
+description = "Build the release binary"
+run = "cargo build --release --verbose"
+
+[tasks.test]
+description = "Run the full test suite"
+run = "cargo test --all-features --verbose"
+
+[tasks."test:nocapture"]
+description = "Run the full test suite and show test output"
+run = "cargo test --all-features -- --nocapture"
+
+[tasks.fmt]
+description = "Check Rust formatting"
+run = "cargo fmt -- --check"
+
+[tasks."fmt:fix"]
+description = "Format Rust source files"
+run = "cargo fmt"
+
+[tasks.lint]
+description = "Run Clippy with CI settings"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.security]
+description = "Check dependencies for RustSec advisories"
+run = "cargo deny --all-features check advisories"
+
+[tasks."deps:update"]
+description = "Update dependencies in Cargo.lock; accepts cargo update arguments"
+run = "cargo update"
+
+[tasks."docker:build"]
+description = "Build the local container image"
+run = "docker build --tag gitlab-runner-tui:local ."
+
+[tasks."diff:check"]
+description = "Check the working tree for whitespace errors"
+run = "git diff --check"
+
+[tasks.check]
+description = "Run the local CI and security checks"
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "diff:check"]
