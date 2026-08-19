@@ -48,7 +48,11 @@ Environment variables (also supports `.env` file via `dotenvy`):
   `docs/security/gitlab-token-scopes.md` (current legacy tokens normally need
   `read_api` and `manage_runner`; `/user` validation might also need `read_user`)
 
-CLI args (`--host`, `--token`) override env vars.
+Outside Docker, interactive token writes must use the system credential store through
+`src/credentials.rs`. Do not add new plaintext token writes to `config.toml`.
+
+`GITLAB_TOKEN` and an explicitly selected dotenv file override stored credentials. The `--host`
+option overrides the configured GitLab host. Tokens are not accepted through command arguments.
 
 ## Code Patterns
 

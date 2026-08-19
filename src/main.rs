@@ -1,6 +1,7 @@
 mod client;
 mod conductor;
 mod config;
+mod credentials;
 mod fixtures;
 mod metrics;
 mod models;
@@ -162,6 +163,9 @@ async fn main() -> Result<()> {
     };
     validate_cli_args(&args)?;
     config.validate_enrichment_request_limit()?;
+    if !args.demo && args.config.is_none() && env::var_os("GITLAB_TOKEN").is_none() {
+        credentials::migrate_legacy_config_token(&config)?;
+    }
 
     // Setup logging
     let file_appender = tracing_appender::rolling::daily("logs", "gitlab-runner-tui.log");
@@ -274,11 +278,12 @@ async fn run_tui(mut app: App) -> Result<()> {
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
-    resolve_runtime_settings_with_env(
+    resolve_runtime_settings_with_token_loader(
         args,
         config,
         env::var("GITLAB_HOST").ok(),
         env::var("GITLAB_TOKEN").ok(),
+        credentials::load_token,
     )
 }
 
@@ -332,12 +337,26 @@ fn is_auth_error(error: &anyhow::Error) -> bool {
     })
 }
 
+#[cfg(test)]
 fn resolve_runtime_settings_with_env(
+    args: &Args,
+    config: AppConfig,
+    env_host: Option<String>,
+    env_token: Option<String>,
+) -> Result<(String, String, AppConfig)> {
+    resolve_runtime_settings_with_token_loader(args, config, env_host, env_token, |_| Ok(None))
+}
+
+fn resolve_runtime_settings_with_token_loader<F>(
     args: &Args,
     mut config: AppConfig,
     env_host: Option<String>,
     env_token: Option<String>,
-) -> Result<(String, String, AppConfig)> {
+    load_keychain_token: F,
+) -> Result<(String, String, AppConfig)>
+where
+    F: FnOnce(&str) -> Result<Option<String>>,
+{
     let host = args
         .host
         .clone()
@@ -345,17 +364,25 @@ fn resolve_runtime_settings_with_env(
         .or_else(|| config.gitlab_host.clone())
         .unwrap_or_else(|| "https://gitlab.com".to_string());
 
-    let token = env_token.or_else(|| config.gitlab_token.clone());
+    let token = match env_token.or_else(|| config.gitlab_token.clone()) {
+        Some(token) => Some(token),
+        None => load_keychain_token(&host)?,
+    };
 
     if args.command.is_some() {
         config.validate_runtime_settings()?;
-        let token = token
-            .context("GITLAB_TOKEN must be set via environment variable or trusted config.toml")?;
+        let token = token.context(
+            "GitLab token not found in GITLAB_TOKEN, trusted config.toml, or the system keychain",
+        )?;
+        config.gitlab_token = Some(token.clone());
         return Ok((host, token, config));
     }
 
     match token {
-        Some(token) => Ok((host, token, config)),
+        Some(token) => {
+            config.gitlab_token = Some(token.clone());
+            Ok((host, token, config))
+        }
         None => run_first_time_setup(host, &mut config),
     }
 }
@@ -377,7 +404,7 @@ fn run_first_time_setup(
     println!();
 
     let host = prompt_with_default("GitLab host", &host)?;
-    let token = prompt_required("GitLab personal access token (read_api scope)")?;
+    let token = prompt_required("GitLab personal access token")?;
     let discovery_mode = prompt_discovery_mode(config.discovery_mode)?;
     let runner_targets =
         prompt_runner_targets(discovery_mode == RunnerDiscoveryMode::ConfiguredTargets)?;
@@ -388,7 +415,7 @@ fn run_first_time_setup(
     config.runner_targets = runner_targets;
     config.validate_runtime_settings()?;
 
-    let saved_path = config.save_to_canonical_path()?;
+    let saved_path = credentials::save_config(config, &token)?;
 
     println!();
     println!("Saved configuration to {}", saved_path.display());
@@ -1328,6 +1355,61 @@ mod tests {
     }
 
     #[test]
+    fn resolves_runtime_settings_from_keychain_when_other_sources_are_empty() {
+        let args = Args {
+            command: Some(CliCommand::Fetch { summary: false }),
+            host: Some("https://gitlab.example.com".to_string()),
+            config: None,
+            dotenv: None,
+            tags: None,
+            version_filter: None,
+            stale_cutoff: None,
+            demo: false,
+        };
+
+        let (host, token, config) = resolve_runtime_settings_with_token_loader(
+            &args,
+            AppConfig::default(),
+            None,
+            None,
+            |requested_host| {
+                assert_eq!(requested_host, "https://gitlab.example.com");
+                Ok(Some("glpat-keychain-token".to_string()))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(host, "https://gitlab.example.com");
+        assert_eq!(token, "glpat-keychain-token");
+        assert_eq!(config.gitlab_token.as_deref(), Some("glpat-keychain-token"));
+    }
+
+    #[test]
+    fn environment_token_does_not_access_the_keychain() {
+        let args = Args {
+            command: Some(CliCommand::Fetch { summary: false }),
+            host: None,
+            config: None,
+            dotenv: None,
+            tags: None,
+            version_filter: None,
+            stale_cutoff: None,
+            demo: false,
+        };
+
+        let (_, token, _) = resolve_runtime_settings_with_token_loader(
+            &args,
+            AppConfig::default(),
+            None,
+            Some("glpat-environment-token".to_string()),
+            |_| panic!("keychain must not be accessed when GITLAB_TOKEN is set"),
+        )
+        .unwrap();
+
+        assert_eq!(token, "glpat-environment-token");
+    }
+
+    #[test]
     fn command_mode_requires_token_when_not_configured() {
         let args = Args {
             command: Some(CliCommand::Fetch { summary: false }),
@@ -1344,7 +1426,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("GITLAB_TOKEN must be set"));
+        assert!(error.contains("GitLab token not found"));
     }
 
     #[test]

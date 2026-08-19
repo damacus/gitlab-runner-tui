@@ -180,10 +180,16 @@ gitlab-runner-tui fetch
 ```
 
 The token is not accepted as a command-line argument because process arguments and shell history
-can expose secrets. Interactive setup reads the token without echoing it. The canonical user config
-is loaded by default; current-directory `.env` and `config.toml` files are ignored. Use `--dotenv
-/trusted/path/runtime.env` or `--config /trusted/path/config.toml` only for files you trust, because
-they can select the GitLab host that receives the token.
+can expose secrets. Interactive setup reads the token without echoing it. Outside Docker, setup and
+the settings screen store the token in macOS Keychain, Windows Credential Manager, or Secret
+Service on Linux and other Unix desktops. The canonical config stores only non-secret settings.
+The official Docker image stores the token in its mounted config volume because a system credential
+store is not available inside the image.
+
+The canonical user config is loaded by default; current-directory `.env` and `config.toml` files
+are ignored. Use `--dotenv /trusted/path/runtime.env` or `--config
+/trusted/path/config.toml` only for files you trust, because they can select the GitLab host that
+receives the token.
 
 The token must also have the scopes and runner access described in
 [GitLab token permissions](security/gitlab-token-scopes.md).

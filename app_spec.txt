@@ -989,7 +989,7 @@ Press Enter to retry or Esc to go back
 | Variable | Required | Description | Example |
 |----------|----------|-------------|---------|
 | `GITLAB_HOST` | Yes | GitLab instance URL | `https://gitlab.com` |
-| `GITLAB_TOKEN` | Yes | Personal access token | `glpat-xxxxxxxxxxxx` |
+| `GITLAB_TOKEN` | No | Personal access token override; local interactive use defaults to the system credential store | `glpat-xxxxxxxxxxxx` |
 
 ### 8.2 Optional Environment Variables
 
@@ -1003,12 +1003,15 @@ Press Enter to retry or Esc to go back
 
 ### 8.3 Configuration File Support
 
-**Optional Enhancement**: Support a configuration file in the user's home directory. Canonical path should use `gitlab-runner-tui`, while `~/.config/igor/config.toml` remains a legacy fallback during migration:
+The canonical configuration file stores non-secret settings. Outside Docker,
+interactive setup and settings changes store the token in macOS Keychain,
+Windows Credential Manager, or Secret Service. The official Docker image stores
+the token in its mounted configuration file because no system credential store
+is available in the scratch image.
 
 ```toml
 # ~/.config/gitlab-runner-tui/config.toml
 gitlab_host = "https://gitlab.com"
-gitlab_token = "glpat-xxxxxxxxxxxx"
 log_level = "info"
 disable_ssl_warnings = false
 default_time_threshold = 3600
@@ -1018,22 +1021,21 @@ Legacy compatibility example:
 - `~/.config/igor/config.toml`
 
 **Priority** (highest to lowest):
-1. Command-line flags (if implemented)
-2. Environment variables
-3. Configuration file
-4. Built-in defaults
+1. Environment variables and an explicitly selected dotenv file
+2. A token in an explicitly selected or legacy configuration file
+3. The system credential store outside Docker
+4. Interactive setup
 
 ### 8.4 Command-Line Flags
 
 **Optional Enhancement**: Support CLI flags:
 
 ```
-gitlab-runner-tui --host https://gitlab.com --token glpat-xxx --verbose
+gitlab-runner-tui --host https://gitlab.com --verbose
 ```
 
 **Flags**:
 - `--host <URL>`: GitLab host (overrides `GITLAB_HOST`)
-- `--token <TOKEN>`: GitLab token (overrides `GITLAB_TOKEN`)
 - `--verbose` / `-v`: Enable debug logging
 - `--help` / `-h`: Show help message
 - `--version` / `-V`: Show version
@@ -1047,8 +1049,8 @@ gitlab-runner-tui --host https://gitlab.com --token glpat-xxx --verbose
 #### 9.1.1 Configuration Errors
 
 **Missing Credentials**:
-- Message: "GITLAB_HOST and GITLAB_TOKEN must be set"
-- Action: Show helpful message with instructions, exit with code 1
+- Message: "GitLab token not found in GITLAB_TOKEN, trusted config.toml, or the system keychain"
+- Action: Start masked setup in interactive mode; show the accepted token sources and exit with code 1 in command mode
 
 **Invalid URL**:
 - Message: "Invalid GITLAB_HOST: must be a valid URL"

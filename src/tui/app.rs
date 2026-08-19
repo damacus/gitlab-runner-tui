@@ -5,6 +5,7 @@ use crate::conductor::{
 use crate::config::{
     format_runner_targets, parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode,
 };
+use crate::credentials;
 use crate::metrics::LiveQueryMetrics;
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{
@@ -1687,7 +1688,7 @@ impl App {
                 .clone()
                 .context("GitLab token is required")?;
 
-            let client = GitLabClient::new(host, token)?;
+            let client = GitLabClient::new(host, token.clone())?;
             let conductor = Conductor::new_with_mode_and_enrichment_limit(
                 client,
                 new_config.discovery_mode,
@@ -1695,7 +1696,7 @@ impl App {
                 new_config.max_enrichment_requests,
             );
             conductor.validate_token().await?;
-            new_config.save_to_canonical_path()?;
+            credentials::save_config(&new_config, &token)?;
             Ok::<(AppConfig, Conductor), anyhow::Error>((new_config, conductor))
         }
         .await;
