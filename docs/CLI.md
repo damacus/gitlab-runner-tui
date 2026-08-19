@@ -184,3 +184,6 @@ can expose secrets. Interactive setup reads the token without echoing it. The ca
 is loaded by default; current-directory `.env` and `config.toml` files are ignored. Use `--dotenv
 /trusted/path/runtime.env` or `--config /trusted/path/config.toml` only for files you trust, because
 they can select the GitLab host that receives the token.
+
+The token must also have the scopes and runner access described in
+[GitLab token permissions](security/gitlab-token-scopes.md).

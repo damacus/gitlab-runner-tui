@@ -280,7 +280,9 @@ Represents filter criteria for runner queries.
 **Authentication**:
 - Method: Personal Access Token
 - Header: `PRIVATE-TOKEN: <token>`
-- Required Scopes: `api`, `read_api`
+- Required permissions: See `docs/security/gitlab-token-scopes.md`. On GitLab
+  17.1 and later, start with `read_api` and `manage_runner`; add `read_user` if
+  `/user` validation fails. Older versions can use the broader `api` fallback.
 
 ### 4.2 API Endpoints
 
@@ -1078,7 +1080,8 @@ gitlab-runner-tui --host https://gitlab.com --token glpat-xxx --verbose
 
 **403 Forbidden**:
 - Message: "Insufficient permissions"
-- Troubleshooting: Ensure token has `api` and `read_api` scopes
+- Troubleshooting: Ensure the token permissions and token owner's GitLab role
+  allow the requested runner endpoint; see `docs/security/gitlab-token-scopes.md`
 - Action: Exit with code 1
 
 #### 9.1.4 API Errors

@@ -44,7 +44,9 @@ mise run test
 Environment variables (also supports `.env` file via `dotenvy`):
 
 - `GITLAB_HOST`: GitLab instance URL (required)
-- `GITLAB_TOKEN`: Personal access token with `read_api` scope (required)
+- `GITLAB_TOKEN`: Personal access token with the permissions in
+  `docs/security/gitlab-token-scopes.md` (current legacy tokens normally need
+  `read_api` and `manage_runner`; `/user` validation might also need `read_user`)
 
 CLI args (`--host`, `--token`) override env vars.
 
