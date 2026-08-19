@@ -38,7 +38,7 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 
 ### Installation
 
-**From source:**
+#### From source
 
 ```bash
 git clone https://github.com/damacus/gitlab-runner-tui.git
@@ -46,6 +46,80 @@ cd gitlab-runner-tui
 cargo build --release
 ./target/release/gitlab-runner-tui
 ```
+
+#### Docker
+
+The published image supports Linux on AMD64 and ARM64:
+
+```bash
+docker pull ghcr.io/damacus/gitlab-runner-tui:latest
+```
+
+The `latest` tag follows the newest release. For repeatable deployments, replace it with a full
+version tag from the [published packages](https://github.com/damacus/gitlab-runner-tui/pkgs/container/gitlab-runner-tui).
+
+Run the interactive TUI with a named volume for its configuration:
+
+```bash
+docker run --rm -it \
+  --env XDG_CONFIG_HOME=/config \
+  --mount type=volume,source=gitlab-runner-tui-config,target=/config \
+  ghcr.io/damacus/gitlab-runner-tui:latest
+```
+
+The first run starts the masked setup flow. It stores the configuration at
+`/config/gitlab-runner-tui/config.toml`. Docker creates the named volume automatically, and the
+same command reuses it after `--rm` removes the previous container.
+
+The volume persists configuration settings and the saved token. It does not persist fetched
+runner data, the selected dashboard tab, or active filters. Protect access to the Docker daemon
+and the volume because the configuration contains credentials.
+
+##### Docker credentials
+
+For interactive use, prefer the masked setup flow above. It keeps the token out of the Docker
+command and shell history.
+
+For automation, create an environment file outside the repository:
+
+```env
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+GITLAB_HOST=https://gitlab.com
+```
+
+Restrict the file, then pass its path to Docker:
+
+```bash
+chmod 600 /trusted/path/gitlab-runner-tui.env
+
+docker run --rm \
+  --env-file /trusted/path/gitlab-runner-tui.env \
+  --env XDG_CONFIG_HOME=/config \
+  --mount type=volume,source=gitlab-runner-tui-config,target=/config \
+  ghcr.io/damacus/gitlab-runner-tui:latest fetch --summary
+```
+
+Do not put a literal token in `docker run --env GITLAB_TOKEN=...`. An environment file keeps the
+token out of the command and shell history, but Docker still stores environment variables as plain
+text in the container configuration. Users with access to the Docker daemon can inspect them while
+the container exists.
+
+To keep the token out of the Docker-managed environment, mount the trusted file read-only and let
+the application load it explicitly:
+
+```bash
+docker run --rm \
+  --env XDG_CONFIG_HOME=/config \
+  --mount type=volume,source=gitlab-runner-tui-config,target=/config \
+  --mount type=bind,source=/trusted/path/gitlab-runner-tui.env,target=/run/secrets/gitlab-runner-tui.env,readonly \
+  ghcr.io/damacus/gitlab-runner-tui:latest \
+  --dotenv /run/secrets/gitlab-runner-tui.env fetch --summary
+```
+
+Only mount a dotenv file that you trust. Its host and token values control where credentials are
+sent. See Docker's documentation for [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/),
+[named volumes](https://docs.docker.com/engine/storage/volumes/), and
+[read-only bind mounts](https://docs.docker.com/engine/storage/bind-mounts/).
 
 ### Configuration
 
