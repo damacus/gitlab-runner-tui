@@ -16,8 +16,8 @@
 **Action:** Always compare vectors or slices directly using `.cmp()`, which delegates to lexicographical comparison of the elements without any heap allocations.
 
 ## 2024-05-27 - CI Lint Failures and Clippy Enforcement
-**Learning:** The GitHub CI pipeline is configured to enforce Clippy linting strictly by treating warnings as errors (equivalent to `cargo clippy -- -D warnings`). The CI failure encountered (`clippy::derivable_impls`) was caused by a manual implementation of the `Default` trait that could be auto-derived.
-**Action:** Always run `cargo clippy -- -D warnings` and `cargo clippy --tests -- -D warnings` locally before considering a change complete to catch and resolve any lint warnings before they break the CI.
+**Learning:** The GitHub CI pipeline is configured to enforce Clippy linting strictly by treating warnings as errors. The CI failure encountered (`clippy::derivable_impls`) was caused by a manual implementation of the `Default` trait that could be auto-derived.
+**Action:** Always run `mise run lint` locally before considering a change complete. This task checks all targets and features and treats warnings as errors.
 
 ## 2024-05-30 - O(N) String allocations in Hot TUI Loop via format!
 **Learning:** During text-wrapping computations within `render_runner_detail`, constructing candidate strings dynamically using `format!` and immediately calling `.clone()` if line limits are exceeded creates multiple throwaway string allocations per tag *per rendering tick*.
