@@ -30,7 +30,10 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 
 ### Prerequisites
 
-- GitLab personal access token accepted by the GitLab user API
+- GitLab personal access token with the required runner permissions. On GitLab 17.1 and later,
+  start with `read_api` and `manage_runner`; add `read_user` if `/user` validation fails. Older
+  GitLab versions can use the broader `api` compatibility fallback. See
+  [GitLab token permissions](docs/security/gitlab-token-scopes.md).
 - GitLab instance URL (defaults to gitlab.com)
 
 ### Installation
@@ -233,7 +236,7 @@ GITLAB_TOKEN=glpat-xxx gitlab-runner-tui --host https://gitlab.example.com
 
 | Variable       | Required | Default              | Description                                    |
 |----------------|----------|----------------------|------------------------------------------------|
-| `GITLAB_TOKEN` | Yes      | -                    | Personal access token accepted by `GET /user`  |
+| `GITLAB_TOKEN` | Yes      | -                    | Personal access token with the required [runner permissions](docs/security/gitlab-token-scopes.md) |
 | `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
 
 `runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal and are persisted back to the canonical config file.
