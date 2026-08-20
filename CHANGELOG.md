@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.19](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.18...v0.1.19) (2026-08-20)
+
+
+### Features
+
+* add credential status and logout commands ([772339d](https://github.com/damacus/gitlab-runner-tui/commit/772339dfaec4b0bdcfc2d867a99379b222cd67e9))
+* publish GitLab CI image ([194a8c7](https://github.com/damacus/gitlab-runner-tui/commit/194a8c7d2baef220188b98603cc817b3b83d8e54))
+* store local tokens in system keychain ([7a18dd3](https://github.com/damacus/gitlab-runner-tui/commit/7a18dd3ec18f685a3106306a3190ffa8a7e93a6a))
+
 ## [0.1.18](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.17...v0.1.18) (2026-07-13)
 
 
