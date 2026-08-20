@@ -123,16 +123,33 @@ sent. See Docker's documentation for [`docker run`](https://docs.docker.com/refe
 
 ### Configuration
 
-For interactive use outside Docker, start the application without a token. The masked setup prompt
-stores the token in the operating system credential store:
+#### First run outside Docker
+
+Start the interactive TUI without `GITLAB_TOKEN`, `--dotenv`, or a command such as `fetch`:
+
+```bash
+gitlab-runner-tui
+```
+
+The setup asks for your GitLab host, personal access token, discovery mode, and runner targets. The
+token prompt is masked. For most users, choose `targets` and enter one or more groups or projects,
+for example `group:my-org/platform,project:my-org/app`.
+
+On success, the app stores the token in the operating system credential store:
 
 - macOS Keychain
 - Windows Credential Manager
 - Secret Service on Linux and other Unix desktops
 
-The canonical `config.toml` stores the GitLab host and non-secret settings. If an existing
-canonical config contains `gitlab_token`, the next normal local launch moves it to the system
-credential store and rewrites the config without the token.
+The canonical `config.toml` stores only the GitLab host and non-secret settings. Start the app again
+normally, or run a command such as `gitlab-runner-tui fetch --summary`; the app reads the saved token
+automatically.
+
+If `GITLAB_TOKEN` is set or you pass `--dotenv`, that token is a temporary override and is not saved
+to the credential store. If an existing canonical config contains `gitlab_token`, the next normal
+local launch moves it to the credential store and rewrites the config without the token.
+
+#### Automation credentials
 
 For automation, set environment variables:
 
