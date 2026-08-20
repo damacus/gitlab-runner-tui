@@ -24,7 +24,8 @@ Located in [src/models/](src/models/):
 - `RunnerManager`: Individual runner process with status/contact info
 - `RunnerFilters`: Query filters (some API-side, some client-side)
 
-**Important**: `tag_list` and `version_prefix` filters are applied **client-side** in the Conductor, not via API query params.
+The Conductor applies `tag_list` and `version_prefix` filters **client-side**, not through API query
+parameters.
 
 ## Development Commands
 
