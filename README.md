@@ -4,17 +4,17 @@ A fast, beautiful Terminal User Interface (TUI) for querying and inspecting GitL
 
 ## Overview
 
-GitLab Runner TUI provides DevOps engineers and GitLab administrators with an intuitive command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags—all from your terminal.
+GitLab Runner TUI provides DevOps engineers and GitLab administrators with a command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags from your terminal.
 
 ## Preview
 
-![Overview — seven dashboard tabs](docs/screenshots/overview.gif)
+![Overview of the seven dashboard tabs](docs/screenshots/overview.gif)
 
-*Seven dashboard tabs — navigate with `1`–`7` or `Tab`*
+*Seven dashboard tabs. Navigate with `1` to `7` or `Tab`.*
 
 ![Runner detail pane](docs/screenshots/detail.gif)
 
-*Runner detail pane — arrow through runners to inspect status, version, managers, and tags*
+*Runner detail pane. Use the arrow keys to inspect runner status, version, managers, and tags.*
 
 ## Features
 
@@ -31,7 +31,7 @@ GitLab Runner TUI provides DevOps engineers and GitLab administrators with an in
 ### Prerequisites
 
 - GitLab personal access token with the required runner permissions. On GitLab 17.1 and later,
-  start with `read_api` and `manage_runner`; add `read_user` if `/user` validation fails. Older
+  start with `read_api` and `manage_runner`. Add `read_user` if `/user` validation fails. Older
   GitLab versions can use the broader `api` compatibility fallback. See
   [GitLab token permissions](docs/security/gitlab-token-scopes.md).
 - GitLab instance URL (defaults to gitlab.com)
@@ -142,7 +142,7 @@ On success, the app stores the token in the operating system credential store:
 - Secret Service on Linux and other Unix desktops
 
 The canonical `config.toml` stores only the GitLab host and non-secret settings. Start the app again
-normally, or run a command such as `gitlab-runner-tui fetch --summary`; the app reads the saved token
+normally, or run a command such as `gitlab-runner-tui fetch --summary`. The app reads the saved token
 automatically.
 
 If `GITLAB_TOKEN` is set or you pass `--dotenv`, that token is a temporary override and is not saved
@@ -170,7 +170,7 @@ gitlab-runner-tui --dotenv /trusted/path/gitlab-runner-tui.env
 ```
 
 Dotenv files are never discovered from the current working directory. Only use `--dotenv` with a
-file you trust; its host and token values control where credentials are sent.
+file you trust. Its host and token values control where credentials are sent.
 
 You can keep non-secret settings in `~/.config/gitlab-runner-tui/config.toml`:
 
@@ -243,13 +243,13 @@ completion_stability_polls = 2
 ```
 
 GitLab GET requests retry HTTP `429`, `502`, `503`, and `504` responses up to four total
-attempts. A valid `Retry-After` header controls the delay; otherwise the client uses capped
+attempts. A valid `Retry-After` header controls the delay. Otherwise, the client uses capped
 exponential backoff with jitter. Authentication failures and other HTTP statuses are not retried.
 Aborting or replacing an interactive search also cancels a pending retry delay.
 
 `max_enrichment_requests` is config-only and defaults to `10`. It is the combined in-flight
 request budget for runner detail and manager lookups, including the two lookups started for each
-runner; values from `2` through `64` are accepted.
+runner. Values from `2` through `64` are accepted.
 
 Queries now use explicit enrichment profiles instead of always issuing both follow-up requests.
 The full Runners, Health, and Workers views still fetch detail and manager data because their
@@ -268,16 +268,16 @@ manager/detail filtering is complete.
 
 Within an interactive Runners session, successful detail and manager enrichment is cached for the
 current discovery scope. The cache compares the stable runner ID and the complete list-endpoint
-runner record; an unchanged poll reuses enrichment, while a changed or new runner fetches only its
+runner record. An unchanged poll reuses enrichment, while a changed or new runner fetches only its
 missing data. Runners absent from the next result in the same scope are evicted. Changing the host,
 token, discovery mode, targets, or saved settings clears the cache. Cache updates are committed only
 after the current search completes, so a canceled refresh cannot replace known-good data.
 `metrics.request_counts` continues to report HTTP calls only, while
 `metrics.reused_enrichments.detail_enrichments` and `manager_enrichments` report cache reuse.
 
-The TUI keeps each enriched runner only once in its canonical session store. Filtered and sorted
-runner tables contain lightweight indices into that store, and worker tables contain runner/manager
-index pairs; rebuilding a view therefore does not clone runner, manager, tag, or string payloads.
+The TUI keeps each enriched runner only once in its canonical session store, using lightweight
+indices for filtered and sorted runner tables and runner/manager index pairs for worker tables, so
+rebuilding a view does not clone runner, manager, tag, or string payloads.
 Selection is restored by runner ID whenever streamed updates rebuild or reorder those projections.
 The settings benchmark includes 1,000- and 10,000-runner samples and reports the deep Runner clone
 count alongside filtering, sorting, and worker-flattening latency.
@@ -289,7 +289,7 @@ count alongside filtering, sorting, and worker-flattening latency.
 
 Each target `id` may be either a numeric GitLab ID or a group/project path.
 
-During onboarding, targets are entered as a single comma-separated prompt using explicit prefixes. In the interactive TUI you can also edit the discovery mode, token, targets, and poll settings from the settings modal.
+During onboarding, targets are entered as a comma-separated prompt using explicit prefixes. In the interactive TUI you can also edit the discovery mode, token, targets, and poll settings from the settings modal.
 
 ```text
 group:my-org/platform,project:my-org/app
@@ -301,7 +301,7 @@ group:my-org/platform,project:my-org/app
 # Using environment variables
 gitlab-runner-tui
 
-# Or override only the host via CLI; tokens are never accepted through argv
+# Or override only the host through the CLI. Tokens are never accepted through argv.
 GITLAB_TOKEN=glpat-xxx gitlab-runner-tui --host https://gitlab.example.com
 ```
 
@@ -348,7 +348,7 @@ system credential store instead of `config.toml`.
 
 ## CLI & Automation
 
-In addition to the interactive TUI, `gitlab-runner-tui` can function as a powerful CLI tool for automation and LLM-based workflows.
+`gitlab-runner-tui` also provides a CLI for automation and LLM-based workflows.
 
 ### Command JSON Output
 

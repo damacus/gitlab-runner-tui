@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document provides a comprehensive specification for recreating **gitlab-runner-tui**, a Terminal User Interface (TUI) application that queries the GitLab API to retrieve and display information about GitLab Runners, Runner Managers, and Users.
+This specification describes how **gitlab-runner-tui** queries the GitLab API and displays GitLab runners, runner managers, and users.
 
 `IGOR` was an older internal name. In this specification, `gitlab-runner-tui` is canonical, and any remaining `igor` references are legacy compatibility notes.
 
@@ -816,7 +816,7 @@ When executing API queries:
 On error:
 - Show error in ResultsView mode
 - Display error message in red
-- Show actionable troubleshooting steps
+- Show troubleshooting steps that tell the user how to correct the error
 - Allow user to retry or go back
 
 **Example Error Messages**:
@@ -842,7 +842,7 @@ Press Enter to retry or Esc to go back
 
 **Description**: Fetch GitLab Runner details
 
-**Purpose**: Retrieve comprehensive information about runners matching filters
+**Purpose**: Retrieve runner details and manager data for runners that match the filters
 
 **Filters**:
 - `tag_list`: Comma-separated tags (e.g., "alm,production")
@@ -1127,7 +1127,7 @@ gitlab-runner-tui --host https://gitlab.com --verbose
 Always include:
 1. **What happened**: Clear description of the error
 2. **Why it happened**: Root cause (if known)
-3. **How to fix it**: Actionable troubleshooting steps
+3. **How to fix it**: Steps that tell the user how to correct the error
 4. **What to do next**: Retry, exit, check logs, etc.
 
 **Example**:
@@ -1166,7 +1166,7 @@ All core logic (Models, Conductor, Client) MUST be developed using TDD.
 3. **Refactor**: Clean up the code while ensuring tests remain green.
 
 **Mandatory TDD Areas**:
-- **JSON Deserialization**: Write tests for various API response scenarios before implementing the models.
+- **JSON Deserialization**: Write tests for successful, incomplete, and invalid API responses before implementing the models.
 - **Filter Logic**: Write tests for all filter combinations before implementing the conductor logic.
 - **Pagination**: Write tests for the asynchronous/background loading logic.
 
@@ -1243,8 +1243,8 @@ Before release, manually test:
 ### 10.4 Test Data
 
 Create test fixtures for:
-- Sample runners (various types, statuses, tags)
-- Sample runner managers (various statuses)
+- Sample runners with each supported type, status, and tag combination
+- Sample runner managers with each supported status
 - Sample users
 - Sample API error responses
 
@@ -1641,10 +1641,10 @@ The implementation is considered complete when:
    - [ ] All 7 commands implemented and working
    - [ ] All filters working correctly
    - [ ] Results displayed accurately
-   - [ ] Error handling robust
+   - [ ] Errors include the cause and a recovery step
 
 2. **User Experience**:
-   - [ ] TUI is intuitive and responsive
+   - [ ] TUI responds to input without visible delay
    - [ ] Keyboard navigation smooth
    - [ ] Colors enhance readability
    - [ ] Help is accessible and clear
@@ -1880,12 +1880,10 @@ export LOG_LEVEL=info
 
 ## Conclusion
 
-This specification provides all the information needed to recreate the gitlab-runner-tui application from scratch. The implementation should prioritize:
+Use this specification to recreate the gitlab-runner-tui application from scratch. The implementation priorities are:
 
-1. **User Experience**: Intuitive, responsive TUI
-2. **Reliability**: Robust error handling, retry logic
+1. **User Experience**: Responsive TUI with consistent keyboard controls
+2. **Reliability**: Error messages with recovery steps and retry logic
 3. **Performance**: Fast queries, efficient rendering
 4. **Maintainability**: Clean architecture, well-tested code
 5. **Documentation**: Clear README, helpful error messages
-
-Good luck with the implementation! 🚀

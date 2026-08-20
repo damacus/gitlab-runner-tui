@@ -62,9 +62,9 @@ gitleaks git --log-opts=--all --redact=100 --no-banner --no-color .
 ```
 
 It is opt-in through `workflow_dispatch` and is not a required green check.
-Until issue #155 is completed, it is expected to fail on the genuine historical
-`.env` finding. The already-pushed synthetic test fixture is suppressed only by
-the exact fingerprint described above; the real credential is not ignored.
+Until issue #155 is completed, it is expected to fail on the historical `.env`
+credential. The already-pushed synthetic test fixture is suppressed only by
+the exact fingerprint described above. The historical credential is not ignored.
 
 After the owner-coordinated rewrite in issue #155:
 
