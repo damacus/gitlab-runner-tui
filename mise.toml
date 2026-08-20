@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
+rust = { version = "1.98.0", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
 "aqua:rhysd/actionlint" = "1.7.12"
 lefthook = "2.1.10"
