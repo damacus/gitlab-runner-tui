@@ -84,6 +84,11 @@ use tui::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 enum CliCommand {
+    /// Inspect or remove saved GitLab credentials
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// List all discovered runners
     Fetch {
         /// Return list endpoint data only without per-runner detail or manager requests
@@ -102,6 +107,14 @@ enum CliCommand {
         #[arg(long)]
         wait: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+enum AuthCommand {
+    /// Show the active GitLab host and token source
+    Status,
+    /// Remove saved credentials and plaintext tokens
+    Logout,
 }
 
 #[derive(Parser)]
@@ -161,10 +174,15 @@ async fn main() -> Result<()> {
         Some(path) => AppConfig::load_from_path(path)?,
         None => AppConfig::load()?,
     };
+    if let Some(CliCommand::Auth { command }) = args.command {
+        run_auth_command(command, &args, &config)?;
+        return Ok(());
+    }
     validate_cli_args(&args)?;
     config.validate_enrichment_request_limit()?;
     if !args.demo && args.config.is_none() && env::var_os("GITLAB_TOKEN").is_none() {
-        credentials::migrate_legacy_config_token(&config)?;
+        let host = resolve_gitlab_host(&args, &config, env::var("GITLAB_HOST").ok());
+        credentials::migrate_legacy_config_token(&config, &host)?;
     }
 
     // Setup logging
@@ -240,6 +258,69 @@ async fn main() -> Result<()> {
         app.start_search();
     }
     run_tui(app).await
+}
+
+fn run_auth_command(command: AuthCommand, args: &Args, config: &AppConfig) -> Result<()> {
+    let host = resolve_gitlab_host(args, config, env::var("GITLAB_HOST").ok());
+    let config_path = args
+        .config
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(AppConfig::canonical_path)?;
+
+    match command {
+        AuthCommand::Status => {
+            let source = credentials::credential_source(
+                config,
+                &host,
+                env::var("GITLAB_TOKEN").ok().as_deref(),
+            )?;
+            println!("GitLab host: {host}");
+            match source {
+                credentials::CredentialSource::Environment => {
+                    println!("Token source: GITLAB_TOKEN environment variable");
+                    eprintln!(
+                        "Warning: GITLAB_TOKEN overrides saved credentials and can be inherited by child processes."
+                    );
+                    eprintln!("Unset GITLAB_TOKEN to use the system credential store.");
+                }
+                credentials::CredentialSource::ConfigFile => {
+                    println!("Token source: {}", config_path.display());
+                    eprintln!("Warning: The GitLab token is stored in plaintext in config.toml.");
+                    eprintln!(
+                        "Migrate it: run `gitlab-runner-tui auth logout`, then run `gitlab-runner-tui` and complete setup."
+                    );
+                }
+                credentials::CredentialSource::SystemKeychain => {
+                    println!("Token source: operating system credential store");
+                }
+                credentials::CredentialSource::Missing => {
+                    println!("Token source: not found");
+                    println!("Next: run `gitlab-runner-tui` and complete setup.");
+                }
+            }
+        }
+        AuthCommand::Logout => {
+            let result = credentials::logout(config, &host, &config_path)?;
+            if result.keychain_removed {
+                println!("Removed the GitLab token from the operating system credential store.");
+            } else {
+                println!("No GitLab token was present in the operating system credential store.");
+            }
+            if result.config_rewritten {
+                println!("Rewrote {} without gitlab_token.", config_path.display());
+            } else {
+                println!("No config.toml file was present.");
+            }
+            if env::var_os("GITLAB_TOKEN").is_some() {
+                eprintln!(
+                    "Warning: GITLAB_TOKEN is still active for this process and was not removed."
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_tui(mut app: App) -> Result<()> {
@@ -357,12 +438,7 @@ fn resolve_runtime_settings_with_token_loader<F>(
 where
     F: FnOnce(&str) -> Result<Option<String>>,
 {
-    let host = args
-        .host
-        .clone()
-        .or(env_host)
-        .or_else(|| config.gitlab_host.clone())
-        .unwrap_or_else(|| "https://gitlab.com".to_string());
+    let host = resolve_gitlab_host(args, &config, env_host);
 
     let token = match env_token.or_else(|| config.gitlab_token.clone()) {
         Some(token) => Some(token),
@@ -385,6 +461,14 @@ where
         }
         None => run_first_time_setup(host, &mut config),
     }
+}
+
+fn resolve_gitlab_host(args: &Args, config: &AppConfig, env_host: Option<String>) -> String {
+    args.host
+        .clone()
+        .or(env_host)
+        .or_else(|| config.gitlab_host.clone())
+        .unwrap_or_else(|| "https://gitlab.com".to_string())
 }
 
 fn load_explicit_dotenv(path: Option<&std::path::Path>) -> Result<()> {
@@ -415,7 +499,7 @@ fn run_first_time_setup(
     config.runner_targets = runner_targets;
     config.validate_runtime_settings()?;
 
-    let saved_path = credentials::save_config(config, &token)?;
+    let saved_path = credentials::save_config(config, &host, &token)?;
 
     println!();
     println!("Saved configuration to {}", saved_path.display());
@@ -569,6 +653,7 @@ async fn run_cli_query(
                 .detect_rotating_runners_with_metrics(filters)
                 .await
         }
+        CliCommand::Auth { .. } => anyhow::bail!("auth commands do not query runners"),
     }
 }
 
@@ -876,6 +961,17 @@ mod tests {
         ] {
             let args = Args::try_parse_from(["gitlab-runner-tui", name]).unwrap();
             assert_eq!(args.command, Some(expected));
+        }
+    }
+
+    #[test]
+    fn parses_auth_commands() {
+        for (name, expected) in [
+            ("status", AuthCommand::Status),
+            ("logout", AuthCommand::Logout),
+        ] {
+            let args = Args::try_parse_from(["gitlab-runner-tui", "auth", name]).unwrap();
+            assert_eq!(args.command, Some(CliCommand::Auth { command: expected }));
         }
     }
 
@@ -1382,6 +1478,51 @@ mod tests {
         assert_eq!(host, "https://gitlab.example.com");
         assert_eq!(token, "glpat-keychain-token");
         assert_eq!(config.gitlab_token.as_deref(), Some("glpat-keychain-token"));
+    }
+
+    #[test]
+    fn resolves_effective_host_in_runtime_precedence_order() {
+        let args = Args {
+            command: None,
+            host: Some("https://cli.example.com".to_string()),
+            config: None,
+            dotenv: None,
+            tags: None,
+            version_filter: None,
+            stale_cutoff: None,
+            demo: false,
+        };
+        let config = AppConfig {
+            gitlab_host: Some("https://config.example.com".to_string()),
+            ..AppConfig::default()
+        };
+
+        assert_eq!(
+            resolve_gitlab_host(
+                &args,
+                &config,
+                Some("https://environment.example.com".to_string())
+            ),
+            "https://cli.example.com"
+        );
+
+        let args = Args { host: None, ..args };
+        assert_eq!(
+            resolve_gitlab_host(
+                &args,
+                &config,
+                Some("https://environment.example.com".to_string())
+            ),
+            "https://environment.example.com"
+        );
+        assert_eq!(
+            resolve_gitlab_host(&args, &config, None),
+            "https://config.example.com"
+        );
+        assert_eq!(
+            resolve_gitlab_host(&args, &AppConfig::default(), None),
+            "https://gitlab.com"
+        );
     }
 
     #[test]
