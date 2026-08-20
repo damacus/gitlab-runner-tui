@@ -132,7 +132,7 @@ impl AppConfig {
         Ok(path)
     }
 
-    fn save_to_path(&self, path: &Path) -> Result<()> {
+    pub(crate) fn save_to_path(&self, path: &Path) -> Result<()> {
         self.save_to_path_with_hook(path, |_| Ok(()))
     }
 

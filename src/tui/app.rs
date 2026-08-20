@@ -1688,7 +1688,7 @@ impl App {
                 .clone()
                 .context("GitLab token is required")?;
 
-            let client = GitLabClient::new(host, token.clone())?;
+            let client = GitLabClient::new(host.clone(), token.clone())?;
             let conductor = Conductor::new_with_mode_and_enrichment_limit(
                 client,
                 new_config.discovery_mode,
@@ -1696,7 +1696,7 @@ impl App {
                 new_config.max_enrichment_requests,
             );
             conductor.validate_token().await?;
-            credentials::save_config(&new_config, &token)?;
+            credentials::save_config(&new_config, &host, &token)?;
             Ok::<(AppConfig, Conductor), anyhow::Error>((new_config, conductor))
         }
         .await;

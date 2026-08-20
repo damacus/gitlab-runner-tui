@@ -185,9 +185,30 @@ The canonical `config.toml` stores only the GitLab host and non-secret settings.
 normally, or run a command such as `gitlab-runner-tui fetch --summary`. The app reads the saved token
 automatically.
 
+Unlock the operating system credential store before you start the app. If the credential store is
+unavailable, set `GITLAB_TOKEN` for the current process or use the Docker workflow. The app does not
+fall back to writing the token in plaintext outside Docker.
+
 If `GITLAB_TOKEN` is set or you pass `--dotenv`, that token is a temporary override and is not saved
 to the credential store. If an existing canonical config contains `gitlab_token`, the next normal
 local launch moves it to the credential store and rewrites the config without the token.
+
+Check which credential source is active without displaying the token:
+
+```bash
+gitlab-runner-tui auth status
+```
+
+The status command warns when `GITLAB_TOKEN` overrides saved credentials or when `config.toml`
+contains a plaintext token. To remove saved credentials and rewrite `config.toml` without the token,
+run:
+
+```bash
+gitlab-runner-tui auth logout
+```
+
+Then run `gitlab-runner-tui` and complete setup to store a new token in the operating system
+credential store.
 
 #### Automation credentials
 
