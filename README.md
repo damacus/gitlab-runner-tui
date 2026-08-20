@@ -121,6 +121,46 @@ sent. See Docker's documentation for [`docker run`](https://docs.docker.com/refe
 [named volumes](https://docs.docker.com/engine/storage/volumes/), and
 [read-only bind mounts](https://docs.docker.com/engine/storage/bind-mounts/).
 
+##### GitLab CI image
+
+Each release also publishes `ghcr.io/damacus/gitlab-runner-tui-ci`. This image supports Linux on
+AMD64 and ARM64 and includes `sh`, `bash`, `grep`, and `jq`. It has no application entrypoint, so
+GitLab Runner can execute job scripts through the image shell. The CI image is published only when
+a release is created. Replace `latest` with a full release tag for a repeatable pipeline.
+
+Store `GITLAB_TOKEN` as a masked and hidden GitLab CI/CD variable. Protect the variable if only
+protected branches or tags need it. The environment token is used for the current process and is
+not written to the system credential store or `config.toml`.
+
+This job writes the polling events to an artifact and uses `jq` to require a final `complete`
+event:
+
+```yaml
+runner-rotation:
+  image: ghcr.io/damacus/gitlab-runner-tui-ci:latest
+  variables:
+    GITLAB_HOST: "https://gitlab.example.com"
+    RUNNER_TAGS: "production"
+  script:
+    - gitlab-runner-tui rotating --wait --tags "$RUNNER_TAGS" | tee rotation.ndjson
+    - jq -e 'select(.event == "complete")' rotation.ndjson > /dev/null
+  artifacts:
+    when: always
+    paths:
+      - rotation.ndjson
+```
+
+`rotating --wait` exits with status `0` after rotation completes and status `2` after the configured
+timeout. It writes newline-delimited JSON events while it polls. Other commands write one JSON
+document, so they can be piped directly to `jq`:
+
+```yaml
+runner-inventory:
+  image: ghcr.io/damacus/gitlab-runner-tui-ci:latest
+  script:
+    - gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
+```
+
 ### Configuration
 
 #### First run outside Docker

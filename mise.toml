@@ -1,6 +1,7 @@
 [tools]
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
+"aqua:rhysd/actionlint" = "1.7.12"
 lefthook = "2.1.10"
 
 [tasks.build]
@@ -65,6 +66,20 @@ run = "docker build --tag gitlab-runner-tui:local ."
 description = "Smoke-test the local container image with demo data"
 run = "docker run --rm gitlab-runner-tui:local --demo fetch --summary"
 
+[tasks."docker:build-ci"]
+description = "Build the GitLab CI job image"
+run = "docker build --target ci --tag gitlab-runner-tui-ci:local ."
+
+[tasks."docker:ci-smoke"]
+description = "Check the CI image tools and JSON output"
+run = '''
+docker run --rm gitlab-runner-tui-ci:local sh -c 'command -v gitlab-runner-tui && command -v bash && command -v grep && command -v jq && gitlab-runner-tui --demo fetch --summary | jq -e ".runners | arrays" >/dev/null'
+'''
+
+[tasks."workflow:lint"]
+description = "Lint GitHub Actions workflows"
+run = "actionlint"
+
 [tasks."diff:check"]
 description = "Check the working tree for whitespace errors"
 run = "git diff --check"
@@ -75,4 +90,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-depends = ["build", "build:release", "test", "fmt", "lint", "security", "diff:check"]
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "diff:check"]
