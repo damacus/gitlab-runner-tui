@@ -12,6 +12,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  CI_IMAGE_NAME: ${{ github.repository }}-ci
 
 jobs:
   release-please:
@@ -141,7 +142,7 @@ jobs:
             artifacts/checksums-sha256.txt
 
   docker:
-    name: Build and push container
+    name: Build and push containers
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
@@ -184,12 +185,36 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
+          target: runtime
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,mode=max,scope=runtime
+
+      - name: Extract metadata for the GitLab CI image
+        id: ci-meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.CI_IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and push GitLab CI image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: ci
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ci-meta.outputs.tags }}
+          labels: ${{ steps.ci-meta.outputs.labels }}
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci
 
   publish-crate:
     name: Publish to crates.io
