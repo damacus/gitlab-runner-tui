@@ -629,8 +629,6 @@ TUI (View) → Conductor (Business Logic) → GitLabClient (API)
 - **Conductor Layer**: Orchestrates operations, applies filters, formats results
 - **GitLabClient Layer**: HTTP communication with GitLab API
 
-See [app_spec.txt](app_spec.txt) for detailed specification.
-
 ## License
 
 [Add your license here]
