@@ -120,7 +120,6 @@ impl ContactThreshold {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunnerSortKey {
     #[default]
@@ -132,7 +131,6 @@ pub enum RunnerSortKey {
     Managers,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalBenchmarkMeasurement {
     pub sample_size: usize,
@@ -144,33 +142,27 @@ pub struct LocalBenchmarkMeasurement {
     pub deep_runner_clones: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LocalBenchmarkSnapshot {
     pub measurements: Vec<LocalBenchmarkMeasurement>,
 }
 
-#[allow(dead_code)]
 pub fn parse_runner_created_at(runner: &Runner) -> Option<Timestamp> {
     parse_timestamp(runner.created_at.as_deref())
 }
 
-#[allow(dead_code)]
 pub fn parse_manager_created_at(manager: &RunnerManager) -> Option<Timestamp> {
     parse_timestamp(Some(manager.created_at.as_str()))
 }
 
-#[allow(dead_code)]
 pub fn parse_manager_contacted_at(manager: &RunnerManager) -> Option<Timestamp> {
     parse_timestamp(manager.contacted_at.as_deref())
 }
 
-#[allow(dead_code)]
 pub fn parse_stale_cutoff(input: &str, now: &Zoned) -> Result<Option<Timestamp>, String> {
     parse_user_cutoff(input, now)
 }
 
-#[allow(dead_code)]
 pub fn latest_runner_contact_at(runner: &Runner) -> Option<Timestamp> {
     runner
         .managers
@@ -179,12 +171,10 @@ pub fn latest_runner_contact_at(runner: &Runner) -> Option<Timestamp> {
         .max()
 }
 
-#[allow(dead_code)]
 pub fn runner_age_secs(runner: &Runner, now: Timestamp) -> Option<u64> {
     parse_runner_created_at(runner).map(|created_at| elapsed_seconds(now, created_at).max(0) as u64)
 }
 
-#[allow(dead_code)]
 pub fn extract_runner_versions(runners: &[Runner]) -> Vec<String> {
     let mut versions: Vec<String> = runners
         .iter()
@@ -206,7 +196,6 @@ pub fn extract_runner_versions(runners: &[Runner]) -> Vec<String> {
     versions
 }
 
-#[allow(dead_code)]
 pub fn extract_runner_tags(runners: &[Runner]) -> Vec<String> {
     let mut tags: Vec<String> = runners
         .iter()
@@ -221,7 +210,6 @@ pub fn extract_runner_tags(runners: &[Runner]) -> Vec<String> {
     tags
 }
 
-#[allow(dead_code)]
 pub fn runner_matches_filters(runner: &Runner, filters: &RunnerFilters, now: Timestamp) -> bool {
     if let Some(tags) = &filters.tag_list {
         if !tags
@@ -294,7 +282,6 @@ pub fn runner_matches_filters(runner: &Runner, filters: &RunnerFilters, now: Tim
     true
 }
 
-#[allow(dead_code)]
 pub fn apply_runner_filters(
     runners: &[Runner],
     filters: &RunnerFilters,
@@ -307,7 +294,7 @@ pub fn apply_runner_filters(
         .collect()
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: Timestamp) {
     match sort_key {
         RunnerSortKey::None => {}
@@ -394,6 +381,7 @@ pub fn sort_runner_indices(
     let _ = now;
 }
 
+#[cfg(test)]
 fn sort_runners_by_last_contact_with<F>(runners: &mut [Runner], mut contact_key: F)
 where
     F: FnMut(&Runner) -> Option<Timestamp>,
@@ -401,7 +389,7 @@ where
     runners.sort_by_cached_key(|runner| (contact_key(runner).map(Reverse), runner.id));
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn sort_managers_by_last_contact(managers: &mut [RunnerManager], _now: Timestamp) {
     managers.sort_by(|left, right| {
         compare_option_datetimes(
@@ -412,7 +400,6 @@ pub fn sort_managers_by_last_contact(managers: &mut [RunnerManager], _now: Times
     });
 }
 
-#[allow(dead_code)]
 pub fn benchmark_runner_processing(
     runners: &[Runner],
     filters: &RunnerFilters,
@@ -496,6 +483,7 @@ fn parse_timestamp(value: Option<&str>) -> Option<Timestamp> {
     value.and_then(|timestamp| parse_rfc3339(timestamp).ok())
 }
 
+#[cfg(test)]
 fn compare_option_datetimes(left: Option<Timestamp>, right: Option<Timestamp>) -> Ordering {
     match (left, right) {
         (Some(left), Some(right)) => right.cmp(&left), // Newer first

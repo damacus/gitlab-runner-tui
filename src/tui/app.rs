@@ -750,15 +750,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn selected_tags_summary(&self) -> String {
-        if self.selected_tags.is_empty() {
-            "all tags".to_string()
-        } else {
-            format!("{} selected", self.selected_tags.len())
-        }
-    }
-
     pub fn effective_sort_key(&self) -> RunnerSortKey {
         match self.current_results_view_type() {
             ResultsViewType::Workers => match self.sort_key {
@@ -2707,14 +2698,6 @@ mod tests {
         assert!(app.selected_versions.is_empty());
         assert!(app.selected_status.is_none());
         assert!(app.tag_search_input.is_empty());
-    }
-
-    #[test]
-    fn test_selected_tags_summary_empty_and_non_empty() {
-        let mut app = test_app();
-        assert_eq!(app.selected_tags_summary(), "all tags");
-        app.selected_tags = vec!["docker".to_owned(), "linux".to_owned()];
-        assert_eq!(app.selected_tags_summary(), "2 selected");
     }
 
     #[test]

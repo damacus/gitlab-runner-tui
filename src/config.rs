@@ -15,39 +15,25 @@ pub const MAX_MAX_ENRICHMENT_REQUESTS: usize = 64;
 const CONFIG_DIRECTORY_NAME: &str = "gitlab-runner-tui";
 const CONFIG_FILE_NAME: &str = "config.toml";
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 enum ConfigPlatform {
     Linux,
     MacOs,
     Windows,
 }
 
-impl ConfigPlatform {
-    fn current() -> Self {
-        #[cfg(target_os = "macos")]
-        {
-            Self::MacOs
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            Self::Windows
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            Self::Linux
-        }
-    }
-}
-
+#[cfg(test)]
 fn resolve_config_path(platform: ConfigPlatform, home_dir: &Path, config_dir: &Path) -> PathBuf {
     let config_dir = match platform {
         ConfigPlatform::MacOs => home_dir.join("Library").join("Application Support"),
         ConfigPlatform::Linux | ConfigPlatform::Windows => config_dir.to_path_buf(),
     };
 
+    config_path(config_dir)
+}
+
+fn config_path(config_dir: PathBuf) -> PathBuf {
     config_dir
         .join(CONFIG_DIRECTORY_NAME)
         .join(CONFIG_FILE_NAME)
@@ -166,11 +152,15 @@ impl AppConfig {
         let base_strategy = choose_base_strategy()
             .context("Could not determine a config directory for gitlab-runner-tui")?;
 
-        Ok(resolve_config_path(
-            ConfigPlatform::current(),
-            base_strategy.home_dir(),
-            &base_strategy.config_dir(),
-        ))
+        #[cfg(target_os = "macos")]
+        let config_dir = base_strategy
+            .home_dir()
+            .join("Library")
+            .join("Application Support");
+        #[cfg(not(target_os = "macos"))]
+        let config_dir = base_strategy.config_dir();
+
+        Ok(config_path(config_dir))
     }
 
     pub fn save_to_canonical_path(&self) -> Result<PathBuf> {

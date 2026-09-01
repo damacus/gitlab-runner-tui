@@ -1900,7 +1900,10 @@ mod tests {
     fn cleanup_test_app() -> App {
         let client = GitLabClient::new("https://gitlab.com".to_string(), "token".to_string())
             .expect("client");
-        App::new(Conductor::new(client, Vec::new()), AppConfig::default())
+        App::new(
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::ConfiguredTargets, Vec::new()),
+            AppConfig::default(),
+        )
     }
 
     async fn run_tui_until_terminal_failure<S>(reader: S) -> (anyhow::Error, CleanupTerminal)

@@ -6,7 +6,7 @@ use jiff::{
 };
 
 const RFC3339_MILLIS_PRINTER: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
-#[allow(dead_code)]
+#[cfg(test)]
 const RFC2822_PRINTER: rfc2822::DateTimePrinter = rfc2822::DateTimePrinter::new();
 const RFC2822_PARSER: rfc2822::DateTimeParser = rfc2822::DateTimeParser::new();
 
@@ -25,7 +25,7 @@ pub fn parse_rfc3339(input: &str) -> Result<Timestamp, jiff::Error> {
     preserve_leap_second(input, input.parse()?)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn format_rfc3339(timestamp: Timestamp) -> String {
     chrono_rfc3339_printer(timestamp).timestamp_with_offset_to_string(&timestamp, Offset::UTC)
 }
@@ -42,7 +42,7 @@ pub fn parse_rfc2822(input: &str) -> Result<Timestamp, jiff::Error> {
     preserve_leap_second(input, RFC2822_PARSER.parse_timestamp(input)?)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn format_rfc2822(timestamp: Timestamp) -> Result<String, jiff::Error> {
     RFC2822_PRINTER.zoned_to_string(&timestamp.to_zoned(TimeZone::UTC))
 }
@@ -83,9 +83,13 @@ fn contains_leap_second(input: &str) -> bool {
 }
 
 pub mod serde_timestamp {
-    use super::{chrono_rfc3339_printer, parse_rfc3339};
+    use super::chrono_rfc3339_printer;
+    #[cfg(test)]
+    use super::parse_rfc3339;
     use jiff::Timestamp;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
+    #[cfg(test)]
+    use serde::{Deserialize, Deserializer};
 
     pub fn serialize<S>(timestamp: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -95,7 +99,7 @@ pub mod serde_timestamp {
         serializer.serialize_str(&value)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
     where
         D: Deserializer<'de>,

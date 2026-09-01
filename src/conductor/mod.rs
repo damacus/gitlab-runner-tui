@@ -1,7 +1,9 @@
 use crate::client::GitLabClient;
+#[cfg(test)]
+use crate::config::DEFAULT_MAX_ENRICHMENT_REQUESTS;
 use crate::config::{
-    RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, DEFAULT_MAX_ENRICHMENT_REQUESTS,
-    MAX_MAX_ENRICHMENT_REQUESTS, MIN_MAX_ENRICHMENT_REQUESTS,
+    RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, MAX_MAX_ENRICHMENT_REQUESTS,
+    MIN_MAX_ENRICHMENT_REQUESTS,
 };
 use crate::metrics::{EnrichmentReuseCounts, LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{
@@ -31,10 +33,8 @@ struct TargetFetchResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum QueryProfile {
     Summary,
-    Detail,
     Managers,
     Full,
 }
@@ -50,10 +50,6 @@ impl QueryProfile {
         match self {
             Self::Summary => EnrichmentProfile {
                 detail: false,
-                managers: false,
-            },
-            Self::Detail => EnrichmentProfile {
-                detail: true,
                 managers: false,
             },
             Self::Managers => EnrichmentProfile {
@@ -199,15 +195,7 @@ fn is_forbidden(error: &anyhow::Error) -> bool {
 }
 
 impl Conductor {
-    #[allow(dead_code)]
-    pub fn new(client: GitLabClient, runner_targets: Vec<RunnerTarget>) -> Self {
-        Self::new_with_mode(
-            client,
-            RunnerDiscoveryMode::ConfiguredTargets,
-            runner_targets,
-        )
-    }
-
+    #[cfg(test)]
     pub fn new_with_mode(
         client: GitLabClient,
         discovery_mode: RunnerDiscoveryMode,
@@ -256,7 +244,7 @@ impl Conductor {
         &self.client
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         Ok(self.fetch_runners_with_metrics(filters).await?.runners)
     }
@@ -814,21 +802,6 @@ impl Conductor {
             move |runners| filter_uncontacted_runners(runners, now(), threshold),
         )
         .await
-    }
-
-    /// Returns (online_count, total_count) - reserved for potential status aggregation
-    #[allow(dead_code)]
-    pub async fn check_runner_statuses(&self, filters: RunnerFilters) -> Result<(usize, usize)> {
-        let runners = self
-            .fetch_runners_with_profile_and_metrics(filters, QueryProfile::Managers)
-            .await?
-            .runners;
-        let total = runners.len();
-        let online = runners
-            .iter()
-            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
-            .count();
-        Ok((online, total))
     }
 
     pub async fn list_runners_without_managers_with_metrics(
@@ -2130,51 +2103,6 @@ mod tests {
         assert_eq!(outcome.metrics.request_counts.list_requests, 1);
         list.assert_async().await;
         for mock in enrichment {
-            mock.assert_async().await;
-        }
-    }
-
-    #[tokio::test]
-    async fn test_check_runner_statuses() {
-        let mut server = Server::new_async().await;
-        let mocks = setup_runner_mocks(
-            &mut server,
-            &[
-                // Runner 1: one online manager -> online
-                (1, "online", &["prod"], &[(10, "online")]),
-                // Runner 2: only offline managers -> offline
-                (
-                    2,
-                    "offline",
-                    &["staging"],
-                    &[(20, "offline"), (21, "offline")],
-                ),
-                // Runner 3: multiple managers, one online -> online
-                (3, "online", &["dev"], &[(30, "offline"), (31, "online")]),
-                // Runner 4: no managers -> offline (no online manager)
-                (4, "online", &["test"], &[]),
-            ],
-        )
-        .await;
-
-        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new_with_mode(
-            client,
-            RunnerDiscoveryMode::ConfiguredTargets,
-            vec![group_target("123")],
-        );
-
-        let (online, total) = conductor
-            .check_runner_statuses(RunnerFilters::default())
-            .await
-            .unwrap();
-
-        // Total 4 runners
-        assert_eq!(total, 4);
-        // Runners 1 and 3 are online, so 2 online runners
-        assert_eq!(online, 2);
-
-        for mock in &mocks {
             mock.assert_async().await;
         }
     }
