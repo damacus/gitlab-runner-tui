@@ -15,12 +15,12 @@ use crate::models::runner::{
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
+use termina::event::{KeyCode, KeyEvent, Modifiers};
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -1782,7 +1782,7 @@ impl App {
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(Modifiers::CONTROL) {
             self.should_quit = true;
             return;
         }
@@ -1793,7 +1793,7 @@ impl App {
                     self.mode = AppMode::Dashboard;
                     self.start_search();
                 }
-                KeyCode::Esc => {
+                KeyCode::Escape => {
                     self.mode = AppMode::Dashboard;
                 }
                 KeyCode::Backspace => {
@@ -1810,7 +1810,7 @@ impl App {
         if self.mode == AppMode::StaleCutoffInput {
             match key.code {
                 KeyCode::Enter => self.apply_stale_cutoff_input(),
-                KeyCode::Esc => {
+                KeyCode::Escape => {
                     self.mode = AppMode::Dashboard;
                     self.error_message = None;
                 }
@@ -1828,7 +1828,7 @@ impl App {
         if self.mode == AppMode::FilterPopup {
             match self.filter_popup_section {
                 FilterPopupSection::TagSearch => match key.code {
-                    KeyCode::Esc => {
+                    KeyCode::Escape => {
                         if !self.tag_search_input.is_empty() {
                             self.tag_search_input.clear();
                             let filtered_count = self.filtered_tag_options().count();
@@ -1877,7 +1877,7 @@ impl App {
                 | FilterPopupSection::Status
                 | FilterPopupSection::Tags
                 | FilterPopupSection::Versions => match key.code {
-                    KeyCode::Esc | KeyCode::Char('f') => {
+                    KeyCode::Escape | KeyCode::Char('f') => {
                         self.mode = AppMode::Dashboard;
                     }
                     KeyCode::Tab => {
@@ -1990,7 +1990,7 @@ impl App {
 
         if self.mode == AppMode::Settings {
             match key.code {
-                KeyCode::Esc => {
+                KeyCode::Escape => {
                     self.mode = AppMode::Dashboard;
                     self.settings_draft = SettingsDraft::from_config(&self.config);
                 }
@@ -2025,7 +2025,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('b') => self.refresh_local_benchmarks(),
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('s') if key.modifiers.contains(Modifiers::CONTROL) => {
                     self.save_settings().await;
                 }
                 KeyCode::Enter
@@ -2140,7 +2140,7 @@ impl App {
                     self.start_search();
                 }
             }
-            KeyCode::Esc => {
+            KeyCode::Escape => {
                 self.error_message = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -2417,9 +2417,9 @@ mod tests {
     use crate::metrics::QueryRequestCounts;
     use crate::models::manager::RunnerManager;
     use chrono::TimeZone;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use mockito::{Matcher, Server};
     use std::time::Duration;
+    use termina::event::{KeyCode, KeyEvent, Modifiers};
 
     fn test_runner_targets() -> Vec<RunnerTarget> {
         vec![RunnerTarget {
@@ -2832,13 +2832,13 @@ mod tests {
             ..AppConfig::default()
         };
         let mut app = App::new(conductor, config);
-        app.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('4'), Modifiers::NONE))
             .await;
         app.await_pending_search().await;
         assert_eq!(app.active_tab(), Tab::Uncontacted);
         assert!(app.error_message.is_some());
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('7'), Modifiers::NONE))
             .await;
         app.await_pending_search().await;
         assert_eq!(app.active_tab(), Tab::Workers);
@@ -2860,7 +2860,7 @@ mod tests {
         };
         let mut app = App::new(conductor, config);
 
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE))
             .await;
         app.await_pending_search().await;
 
@@ -2872,7 +2872,7 @@ mod tests {
     async fn test_slash_focuses_filter_mode() {
         let mut app = test_app();
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), Modifiers::NONE))
             .await;
 
         assert_eq!(app.mode, AppMode::FilterPopup);
@@ -2881,7 +2881,7 @@ mod tests {
     #[tokio::test]
     async fn test_f_key_opens_filter_popup() {
         let mut app = test_app();
-        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::FilterPopup);
     }
@@ -2889,7 +2889,7 @@ mod tests {
     #[tokio::test]
     async fn test_slash_key_opens_filter_popup() {
         let mut app = test_app();
-        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::FilterPopup);
     }
@@ -2897,7 +2897,7 @@ mod tests {
     #[tokio::test]
     async fn test_t_key_opens_filter_input() {
         let mut app = test_app();
-        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::FilterInput);
     }
@@ -2906,7 +2906,7 @@ mod tests {
     async fn test_a_key_opens_stale_cutoff_input_on_stale_tab() {
         let mut app = test_app();
         app.select_tab(Tab::Uncontacted);
-        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), Modifiers::NONE))
             .await;
 
         assert_eq!(app.mode, AppMode::StaleCutoffInput);
@@ -2920,7 +2920,7 @@ mod tests {
         app.select_tab(Tab::Uncontacted);
         app.focus_stale_cutoff();
         app.stale_cutoff_input = "11:00".to_string();
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
             .await;
 
         assert_eq!(app.mode, AppMode::Dashboard);
@@ -2938,7 +2938,7 @@ mod tests {
         app.stale_cutoff_at = Some(existing);
         app.focus_stale_cutoff();
         app.stale_cutoff_input = "12:00".to_string();
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Escape, Modifiers::NONE))
             .await;
 
         assert_eq!(app.mode, AppMode::Dashboard);
@@ -2952,7 +2952,7 @@ mod tests {
         app.stale_cutoff_at = Some(Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 0).unwrap());
         app.focus_stale_cutoff();
         app.stale_cutoff_input.clear();
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
             .await;
 
         assert_eq!(app.stale_cutoff_at, None);
@@ -2965,7 +2965,7 @@ mod tests {
     #[tokio::test]
     async fn test_v_key_does_nothing_in_dashboard() {
         let mut app = test_app();
-        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::Dashboard);
     }
@@ -2974,7 +2974,7 @@ mod tests {
     async fn test_esc_closes_filter_popup() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Escape, Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::Dashboard);
     }
@@ -2983,7 +2983,7 @@ mod tests {
     async fn test_f_key_closes_filter_popup() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
-        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::Dashboard);
     }
@@ -2992,7 +2992,7 @@ mod tests {
     async fn test_slash_inside_filter_popup_is_noop() {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
-        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), Modifiers::NONE))
             .await;
         assert_eq!(app.mode, AppMode::FilterPopup);
     }
@@ -3002,7 +3002,7 @@ mod tests {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
         app.filter_popup_section = FilterPopupSection::Tags;
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE))
             .await;
         assert_eq!(app.filter_popup_section, FilterPopupSection::Versions);
     }
@@ -3012,7 +3012,7 @@ mod tests {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
         app.filter_popup_section = FilterPopupSection::Selected;
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE))
             .await;
         assert_eq!(app.filter_popup_section, FilterPopupSection::Status);
     }
@@ -3022,7 +3022,7 @@ mod tests {
         let mut app = test_app();
         app.mode = AppMode::FilterPopup;
         app.filter_popup_section = FilterPopupSection::Versions;
-        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE))
             .await;
         assert_eq!(app.filter_popup_section, FilterPopupSection::TagSearch);
     }
@@ -3034,7 +3034,7 @@ mod tests {
         app.filter_popup_section = FilterPopupSection::Tags;
         app.selected_tags = vec!["docker".to_owned()];
         app.selected_versions = vec!["17.5.0".to_owned()];
-        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), Modifiers::NONE))
             .await;
         assert!(app.selected_tags.is_empty());
         assert_eq!(app.selected_versions, vec!["17.5.0".to_owned()]);
@@ -3047,7 +3047,7 @@ mod tests {
         app.filter_popup_section = FilterPopupSection::Versions;
         app.selected_tags = vec!["docker".to_owned()];
         app.selected_versions = vec!["17.5.0".to_owned()];
-        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), Modifiers::NONE))
             .await;
         assert!(app.selected_versions.is_empty());
         assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
@@ -3060,7 +3060,7 @@ mod tests {
         app.filter_popup_section = FilterPopupSection::Status;
         app.selected_status = Some("online".to_owned());
         app.selected_tags = vec!["docker".to_owned()];
-        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), Modifiers::NONE))
             .await;
         assert!(app.selected_status.is_none());
         assert_eq!(app.selected_tags, vec!["docker".to_owned()]);
@@ -3075,7 +3075,7 @@ mod tests {
         app.selected_tags = vec!["docker".to_owned()];
         app.selected_versions = vec!["17.5.0".to_owned()];
         app.selected_status = Some("online".to_owned());
-        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), Modifiers::NONE))
             .await;
         assert!(app.filter_input.is_empty());
         assert!(app.selected_tags.is_empty());
@@ -3094,7 +3094,7 @@ mod tests {
         app.selected_status = Some("online".to_owned());
 
         for character in ['e', 'x', 'a'] {
-            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), Modifiers::NONE))
                 .await;
         }
 
@@ -3109,7 +3109,7 @@ mod tests {
     async fn test_plain_character_does_not_force_filter_mode() {
         let mut app = test_app();
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), Modifiers::NONE))
             .await;
 
         assert_eq!(app.mode, AppMode::Dashboard);
@@ -3122,7 +3122,7 @@ mod tests {
         app.mode = AppMode::FilterInput;
         app.filter_input = "prod".to_string();
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL))
             .await;
 
         assert!(app.should_quit);
@@ -3197,7 +3197,7 @@ mod tests {
         let mut app = App::new(conductor, config);
         app.toggle_polling();
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE))
+        app.handle_key(KeyEvent::new(KeyCode::Char('6'), Modifiers::NONE))
             .await;
         app.await_pending_search().await;
 

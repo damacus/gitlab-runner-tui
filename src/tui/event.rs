@@ -1,4 +1,3 @@
-use crossterm::event::{Event as CrosstermEvent, KeyEvent};
 use futures::{Stream, StreamExt};
 use std::{
     sync::{
@@ -6,6 +5,10 @@ use std::{
         Arc,
     },
     time::Duration,
+};
+use termina::{
+    event::{KeyEvent, KeyEventKind},
+    Event as TerminaEvent, EventStream,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -72,17 +75,30 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    pub fn new(tick_rate: Duration) -> Self {
-        Self::with_stream(
-            tick_rate,
-            EVENT_QUEUE_CAPACITY,
-            crossterm::event::EventStream::new(),
-        )
+    pub fn new(tick_rate: Duration, reader: EventStream) -> Self {
+        let (sender, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let tick_pending = Arc::new(AtomicBool::new(false));
+        let event_sender = EventSender {
+            sender,
+            tick_pending: Arc::clone(&tick_pending),
+        };
+        let cancellation_token = CancellationToken::new();
+        let token = cancellation_token.clone();
+        let producer =
+            tokio::task::spawn_local(run_event_producer(reader, tick_rate, event_sender, token));
+
+        Self {
+            receiver,
+            tick_pending,
+            cancellation_token,
+            producer: Some(producer),
+        }
     }
 
+    #[cfg(test)]
     fn with_stream<S>(tick_rate: Duration, capacity: usize, reader: S) -> Self
     where
-        S: Stream<Item = std::io::Result<CrosstermEvent>> + Send + Unpin + 'static,
+        S: Stream<Item = std::io::Result<TerminaEvent>> + Send + Unpin + 'static,
     {
         let (sender, receiver) = mpsc::channel(capacity);
         let tick_pending = Arc::new(AtomicBool::new(false));
@@ -130,19 +146,24 @@ async fn run_event_producer<S>(
     sender: EventSender,
     token: CancellationToken,
 ) where
-    S: Stream<Item = std::io::Result<CrosstermEvent>> + Unpin,
+    S: Stream<Item = std::io::Result<TerminaEvent>> + Unpin,
 {
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
             event = reader.next() => match event {
-                Some(Ok(CrosstermEvent::Key(key))) => {
+                Some(Ok(TerminaEvent::Key(key)))
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
                     if !sender.send_key(key, &token).await {
                         break;
                     }
                 }
-                Some(Ok(CrosstermEvent::Resize(width, height))) => {
-                    if !sender.send_event(Event::Resize(width, height), &token).await {
+                Some(Ok(TerminaEvent::WindowResized(size))) => {
+                    if !sender
+                        .send_event(Event::Resize(size.cols, size.rows), &token)
+                        .await
+                    {
                         break;
                     }
                 }
@@ -161,15 +182,22 @@ async fn run_event_producer<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyModifiers};
     use futures::stream;
     use std::{
         pin::Pin,
         task::{Context, Poll},
     };
+    use termina::event::{KeyCode, KeyEventKind, Modifiers};
 
     fn key(character: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+        KeyEvent::new(KeyCode::Char(character), Modifiers::NONE)
+    }
+
+    fn key_with_kind(character: char, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            kind,
+            ..key(character)
+        }
     }
 
     fn test_channel(capacity: usize) -> (EventSender, EventHandler) {
@@ -237,7 +265,7 @@ mod tests {
     }
 
     impl Stream for DropAwarePendingStream {
-        type Item = std::io::Result<CrosstermEvent>;
+        type Item = std::io::Result<TerminaEvent>;
 
         fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             Poll::Pending
@@ -285,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn producer_delivers_keys_and_stops_when_stream_closes() {
-        let reader = stream::iter([Ok(CrosstermEvent::Key(key('x')))]);
+        let reader = stream::iter([Ok(TerminaEvent::Key(key('x')))]);
         let mut handler = EventHandler::with_stream(Duration::from_secs(60), 2, reader);
 
         assert_eq!(handler.next().await, Some(Event::Key(key('x'))));
@@ -295,10 +323,33 @@ mod tests {
 
     #[tokio::test]
     async fn producer_delivers_resize_events() {
-        let reader = stream::iter([Ok(CrosstermEvent::Resize(132, 43))]);
+        let reader = stream::iter([Ok(TerminaEvent::WindowResized(termina::WindowSize {
+            cols: 132,
+            rows: 43,
+            pixel_width: None,
+            pixel_height: None,
+        }))]);
         let mut handler = EventHandler::with_stream(Duration::from_secs(60), 2, reader);
 
         assert_eq!(handler.next().await, Some(Event::Resize(132, 43)));
+        handler.stop().await;
+    }
+
+    #[tokio::test]
+    async fn producer_accepts_press_and_repeat_and_ignores_release() {
+        let reader = stream::iter([
+            Ok(TerminaEvent::Key(key_with_kind('p', KeyEventKind::Press))),
+            Ok(TerminaEvent::Key(key_with_kind('r', KeyEventKind::Repeat))),
+            Ok(TerminaEvent::Key(key_with_kind('x', KeyEventKind::Release))),
+        ]);
+        let mut handler = EventHandler::with_stream(Duration::from_secs(60), 3, reader);
+
+        assert_eq!(handler.next().await, Some(Event::Key(key('p'))));
+        assert_eq!(
+            handler.next().await,
+            Some(Event::Key(key_with_kind('r', KeyEventKind::Repeat)))
+        );
+        assert_eq!(handler.next().await, None);
         handler.stop().await;
     }
 }

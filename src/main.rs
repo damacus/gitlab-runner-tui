@@ -62,19 +62,14 @@ use conductor::{Conductor, QueryOutcome, QueryProfile};
 use config::{
     parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode, RunnerTarget,
 };
-use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::TerminaBackend, Terminal};
 use reqwest::StatusCode;
 use rotation_wait::{RotationWaitOptions, RotationWaitState};
-use std::{
-    env,
-    io::{self, Write},
-    path::PathBuf,
+use std::{env, io, io::Write, path::PathBuf};
+use termina::{
+    escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode},
+    EventStream, PlatformTerminal, Terminal as TerminaTerminal,
 };
 use tui::{
     app::App,
@@ -169,7 +164,8 @@ impl std::fmt::Debug for Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     load_explicit_dotenv(args.dotenv.as_deref())?;
-    tokio::runtime::Runtime::new()?.block_on(run(args))
+    let runtime = tokio::runtime::Runtime::new()?;
+    tokio::task::LocalSet::new().block_on(&runtime, run(args))
 }
 
 async fn run(args: Args) -> Result<()> {
@@ -326,16 +322,101 @@ fn run_auth_command(command: AuthCommand, args: &Args, config: &AppConfig) -> Re
     Ok(())
 }
 
-async fn run_tui(mut app: App) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let mut event_handler = EventHandler::new(std::time::Duration::from_millis(250));
+type AppTerminal = Terminal<TerminaBackend<PlatformTerminal>>;
 
-    loop {
-        terminal.draw(|frame| ui::render(&mut app, frame))?;
+struct TuiSession {
+    terminal: AppTerminal,
+    restored: bool,
+}
+
+impl TuiSession {
+    fn new() -> Result<Self> {
+        let terminal = Terminal::new(TerminaBackend::new(platform_terminal()?))?;
+        let mut session = Self {
+            terminal,
+            restored: false,
+        };
+
+        if let Err(error) = enter_tui_mode(&mut session.terminal) {
+            let _ = session.restore();
+            return Err(error.into());
+        }
+
+        Ok(session)
+    }
+
+    fn event_stream(&self) -> EventStream {
+        EventStream::new(self.terminal.backend().terminal().event_reader(), |_| true)
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        let result = restore_tui_mode(&mut self.terminal);
+        self.restored = result.is_ok();
+        result
+    }
+}
+
+impl Drop for TuiSession {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = self.restore();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn platform_terminal() -> std::io::Result<PlatformTerminal> {
+    PlatformTerminal::with_mode(termina::windows::InputReaderMode::Legacy)
+}
+
+#[cfg(not(windows))]
+fn platform_terminal() -> std::io::Result<PlatformTerminal> {
+    PlatformTerminal::new()
+}
+
+fn terminal_mode(mode: DecPrivateModeCode, enabled: bool) -> Csi {
+    let mode = DecPrivateMode::Code(mode);
+    if enabled {
+        Csi::Mode(Mode::SetDecPrivateMode(mode))
+    } else {
+        Csi::Mode(Mode::ResetDecPrivateMode(mode))
+    }
+}
+
+fn enter_tui_mode<T>(terminal: &mut Terminal<TerminaBackend<T>>) -> std::io::Result<()>
+where
+    T: TerminaTerminal,
+{
+    let backend = terminal.backend_mut();
+    backend.terminal_mut().enter_raw_mode()?;
+    let alternate_screen = terminal_mode(DecPrivateModeCode::ClearAndEnableAlternateScreen, true);
+    let hide_cursor = terminal_mode(DecPrivateModeCode::ShowCursor, false);
+    write!(backend, "{alternate_screen}{hide_cursor}")?;
+    backend.flush()
+}
+
+fn restore_tui_mode<T>(terminal: &mut Terminal<TerminaBackend<T>>) -> std::io::Result<()>
+where
+    T: TerminaTerminal,
+{
+    let backend = terminal.backend_mut();
+    let alternate_screen = terminal_mode(DecPrivateModeCode::ClearAndEnableAlternateScreen, false);
+    let show_cursor = terminal_mode(DecPrivateModeCode::ShowCursor, true);
+    let screen_result =
+        write!(backend, "{alternate_screen}{show_cursor}").and_then(|_| backend.flush());
+    let raw_mode_result = backend.terminal_mut().enter_cooked_mode();
+    screen_result.and(raw_mode_result)
+}
+
+async fn run_tui(mut app: App) -> Result<()> {
+    let mut session = TuiSession::new()?;
+    let mut event_handler = EventHandler::new(
+        std::time::Duration::from_millis(250),
+        session.event_stream(),
+    );
+
+    let result = loop {
+        session.terminal.draw(|frame| ui::render(&mut app, frame))?;
 
         if let Some(event) = event_handler.next().await {
             match event {
@@ -346,19 +427,12 @@ async fn run_tui(mut app: App) -> Result<()> {
         }
 
         if app.should_quit {
-            break;
+            break Ok(());
         }
-    }
+    };
 
     event_handler.stop().await;
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
+    result.and(session.restore().map_err(Into::into))
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -1643,5 +1717,129 @@ mod tests {
     fn does_not_treat_generic_errors_as_auth_errors() {
         let error = anyhow::anyhow!("network exploded");
         assert!(!is_auth_error(&error));
+    }
+
+    #[derive(Clone)]
+    struct CleanupTerminal {
+        output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        raw_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        cooked_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail_writes: bool,
+    }
+
+    impl CleanupTerminal {
+        fn new(fail_writes: bool) -> Self {
+            Self {
+                output: Default::default(),
+                raw_mode_calls: Default::default(),
+                cooked_mode_calls: Default::default(),
+                fail_writes,
+            }
+        }
+    }
+
+    impl std::io::Write for CleanupTerminal {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.fail_writes {
+                return Err(std::io::Error::other("output failed"));
+            }
+            self.output.lock().expect("output lock").extend(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TerminaTerminal for CleanupTerminal {
+        fn enter_raw_mode(&mut self) -> std::io::Result<()> {
+            self.raw_mode_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn enter_cooked_mode(&mut self) -> std::io::Result<()> {
+            self.cooked_mode_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn get_dimensions(&self) -> std::io::Result<termina::WindowSize> {
+            Ok(termina::WindowSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            })
+        }
+
+        fn event_reader(&self) -> termina::EventReader {
+            unreachable!("cleanup tests do not read terminal events")
+        }
+
+        fn poll<F: Fn(&termina::Event) -> bool>(
+            &self,
+            _filter: F,
+            _timeout: Option<std::time::Duration>,
+        ) -> std::io::Result<bool> {
+            unreachable!("cleanup tests do not poll terminal events")
+        }
+
+        fn read<F: Fn(&termina::Event) -> bool>(
+            &self,
+            _filter: F,
+        ) -> std::io::Result<termina::Event> {
+            unreachable!("cleanup tests do not read terminal events")
+        }
+
+        fn set_panic_hook(
+            &mut self,
+            _hook: impl Fn(&mut termina::PlatformHandle) + Send + Sync + 'static,
+        ) {
+        }
+    }
+
+    #[test]
+    fn tui_mode_restores_the_screen_cursor_and_raw_mode() {
+        let output = CleanupTerminal::new(false);
+        let output_state = output.clone();
+        let mut terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+
+        enter_tui_mode(&mut terminal).expect("enter TUI mode");
+        restore_tui_mode(&mut terminal).expect("restore TUI mode");
+
+        assert_eq!(
+            String::from_utf8(output_state.output.lock().expect("output lock").clone())
+                .expect("terminal output"),
+            "\u{1b}[?1049h\u{1b}[?25l\u{1b}[?1049l\u{1b}[?25h"
+        );
+        assert_eq!(
+            output_state
+                .raw_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            output_state
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn restoration_attempts_to_leave_raw_mode_after_output_failure() {
+        let output = CleanupTerminal::new(true);
+        let output_state = output.clone();
+        let mut terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+
+        assert!(restore_tui_mode(&mut terminal).is_err());
+        assert_eq!(
+            output_state
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 }

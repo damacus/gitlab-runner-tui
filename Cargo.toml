@@ -11,8 +11,8 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # TUI
-ratatui = "0.30"
-crossterm = { version = "0.29", features = ["event-stream"] }
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets", "layout-cache", "macros", "termina", "underline-color", "unstable-backend-writer"] }
+termina = { version = "0.3", features = ["event-stream", "windows-legacy"] }
 
 # Async & HTTP
 tokio = { version = "1.36", features = ["full"] }
