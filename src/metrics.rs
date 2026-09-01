@@ -17,7 +17,9 @@ pub struct EnrichmentReuseCounts {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveQueryMetrics {
+    #[serde(with = "crate::time::serde_timestamp")]
     pub started_at: Timestamp,
+    #[serde(with = "crate::time::serde_timestamp")]
     pub finished_at: Timestamp,
     pub duration_millis: u128,
     pub result_count: usize,
@@ -101,8 +103,8 @@ mod tests {
     #[test]
     fn timestamps_remain_rfc3339_strings_in_metrics_json() {
         let metrics = LiveQueryMetrics::success(
-            parse_rfc3339("2026-05-12T10:00:00Z").unwrap(),
-            parse_rfc3339("2026-05-12T10:00:00.125Z").unwrap(),
+            parse_rfc3339("2026-05-12T10:00:00.120Z").unwrap(),
+            parse_rfc3339("2026-05-12T10:00:00.123400Z").unwrap(),
             125,
             2,
             RunnerDiscoveryMode::AllRunners,
@@ -113,7 +115,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"started_at":"2026-05-12T10:00:00Z","finished_at":"2026-05-12T10:00:00.125Z","duration_millis":125,"result_count":2,"discovery_mode":"all_runners","request_counts":{"list_requests":0,"detail_requests":0,"manager_requests":0},"reused_enrichments":{"detail_enrichments":0,"manager_enrichments":0},"succeeded":true,"error_message":null}"#
+            r#"{"started_at":"2026-05-12T10:00:00.120Z","finished_at":"2026-05-12T10:00:00.123400Z","duration_millis":125,"result_count":2,"discovery_mode":"all_runners","request_counts":{"list_requests":0,"detail_requests":0,"manager_requests":0},"reused_enrichments":{"detail_enrichments":0,"manager_enrichments":0},"succeeded":true,"error_message":null}"#
         );
     }
 }

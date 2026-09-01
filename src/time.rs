@@ -5,7 +5,6 @@ use jiff::{
     SignedDuration, Timestamp, Zoned,
 };
 
-const RFC3339_PRINTER: DateTimePrinter = DateTimePrinter::new();
 const RFC3339_MILLIS_PRINTER: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
 #[allow(dead_code)]
 const RFC2822_PRINTER: rfc2822::DateTimePrinter = rfc2822::DateTimePrinter::new();
@@ -23,12 +22,12 @@ pub fn now() -> Timestamp {
 }
 
 pub fn parse_rfc3339(input: &str) -> Result<Timestamp, jiff::Error> {
-    input.parse()
+    preserve_leap_second(input, input.parse()?)
 }
 
 #[allow(dead_code)]
 pub fn format_rfc3339(timestamp: Timestamp) -> String {
-    RFC3339_PRINTER.timestamp_with_offset_to_string(&timestamp, Offset::UTC)
+    chrono_rfc3339_printer(timestamp).timestamp_with_offset_to_string(&timestamp, Offset::UTC)
 }
 
 pub fn format_rfc3339_millis(timestamp: Timestamp) -> String {
@@ -36,16 +35,74 @@ pub fn format_rfc3339_millis(timestamp: Timestamp) -> String {
 }
 
 pub fn format_rfc3339_with_offset(timestamp: Timestamp, offset: Offset) -> String {
-    RFC3339_PRINTER.timestamp_with_offset_to_string(&timestamp, offset)
+    chrono_rfc3339_printer(timestamp).timestamp_with_offset_to_string(&timestamp, offset)
 }
 
 pub fn parse_rfc2822(input: &str) -> Result<Timestamp, jiff::Error> {
-    RFC2822_PARSER.parse_timestamp(input)
+    preserve_leap_second(input, RFC2822_PARSER.parse_timestamp(input)?)
 }
 
 #[allow(dead_code)]
 pub fn format_rfc2822(timestamp: Timestamp) -> Result<String, jiff::Error> {
     RFC2822_PRINTER.zoned_to_string(&timestamp.to_zoned(TimeZone::UTC))
+}
+
+fn chrono_rfc3339_printer(timestamp: Timestamp) -> DateTimePrinter {
+    let subsec_nanosecond = timestamp.subsec_nanosecond();
+    let precision = if subsec_nanosecond == 0 {
+        None
+    } else if subsec_nanosecond % 1_000_000 == 0 {
+        Some(3)
+    } else if subsec_nanosecond % 1_000 == 0 {
+        Some(6)
+    } else {
+        Some(9)
+    };
+    DateTimePrinter::new().precision(precision)
+}
+
+fn preserve_leap_second(input: &str, timestamp: Timestamp) -> Result<Timestamp, jiff::Error> {
+    if contains_leap_second(input) {
+        timestamp.checked_add(SignedDuration::from_secs(1))
+    } else {
+        Ok(timestamp)
+    }
+}
+
+fn contains_leap_second(input: &str) -> bool {
+    input.as_bytes().windows(8).any(|time| {
+        time[0].is_ascii_digit()
+            && time[1].is_ascii_digit()
+            && time[2] == b':'
+            && time[3].is_ascii_digit()
+            && time[4].is_ascii_digit()
+            && time[5] == b':'
+            && time[6] == b'6'
+            && time[7] == b'0'
+    })
+}
+
+pub mod serde_timestamp {
+    use super::{chrono_rfc3339_printer, parse_rfc3339};
+    use jiff::Timestamp;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(timestamp: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = chrono_rfc3339_printer(*timestamp).timestamp_to_string(timestamp);
+        serializer.serialize_str(&value)
+    }
+
+    #[allow(dead_code)]
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Timestamp, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse_rfc3339(&value).map_err(serde::de::Error::custom)
+    }
 }
 
 pub fn parse_clock_time(input: &str) -> Result<Time, jiff::Error> {
@@ -147,13 +204,31 @@ fn system_time_zone_with(discover: impl FnOnce() -> Option<TimeZone>) -> TimeZon
 mod tests {
     use super::*;
     use jiff::civil::date;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn parses_and_formats_rfc3339_with_existing_utc_offset() {
         let timestamp = parse_rfc3339("2026-05-12T11:00:00+01:00").unwrap();
 
         assert_eq!(format_rfc3339(timestamp), "2026-05-12T10:00:00+00:00");
+    }
+
+    #[test]
+    fn chrono_compatible_rfc3339_format_preserves_fraction_width() {
+        for (input, expected) in [
+            ("2026-05-12T10:00:00Z", "2026-05-12T10:00:00+00:00"),
+            ("2026-05-12T10:00:00.120Z", "2026-05-12T10:00:00.120+00:00"),
+            (
+                "2026-05-12T10:00:00.123400Z",
+                "2026-05-12T10:00:00.123400+00:00",
+            ),
+            (
+                "2026-05-12T10:00:00.123456700Z",
+                "2026-05-12T10:00:00.123456700+00:00",
+            ),
+        ] {
+            assert_eq!(format_rfc3339(parse_rfc3339(input).unwrap()), expected);
+        }
     }
 
     #[test]
@@ -164,6 +239,23 @@ mod tests {
             format_rfc2822(timestamp).unwrap(),
             "Tue, 12 May 2026 10:00:00 +0000"
         );
+    }
+
+    #[test]
+    fn rfc3339_leap_second_preserves_the_following_instant() {
+        let leap_second = parse_rfc3339("2016-12-31T23:59:60.120Z").unwrap();
+
+        assert_eq!(
+            leap_second,
+            parse_rfc3339("2017-01-01T00:00:00.120Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn rfc2822_leap_second_preserves_the_following_instant() {
+        let leap_second = parse_rfc2822("Sat, 31 Dec 2016 23:59:60 +0000").unwrap();
+
+        assert_eq!(leap_second, parse_rfc3339("2017-01-01T00:00:00Z").unwrap());
     }
 
     #[test]
@@ -181,18 +273,31 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_json_remains_an_rfc3339_string() {
-        #[derive(Serialize)]
+    fn chrono_compatible_timestamp_serde_preserves_fraction_width() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
         struct Event {
+            #[serde(with = "serde_timestamp")]
             occurred_at: Timestamp,
         }
 
-        let json = serde_json::to_string(&Event {
-            occurred_at: parse_rfc3339("2026-05-12T10:00:00Z").unwrap(),
-        })
-        .unwrap();
+        for (input, expected) in [
+            (
+                "2026-05-12T10:00:00.120Z",
+                r#"{"occurred_at":"2026-05-12T10:00:00.120Z"}"#,
+            ),
+            (
+                "2026-05-12T10:00:00.123400Z",
+                r#"{"occurred_at":"2026-05-12T10:00:00.123400Z"}"#,
+            ),
+        ] {
+            let event = Event {
+                occurred_at: parse_rfc3339(input).unwrap(),
+            };
+            let json = serde_json::to_string(&event).unwrap();
 
-        assert_eq!(json, r#"{"occurred_at":"2026-05-12T10:00:00Z"}"#);
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        }
     }
 
     #[test]
@@ -204,6 +309,26 @@ mod tests {
         let cutoff = parse_user_cutoff("11:00", &now).unwrap().unwrap();
 
         assert_eq!(cutoff, parse_rfc3339("2026-05-12T10:00:00Z").unwrap());
+    }
+
+    #[test]
+    fn user_cutoff_rfc3339_preserves_fraction_width() {
+        let now = parse_rfc3339("2026-05-13T08:30:00Z")
+            .unwrap()
+            .to_zoned(TimeZone::get("Europe/London").unwrap());
+
+        for (input, expected) in [
+            ("2026-05-12T10:00:00.120Z", "2026-05-12T11:00:00.120+01:00"),
+            (
+                "2026-05-12T10:00:00.123400Z",
+                "2026-05-12T11:00:00.123400+01:00",
+            ),
+        ] {
+            assert_eq!(
+                format_user_cutoff_input(parse_rfc3339(input).unwrap(), &now),
+                expected
+            );
+        }
     }
 
     #[test]
