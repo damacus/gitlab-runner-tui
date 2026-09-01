@@ -33,11 +33,10 @@ anyhow = "1.0"
 
 # CLI & Config
 clap = { version = "4.5", features = ["derive", "env"] }
-dotenvy = "0.15"
+dotenv = { package = "dotenv-ng", version = "1.0" }
 toml = "1.0"
-dirs = "6.0"
+etcetera = "0.11"
 rpassword = "7.3"
-urlencoding = "2.1"
 keyring = "4.1.6"
 
 # Utility

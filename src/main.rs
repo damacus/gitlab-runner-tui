@@ -166,10 +166,13 @@ impl std::fmt::Debug for Args {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
     load_explicit_dotenv(args.dotenv.as_deref())?;
+    tokio::runtime::Runtime::new()?.block_on(run(args))
+}
+
+async fn run(args: Args) -> Result<()> {
     let mut config = match args.config.as_deref() {
         Some(path) => AppConfig::load_from_path(path)?,
         None => AppConfig::load()?,
@@ -472,9 +475,20 @@ fn resolve_gitlab_host(args: &Args, config: &AppConfig, env_host: Option<String>
 }
 
 fn load_explicit_dotenv(path: Option<&std::path::Path>) -> Result<()> {
+    load_explicit_dotenv_with(path, |path| {
+        // SAFETY: main calls this before it creates the Tokio runtime or any worker threads.
+        unsafe { dotenv::EnvLoader::with_path(path).load_and_modify() }
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    })
+}
+
+fn load_explicit_dotenv_with<F>(path: Option<&std::path::Path>, load: F) -> Result<()>
+where
+    F: FnOnce(&std::path::Path) -> Result<()>,
+{
     if let Some(path) = path {
-        dotenvy::from_path(path)
-            .with_context(|| format!("Failed to load dotenv file {}", path.display()))?;
+        load(path).with_context(|| format!("Failed to load dotenv file {}", path.display()))?;
     }
     Ok(())
 }
@@ -1017,21 +1031,43 @@ mod tests {
 
     #[test]
     fn dotenv_file_is_ignored_unless_explicitly_selected() {
-        const VARIABLE: &str = "GITLAB_RUNNER_TUI_EXPLICIT_DOTENV_TEST";
+        let mut loaded_path = None;
+
+        load_explicit_dotenv_with(None, |path| {
+            loaded_path = Some(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(loaded_path, None);
+    }
+
+    #[test]
+    fn dotenv_loads_only_the_explicitly_selected_file() {
+        let selected_path = PathBuf::from("/trusted/runtime.env");
+        let mut loaded_path = None;
+
+        load_explicit_dotenv_with(Some(&selected_path), |path| {
+            loaded_path = Some(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(loaded_path, Some(selected_path));
+    }
+
+    #[test]
+    fn dotenv_preserves_existing_environment_values() {
         let path = std::env::temp_dir().join(format!(
-            "gitlab-runner-tui-explicit-dotenv-{}.env",
+            "gitlab-runner-tui-dotenv-precedence-{}.env",
             std::process::id()
         ));
-        std::fs::write(&path, format!("{VARIABLE}=loaded-explicitly\n")).unwrap();
-        std::env::remove_var(VARIABLE);
+        std::fs::write(&path, "PATH=dotenv-value\n").unwrap();
 
-        load_explicit_dotenv(None).unwrap();
-        assert!(std::env::var(VARIABLE).is_err());
+        let existing_path = std::env::var("PATH").unwrap();
+        let loaded = dotenv::EnvLoader::with_path(&path).load().unwrap();
 
-        load_explicit_dotenv(Some(&path)).unwrap();
-        assert_eq!(std::env::var(VARIABLE).unwrap(), "loaded-explicitly");
-
-        std::env::remove_var(VARIABLE);
+        assert_eq!(loaded.var("PATH").unwrap(), existing_path);
         std::fs::remove_file(path).unwrap();
     }
 
