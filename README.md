@@ -1,643 +1,368 @@
 # GitLab Runner TUI
 
-A fast, beautiful Terminal User Interface (TUI) for querying and inspecting GitLab Runners.
+GitLab Runner TUI is a read-only terminal dashboard for inspecting GitLab runners and their
+managers. Use the interactive dashboard for day-to-day checks, or run one-shot commands that
+return JSON for scripts and continuous integration (CI) jobs.
 
-## Overview
+## What it shows
 
-GitLab Runner TUI provides DevOps engineers and GitLab administrators with a command-line interface to monitor and manage GitLab Runner infrastructure. Query runners by tags from your terminal.
+- Runner status, type, version, tags, and pause state
+- Manager status, version, system ID, and last contact time
+- Fleet health and runners with no online manager
+- Stale runners that have stopped contacting GitLab
+- Runners with no managers
+- Runners with overlapping managers during rotation
+- Query timing and GitLab API request counts in command output
 
-## Preview
+The application only reads runner data from GitLab. It does not register, pause, delete, or edit
+runners.
 
-![Overview of the seven dashboard tabs](docs/screenshots/overview.gif)
+## Try the demo
 
-*Seven dashboard tabs. Navigate with `1` to `7` or `Tab`.*
+If Docker is installed, open the dashboard without a GitLab account or token:
 
-![Runner detail pane](docs/screenshots/detail.gif)
-
-*Runner detail pane. Use the arrow keys to inspect runner status, version, managers, and tags.*
-
-## Features
-
-- 🚀 **Interactive TUI** - Beautiful, keyboard-driven interface built with [ratatui](https://ratatui.rs/)
-- 📊 **Seven Dashboard Tabs** - Specialized views for different runner and infrastructure metrics
-- 🔍 **Command Mode** - Run one-shot JSON queries for CI/CD or automation
-- 🏷️ **Tag Filtering** - Filter runners by comma-separated tags
-- ⚡ **Real-time API Queries** - Direct integration with GitLab REST API v4
-- 📊 **Detailed Results** - Tabular display of runners and managers with color highlighting
-- 🔐 **Secure** - Token-based authentication
-
-## Quick Start
-
-### Prerequisites
-
-- GitLab personal access token with the required runner permissions. On GitLab 17.1 and later,
-  start with `read_api` and `manage_runner`. Add `read_user` if `/user` validation fails. Older
-  GitLab versions can use the broader `api` compatibility fallback. See
-  [GitLab token permissions](docs/security/gitlab-token-scopes.md).
-- GitLab instance URL (defaults to gitlab.com)
-
-### Installation
-
-#### From source
-
-```bash
-git clone https://github.com/damacus/gitlab-runner-tui.git
-cd gitlab-runner-tui
-cargo build --release
-./target/release/gitlab-runner-tui
+```sh
+docker run --rm -it ghcr.io/damacus/gitlab-runner-tui:latest --demo
 ```
 
-#### Docker
+The demo uses built-in fixture data and does not make network requests.
+
+## Install
+
+### Download a native binary
+
+[GitHub Releases](https://github.com/damacus/gitlab-runner-tui/releases/latest) provides these
+archives:
+
+| Operating system | Architecture | Archive |
+| --- | --- | --- |
+| Linux | x86-64 | `gitlab-runner-tui-linux-amd64.tar.gz` |
+| Linux | ARM64 | `gitlab-runner-tui-linux-arm64.tar.gz` |
+| macOS | Intel | `gitlab-runner-tui-macos-amd64.tar.gz` |
+| macOS | Apple silicon | `gitlab-runner-tui-macos-arm64.tar.gz` |
+
+Download the matching archive and `checksums-sha256.txt`. Then extract the binary and put it on
+your `PATH`. For example, on Linux x86-64:
+
+```sh
+tar -xzf gitlab-runner-tui-linux-amd64.tar.gz
+mkdir -p "$HOME/.local/bin"
+install -m 0755 gitlab-runner-tui "$HOME/.local/bin/gitlab-runner-tui"
+gitlab-runner-tui --help
+```
+
+If `$HOME/.local/bin` is not on your `PATH`, add it to your shell configuration or install the
+binary in another directory that is on your `PATH`.
+
+### Use Docker
 
 The published image supports Linux on AMD64 and ARM64:
 
-```bash
+```sh
 docker pull ghcr.io/damacus/gitlab-runner-tui:latest
 ```
 
-The `latest` tag follows the newest release. For repeatable deployments, replace it with a full
-version tag from the [published packages](https://github.com/damacus/gitlab-runner-tui/pkgs/container/gitlab-runner-tui).
+The `latest` tag follows the newest release. Use a full version tag for a repeatable deployment.
 
-Run the interactive TUI with a named volume for its configuration:
+### Build from source
 
-```bash
+The repository uses [mise](https://mise.jdx.dev/) to install the pinned Rust toolchain and build
+tools:
+
+```sh
+git clone https://github.com/damacus/gitlab-runner-tui.git
+cd gitlab-runner-tui
+mise trust
+mise install
+mise run build:release
+```
+
+The binary is written to `target/release/gitlab-runner-tui`.
+
+## Connect to GitLab
+
+### 1. Create a token
+
+For GitLab 17.1 and later, start with a personal access token that has:
+
+```text
+read_api, manage_runner
+```
+
+Add `read_user` if GitLab rejects the initial user validation request. GitLab versions older than
+17.1 can use the broader `api` scope.
+
+Your GitLab role must also permit access to the runners you want to inspect. See
+[GitLab token permissions](docs/security/gitlab-token-scopes.md) for endpoint and fine-grained
+token details.
+
+### 2. Run the application
+
+```sh
+gitlab-runner-tui
+```
+
+On first run, the setup asks for:
+
+- the GitLab URL;
+- the personal access token;
+- a runner discovery mode; and
+- optional group or project targets.
+
+The token prompt is masked. Outside Docker, the application stores the token in macOS Keychain,
+Windows Credential Manager, or Secret Service on Linux and other Unix desktops. The configuration
+file stores only non-secret settings.
+
+### 3. Choose a discovery mode
+
+| Mode | Use it when | GitLab endpoint |
+| --- | --- | --- |
+| `all` | You are an instance administrator or auditor | `/runners/all` |
+| `visible` | You want runners visible to the current user | `/runners` |
+| `targets` | You want runners from specific groups or projects | Group and project runner endpoints |
+
+The `all` mode falls back to `visible` if GitLab returns `403 Forbidden`. The `targets` mode is
+usually the clearest choice for GitLab.com or a token with limited scope. Enter targets with an
+explicit prefix:
+
+```text
+group:my-org/platform,project:my-org/application
+```
+
+A target can use a numeric GitLab ID or a group or project path.
+
+## Use the dashboard
+
+The dashboard has seven views:
+
+| Key | View | Purpose |
+| ---: | --- | --- |
+| `1` | Runners | Browse every discovered runner |
+| `2` | Health | See how many runners have an online manager |
+| `3` | Offline | Find runners with managers but no online manager |
+| `4` | Stale | Find runners whose managers have not contacted GitLab recently |
+| `5` | Idle | Find runners with no registered managers |
+| `6` | Rotating | Find runners with more than one manager |
+| `7` | Workers | Inspect each manager as an individual row |
+
+Useful keys:
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Change view |
+| `1`–`7` | Open a view directly |
+| `Up` / `Down` or `k` / `j` | Move the selection |
+| `Enter` | Open the selected runner in GitLab |
+| `r` | Refresh the current view |
+| `p` | Start or stop automatic polling |
+| `f` or `/` | Open tag, status, and version filters |
+| `t` | Edit the comma-separated tag filter |
+| `a` | Edit the contact cutoff on the Stale view |
+| `s` | Change the sort order |
+| `c` | Open settings and diagnostics |
+| `?` | Open the built-in help |
+| `q` or `Ctrl-C` | Quit |
+
+## Run one-shot commands
+
+Add a command to skip the dashboard and return machine-readable output:
+
+| Command | Result |
+| --- | --- |
+| `fetch` | All discovered runners with details and managers |
+| `fetch --summary` | Fast inventory from list endpoints only |
+| `switch` | Runners with no online manager |
+| `flames` | Runners whose managers have not contacted GitLab recently |
+| `empty` | Runners with no managers |
+| `rotating` | Runners with more than one manager |
+| `auth status` | Active GitLab host and credential source |
+| `auth logout` | Remove saved credentials and plaintext config tokens |
+
+Examples:
+
+```sh
+# Fast inventory
+gitlab-runner-tui fetch --summary
+
+# Full data for production runners
+gitlab-runner-tui fetch --tags production
+
+# Offline runners on a specific runner version
+gitlab-runner-tui switch --tags production --version 17.11
+
+# Runners that have not contacted GitLab since 11:00 local time
+gitlab-runner-tui flames --stale-cutoff 11:00
+
+# Check whether matching runners have overlapping managers
+gitlab-runner-tui rotating --tags production
+```
+
+Normal query commands write one JSON document. The document contains `runners` and `metrics`:
+
+```sh
+gitlab-runner-tui fetch --summary | jq '.runners[] | {id, status}'
+gitlab-runner-tui fetch | jq '.metrics.request_counts'
+```
+
+`fetch --summary` omits runner details and managers. It cannot be combined with `--version`,
+because version filtering needs enriched runner data.
+
+### Wait for runner rotation
+
+The rotation waiter polls until every eligible matching runner has rotated:
+
+```sh
+gitlab-runner-tui rotating --wait --tags production
+```
+
+It writes newline-delimited JSON events while it runs. It exits with status `0` when rotation
+completes and status `2` when the configured timeout expires. See the
+[CLI and automation guide](docs/CLI.md) for the event fields and waiter configuration.
+
+## Configuration
+
+The default configuration file is:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/gitlab-runner-tui/config.toml`, or `~/.config/gitlab-runner-tui/config.toml` |
+| macOS | `~/Library/Application Support/gitlab-runner-tui/config.toml` |
+| Windows | `%APPDATA%\gitlab-runner-tui\config.toml` |
+
+The settings screen edits the same file. A minimal target-based configuration looks like this:
+
+```toml
+gitlab_host = "https://gitlab.example.com"
+discovery_mode = "configured_targets"
+poll_interval_secs = 30
+poll_timeout_secs = 1800
+max_enrichment_requests = 10
+
+[[runner_targets]]
+kind = "group"
+id = "my-org/platform"
+label = "Platform"
+
+[[runner_targets]]
+kind = "project"
+id = "my-org/application"
+```
+
+`max_enrichment_requests` controls concurrent runner-detail and manager requests. The default is
+`10`; accepted values are `2` through `64`.
+
+The application does not discover `config.toml` or `.env` files from the current directory. Select
+another file explicitly:
+
+```sh
+gitlab-runner-tui --config /trusted/path/config.toml
+gitlab-runner-tui --dotenv /trusted/path/runtime.env
+```
+
+Only select files you trust. A selected file can change the GitLab host that receives your token.
+
+## Credentials
+
+Use these commands to inspect or remove saved credentials without showing the token:
+
+```sh
+gitlab-runner-tui auth status
+gitlab-runner-tui auth logout
+```
+
+For a temporary override, set environment variables for the process:
+
+```sh
+GITLAB_HOST=https://gitlab.example.com \
+GITLAB_TOKEN=glpat-example \
+gitlab-runner-tui fetch --summary
+```
+
+`GITLAB_TOKEN` takes priority over the saved credential. It is not written to the operating system
+credential store or configuration file. The application does not accept tokens as command-line
+arguments because process listings and shell history can expose them.
+
+## Docker with persistent configuration
+
+Run the dashboard with a named volume:
+
+```sh
 docker run --rm -it \
   --env XDG_CONFIG_HOME=/config \
   --mount type=volume,source=gitlab-runner-tui-config,target=/config \
   ghcr.io/damacus/gitlab-runner-tui:latest
 ```
 
-The first run starts the masked setup flow. It stores the configuration at
-`/config/gitlab-runner-tui/config.toml`. Docker creates the named volume automatically, and the
-same command reuses it after `--rm` removes the previous container.
+The first run starts setup and writes
+`/config/gitlab-runner-tui/config.toml`. The official container has no system credential store, so
+the token is saved in that configuration volume. Protect access to the Docker daemon and volume.
 
-The volume persists configuration settings and the saved token. It does not persist fetched
-runner data, the selected dashboard tab, or active filters. Protect access to the Docker daemon
-and the volume because the configuration contains credentials.
-
-##### Docker credentials
-
-For interactive use, prefer the masked setup flow above. It keeps the token out of the Docker
-command and shell history.
-
-For automation, create an environment file outside the repository:
+For automation, pass a protected environment file instead of putting the token in the command:
 
 ```env
-GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
-GITLAB_HOST=https://gitlab.com
+GITLAB_HOST=https://gitlab.example.com
+GITLAB_TOKEN=glpat-example
 ```
 
-Restrict the file, then pass its path to Docker:
-
-```bash
+```sh
 chmod 600 /trusted/path/gitlab-runner-tui.env
-
 docker run --rm \
   --env-file /trusted/path/gitlab-runner-tui.env \
-  --env XDG_CONFIG_HOME=/config \
-  --mount type=volume,source=gitlab-runner-tui-config,target=/config \
   ghcr.io/damacus/gitlab-runner-tui:latest fetch --summary
 ```
 
-Do not put a literal token in `docker run --env GITLAB_TOKEN=...`. An environment file keeps the
-token out of the command and shell history, but Docker still stores environment variables as plain
-text in the container configuration. Users with access to the Docker daemon can inspect them while
-the container exists.
-
-To keep the token out of the Docker-managed environment, mount the trusted file read-only and let
-the application load it explicitly:
-
-```bash
-docker run --rm \
-  --env XDG_CONFIG_HOME=/config \
-  --mount type=volume,source=gitlab-runner-tui-config,target=/config \
-  --mount type=bind,source=/trusted/path/gitlab-runner-tui.env,target=/run/secrets/gitlab-runner-tui.env,readonly \
-  ghcr.io/damacus/gitlab-runner-tui:latest \
-  --dotenv /run/secrets/gitlab-runner-tui.env fetch --summary
-```
-
-Only mount a dotenv file that you trust. Its host and token values control where credentials are
-sent. See Docker's documentation for [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/),
-[named volumes](https://docs.docker.com/engine/storage/volumes/), and
-[read-only bind mounts](https://docs.docker.com/engine/storage/bind-mounts/).
-
-##### GitLab CI image
-
-Each release also publishes `ghcr.io/damacus/gitlab-runner-tui-ci`. This image supports Linux on
-AMD64 and ARM64 and includes `sh`, `bash`, `grep`, and `jq`. It has no application entrypoint, so
-GitLab Runner can execute job scripts through the image shell. The CI image is published only when
-a release is created. Replace `latest` with a full release tag for a repeatable pipeline.
-
-Store `GITLAB_TOKEN` as a masked and hidden GitLab CI/CD variable. Protect the variable if only
-protected branches or tags need it. The environment token is used for the current process and is
-not written to the system credential store or `config.toml`.
-
-This job writes the polling events to an artifact and uses `jq` to require a final `complete`
-event:
-
-```yaml
-runner-rotation:
-  image: ghcr.io/damacus/gitlab-runner-tui-ci:latest
-  variables:
-    GITLAB_HOST: "https://gitlab.example.com"
-    RUNNER_TAGS: "production"
-  script:
-    - gitlab-runner-tui rotating --wait --tags "$RUNNER_TAGS" | tee rotation.ndjson
-    - jq -e 'select(.event == "complete")' rotation.ndjson > /dev/null
-  artifacts:
-    when: always
-    paths:
-      - rotation.ndjson
-```
-
-`rotating --wait` exits with status `0` after rotation completes and status `2` after the configured
-timeout. It writes newline-delimited JSON events while it polls. Other commands write one JSON
-document, so they can be piped directly to `jq`:
-
-```yaml
-runner-inventory:
-  image: ghcr.io/damacus/gitlab-runner-tui-ci:latest
-  script:
-    - gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
-```
-
-### Configuration
-
-#### First run outside Docker
-
-Start the interactive TUI without `GITLAB_TOKEN`, `--dotenv`, or a command such as `fetch`:
-
-```bash
-gitlab-runner-tui
-```
-
-The setup asks for your GitLab host, personal access token, discovery mode, and runner targets. The
-token prompt is masked. For most users, choose `targets` and enter one or more groups or projects,
-for example `group:my-org/platform,project:my-org/app`.
-
-On success, the app stores the token in the operating system credential store:
-
-- macOS Keychain
-- Windows Credential Manager
-- Secret Service on Linux and other Unix desktops
-
-The canonical `config.toml` stores only the GitLab host and non-secret settings. Start the app again
-normally, or run a command such as `gitlab-runner-tui fetch --summary`. The app reads the saved token
-automatically.
-
-Unlock the operating system credential store before you start the app. If the credential store is
-unavailable, set `GITLAB_TOKEN` for the current process or use the Docker workflow. The app does not
-fall back to writing the token in plaintext outside Docker.
-
-If `GITLAB_TOKEN` is set or you pass `--dotenv`, that token is a temporary override and is not saved
-to the credential store. If an existing canonical config contains `gitlab_token`, the next normal
-local launch moves it to the credential store and rewrites the config without the token.
-
-Check which credential source is active without displaying the token:
-
-```bash
-gitlab-runner-tui auth status
-```
-
-The status command warns when `GITLAB_TOKEN` overrides saved credentials or when `config.toml`
-contains a plaintext token. To remove saved credentials and rewrite `config.toml` without the token,
-run:
-
-```bash
-gitlab-runner-tui auth logout
-```
-
-Then run `gitlab-runner-tui` and complete setup to store a new token in the operating system
-credential store.
-
-#### Automation credentials
-
-For automation, set environment variables:
-
-```bash
-export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
-export GITLAB_HOST="https://gitlab.com"  # Optional, defaults to gitlab.com
-```
-
-Or load an explicitly trusted dotenv file:
-
-```env
-GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
-GITLAB_HOST=https://gitlab.com
-```
-
-```bash
-gitlab-runner-tui --dotenv /trusted/path/gitlab-runner-tui.env
-```
-
-Dotenv files are never discovered from the current working directory. Only use `--dotenv` with a
-file you trust. Its host and token values control where credentials are sent.
-
-You can keep non-secret settings in `~/.config/gitlab-runner-tui/config.toml`:
-
-```toml
-gitlab_host = "https://gitlab.com"
-poll_interval_secs = 30
-poll_timeout_secs = 1800
-# Bounds concurrent runner-detail and manager API requests (valid range: 2-64).
-max_enrichment_requests = 10
-discovery_mode = "configured_targets"
-
-[[runner_targets]]
-kind = "group"
-id = "my-org/platform"
-label = "Platform"
-
-[[runner_targets]]
-kind = "project"
-id = "my-org/app"
-
-[rotation_wait]
-# Optional: defaults to the system timezone.
-timezone = "Europe/London"
-# Optional: defaults to the command start time.
-rotation_window_start = "00:00"
-active_contacted_within_secs = 3600
-missing_runner_grace_polls = 2
-completion_stability_polls = 2
-```
-
-If you launch the interactive TUI without a configured token, with a stale or invalid token, or
-without runner targets, the app runs setup before entering the dashboard. Local setup stores the
-token in the system credential store. The official Docker image has no system credential store, so
-its setup flow stores the token in the mounted configuration volume instead.
-
-Runner discovery now comes from configured group/project targets instead of instance-wide runner listing. This is what makes normal GitLab.com usage possible.
-
-By default, configuration is loaded only from the canonical user path:
-
-- `~/.config/gitlab-runner-tui/config.toml` on Linux
-- the equivalent platform user-config directory on macOS and Windows
-
-The application does not discover `./config.toml`. To use another file, select it explicitly with
-`--config /trusted/path/config.toml`. Treat explicitly selected config and dotenv files as trusted
-because they can choose the GitLab host that receives your token.
-
-Example:
-
-```toml
-poll_interval_secs = 30
-poll_timeout_secs = 1800
-max_enrichment_requests = 10
-gitlab_host = "https://gitlab.com"
-discovery_mode = "configured_targets"
-
-[[runner_targets]]
-kind = "group"
-id = "my-org/platform"
-label = "Platform"
-
-[[runner_targets]]
-kind = "project"
-id = "12345"
-label = "App Project"
-
-[rotation_wait]
-active_contacted_within_secs = 3600
-missing_runner_grace_polls = 2
-completion_stability_polls = 2
-```
-
-GitLab GET requests retry HTTP `429`, `502`, `503`, and `504` responses up to four total
-attempts. A valid `Retry-After` header controls the delay. Otherwise, the client uses capped
-exponential backoff with jitter. Authentication failures and other HTTP statuses are not retried.
-Aborting or replacing an interactive search also cancels a pending retry delay.
-
-`max_enrichment_requests` is config-only and defaults to `10`. It is the combined in-flight
-request budget for runner detail and manager lookups, including the two lookups started for each
-runner. Values from `2` through `64` are accepted.
-
-Queries now use explicit enrichment profiles instead of always issuing both follow-up requests.
-The full Runners, Health, and Workers views still fetch detail and manager data because their
-tables and detail panes display both. Offline, Stale, Idle, and Rotating queries fetch managers for
-all candidates, filter the result, and fetch runner details only for matching rows. Rotation wait
-polls use manager data only unless a version filter requires runner detail. Status-only summary
-queries use list data without per-runner enrichment.
-
-The interactive Runners tab renders list-endpoint summaries as soon as discovery completes, then
-updates each row as its detail and manager requests finish. The selected runner is tracked by ID,
-so sorting changes during enrichment do not move the user's selection to another runner. Filters
-that require detail or manager data are applied to the final enriched snapshot. Starting another
-search, changing tabs, or saving settings cancels the previous stream and its pending retry delays.
-Specialized tabs remain correctness-first and publish their results only after their required
-manager/detail filtering is complete.
-
-Within an interactive Runners session, successful detail and manager enrichment is cached for the
-current discovery scope. The cache compares the stable runner ID and the complete list-endpoint
-runner record. An unchanged poll reuses enrichment, while a changed or new runner fetches only its
-missing data. Runners absent from the next result in the same scope are evicted. Changing the host,
-token, discovery mode, targets, or saved settings clears the cache. Cache updates are committed only
-after the current search completes, so a canceled refresh cannot replace known-good data.
-`metrics.request_counts` continues to report HTTP calls only, while
-`metrics.reused_enrichments.detail_enrichments` and `manager_enrichments` report cache reuse.
-
-The TUI keeps each enriched runner only once in its canonical session store, using lightweight
-indices for filtered and sorted runner tables and runner/manager index pairs for worker tables, so
-rebuilding a view does not clone runner, manager, tag, or string payloads.
-Selection is restored by runner ID whenever streamed updates rebuild or reorder those projections.
-The settings benchmark includes 1,000- and 10,000-runner samples and reports the deep Runner clone
-count alongside filtering, sorting, and worker-flattening latency.
-
-`runner_targets` are required when `discovery_mode = "configured_targets"`. Set `discovery_mode = "visible_runners"` to use the current user's visible `/runners` endpoint instead. Supported target kinds:
-
-- `group`
-- `project`
-
-Each target `id` may be either a numeric GitLab ID or a group/project path.
-
-During onboarding, targets are entered as a comma-separated prompt using explicit prefixes. In the interactive TUI you can also edit the discovery mode, token, targets, and poll settings from the settings modal.
-
-```text
-group:my-org/platform,project:my-org/app
-```
-
-### Running
-
-```bash
-# Using environment variables
-gitlab-runner-tui
-
-# Or override only the host through the CLI. Tokens are never accepted through argv.
-GITLAB_TOKEN=glpat-xxx gitlab-runner-tui --host https://gitlab.example.com
-```
-
-## Dashboard Tabs
-
-| Tab           | Description                                             |
-|---------------|---------------------------------------------------------|
-| `Runners`     | Fetch all GitLab Runner details with optional filters   |
-| `Health`      | Health check - verify all tagged runners are online     |
-| `Offline`     | List runners with no online managers                    |
-| `Uncontacted` | Find runners not contacted recently (default: 1 hour)   |
-| `Empty`       | List runners with no managers                           |
-| `Rotating`    | Detect runners currently in rotation (multiple managers)|
-| `Workers`     | Show detailed list of all individual Runner Managers    |
-
-## Keyboard Navigation
-
-- `Tab` / `Shift+Tab` - Switch dashboard tabs
-- `1`-`7` - Jump directly to a tab
-- `↑`/`↓` or `k`/`j` - Move table selection
-- `/` or `f` - Focus tag filter input
-- `a` on Stale - Edit the last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339)
-- `v` - Open version multi-select
-- `o` - Cycle sort mode
-- `c` - Open settings + diagnostics
-- `Enter` or `r` - Refresh the active tab
-- `p` - Toggle polling / auto-refresh
-- `Esc` - Exit filter editing or dismiss errors
-- `?` - Toggle help
-- `q` or `Ctrl-C` - Quit
-
-## Configuration Options
-
-### Environment Variables
-
-| Variable       | Required | Default              | Description                                    |
-|----------------|----------|----------------------|------------------------------------------------|
-| `GITLAB_TOKEN` | No       | System credential store | Personal access token override with the required [runner permissions](docs/security/gitlab-token-scopes.md) |
-| `GITLAB_HOST`  | No       | `https://gitlab.com` | GitLab instance URL                            |
-
-`runner_targets`, `discovery_mode`, and polling settings can be edited in the TUI settings modal
-and are persisted back to the canonical config file. Outside Docker, token changes are saved to the
-system credential store instead of `config.toml`.
-
-## CLI & Automation
-
-`gitlab-runner-tui` also provides a CLI for automation and LLM-based workflows.
-
-### Command JSON Output
-
-Pass a command to fetch data once and exit with a JSON response:
-
-```bash
-# Fetch all runners as JSON
-gitlab-runner-tui fetch
-
-# Fetch list endpoint data only, without per-runner enrichment
-gitlab-runner-tui fetch --summary
-
-# List only rotating runners as JSON
-gitlab-runner-tui rotating --tags production
-
-# Block until matching runners have rotated
-gitlab-runner-tui rotating --wait --tags production
-```
-
-### Integration with `jq`
-
-The JSON output includes both the `runners` data and `metrics` about the query. You can easily process this with `jq`:
-
-**List all runner IDs:**
-```bash
-gitlab-runner-tui fetch | jq '.runners[].id'
-```
-
-**Find runners with offline managers:**
-```bash
-gitlab-runner-tui fetch | \
-  jq '.runners[] | select(.managers[].status == "offline") | {id: .id, description: .description}'
-```
-
-**Get query performance metrics:**
-```bash
-gitlab-runner-tui fetch | jq '.metrics'
-```
-
-**Fast inventory for large estates:**
-```bash
-gitlab-runner-tui fetch --summary | jq '.metrics.request_counts'
-```
-
-`fetch --summary` keeps the normal JSON envelope but skips per-runner detail and manager requests. It is useful for quick inventory, IDs, status counts, and checking discovery scope. It does not include manager rows, manager contact timestamps, manager versions, or full runner detail.
-
-### CLI Flags
-
-```bash
-# Override the host (provide tokens through GITLAB_TOKEN or secure interactive setup)
-gitlab-runner-tui --host <URL>
-
-# Explicitly load trusted local configuration
-gitlab-runner-tui --config /trusted/path/config.toml
-gitlab-runner-tui --dotenv /trusted/path/runtime.env
-
-# Command mode (non-interactive, JSON output)
-gitlab-runner-tui fetch --tags production
-gitlab-runner-tui fetch --summary
-gitlab-runner-tui rotating --tags production
-gitlab-runner-tui rotating --wait --tags production
-
-# Use demo data for any mode (no credentials required)
-gitlab-runner-tui --demo
-gitlab-runner-tui --demo fetch
-```
-
-- Commands: `fetch`, `switch`, `flames`, `empty`, `rotating`.
-- `--tags <TAGS>`: Comma-separated list of tags for filtering.
-- `fetch --summary`: List-only output for fast inventory. For 390 runners this avoids 390 detail requests and 390 manager requests.
-- `fetch --summary` cannot be combined with `--version` because version filtering is local-only and requires enriched runner data.
-- `--stale-cutoff <TIME>`: For `flames`, use a last-contact cutoff (`HH:MM`, `HH:MM:SS`, or RFC3339) instead of the default 1 hour.
-- `rotating` requires `--tags` to avoid estate-wide rotation scans.
-- `rotating --wait` polls until all currently eligible matching runners have rotated, emitting newline-delimited JSON progress events.
-
-## Examples
-
-### Find all production runners
-
-1. Configure at least one `group` or `project` runner target
-2. Select **Runners** tab (`1`)
-3. Press `/` to enter tags: `production`
-4. View filtered results
-
-### Check runner health
-
-1. Configure at least one runner target
-2. Select **Health** tab (`2`)
-3. Press `/` to enter tags: `production,linux`
-4. View health summary and runner statuses
-
-### List offline runners
-
-1. Configure at least one runner target
-2. Select **Offline** tab (`3`)
-3. Press `/` to enter tags: `alm`
-4. View runners with offline managers
-
-### Check for runner rotation
-
-Run a non-interactive check for runners that have multiple managers (e.g. during a migration):
-
-```bash
-gitlab-runner-tui rotating --tags prod
-```
-
-Block until matching runners have completed rotation:
-
-```bash
-gitlab-runner-tui rotating --wait --tags prod
-```
-
-### Check maintenance recovery after a cutoff
-
-List runners whose managers have not contacted GitLab after 11:00 local time:
-
-```bash
-gitlab-runner-tui flames --stale-cutoff 11:00
-```
-
-## Development
-
-### Building
-
-```bash
-# Install the pinned Rust toolchain and development tools
-mise install
-
-# Development build
-mise run build
-
-# Release build (optimized)
-mise run build:release
-
-# Run tests
-mise run test
-
-# Run with debug logging
-RUST_LOG=debug mise run dev
-```
-
-### Git Hooks
-
-This repo uses `lefthook` for local git hooks.
-
-```bash
-mise run hooks:install
-```
-
-The hook process must be able to find `mise` on `PATH`. Configure GUI Git clients to use the
-same `PATH` as your mise-enabled shell.
-
-Configured hooks:
-
-- `pre-commit`: `mise run fmt` and `mise run lint`
-- `pre-push`: `mise run test`
-
-### Testing
-
-```bash
-# Run all tests
-mise run test
-
-# Run with output
-mise run test:nocapture
-
-# Run specific test
-mise run test test_name
-```
+Users with access to the Docker daemon can inspect container environment variables while the
+container exists. Use a trusted read-only bind mount with `--dotenv` if the token must stay out of
+the Docker-managed environment.
+
+Each release also publishes `ghcr.io/damacus/gitlab-runner-tui-ci`. That image includes `sh`,
+`bash`, `grep`, and `jq`, and has no application entrypoint so GitLab Runner can execute job
+scripts normally.
 
 ## Troubleshooting
 
-### Connection Issues
+### Authentication fails
 
-**Error:** "Connection timeout"
+Run `gitlab-runner-tui auth status`, then check:
 
-- Check `GITLAB_HOST` is correct and accessible
-- Verify network connectivity: `ping gitlab.com`
-- Check proxy settings if behind corporate firewall
+- the token has not expired;
+- the token has the required runner permissions;
+- the token owner can access the selected groups, projects, or instance runners; and
+- `GITLAB_HOST` is the expected GitLab instance.
 
-### Authentication Issues
+If `GITLAB_TOKEN` is set, it overrides the saved credential.
 
-**Error:** "Authentication failed"
+### GitLab returns `403 Forbidden`
 
-- Verify `GITLAB_TOKEN` is correct
-- Verify the token can authenticate against the GitLab user API
-- Check token hasn't expired
+The `all` discovery mode needs administrator or auditor access. Use `visible` or `targets` for a
+more limited account, or grant the required GitLab role and token permissions.
 
-### Runner Target Issues
+### No runners appear
 
-**Error:** "At least one runner target must be configured"
+- Clear active tag, status, and version filters.
+- Check the selected discovery mode in settings.
+- In `targets` mode, confirm each group or project ID or path.
+- Confirm that the token owner can see the runners in GitLab.
 
-- Add one or more `[[runner_targets]]` entries to `config.toml`
-- Or rerun onboarding and enter targets like `group:my-org/platform,project:my-org/app`
-- Or leave runner targets blank and use the current user's visible runners
-- Confirm the configured group/project IDs or paths are valid for the current GitLab host
+### The system credential store is unavailable
 
-### SSL Certificate Issues
+Unlock the desktop credential store before starting the application. For a temporary session, set
+`GITLAB_TOKEN`. The native application does not fall back to saving a plaintext token.
 
-**Error:** "SSL certificate verify failed"
+### A self-signed GitLab certificate is rejected
 
-- Self-signed certificate support is not currently implemented
+Custom certificate authorities and insecure TLS are not currently supported.
 
 ## Contributing
 
-Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Architecture
-
-GitLab Runner TUI follows a three-layer architecture:
-
-```text
-TUI (View) → Conductor (Business Logic) → GitLabClient (API)
-```
-
-- **TUI Layer**: User interface, event handling, rendering
-- **Conductor Layer**: Orchestrates operations, applies filters, formats results
-- **GitLabClient Layer**: HTTP communication with GitLab API
-
-## License
-
-[Add your license here]
+Issues and pull requests are welcome. This repository uses mise for its pinned development tools.
+Run `mise install` and `mise run check` before submitting a change.
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/damacus/gitlab-runner-tui/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/damacus/gitlab-runner-tui/discussions)
+- [Open an issue](https://github.com/damacus/gitlab-runner-tui/issues)
+- [Start a discussion](https://github.com/damacus/gitlab-runner-tui/discussions)
 
-## Acknowledgments
+## Licence
 
-Built with [ratatui](https://ratatui.rs/) - A Rust library for building terminal user interfaces.
+GitLab Runner TUI is available under the [MIT Licence](LICENSE).
