@@ -6,6 +6,7 @@ mod fixtures;
 mod metrics;
 mod models;
 mod rotation_wait;
+mod time;
 mod tui;
 
 #[cfg(test)]
@@ -55,13 +56,13 @@ static TEST_ALLOCATOR: allocation_counter::CountingAllocator =
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use client::GitLabClient;
 use conductor::{Conductor, QueryOutcome, QueryProfile};
 use config::{
     parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode, RunnerTarget,
 };
+use jiff::{tz::TimeZone, Timestamp};
 use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
 use ratatui::{backend::TerminaBackend, Terminal};
 use reqwest::StatusCode;
@@ -71,6 +72,7 @@ use termina::{
     escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode},
     EventStream, PlatformTerminal, Terminal as TerminaTerminal,
 };
+use time::{classify_civil_timestamp, now, parse_clock_time, system_time_zone, CivilTimestamp};
 use tui::{
     app::App,
     event::{Event, EventHandler},
@@ -774,7 +776,7 @@ async fn run_rotation_wait(
 ) -> Result<bool> {
     let started_at = std::time::Instant::now();
     let filters = build_runner_filters(tags, version);
-    let options = build_rotation_wait_options(&config.rotation_wait, Utc::now())?;
+    let options = build_rotation_wait_options(&config.rotation_wait, now())?;
     let mut state = RotationWaitState::new(options);
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
 
@@ -782,7 +784,7 @@ async fn run_rotation_wait(
         let outcome = conductor
             .fetch_runners_with_profile_and_metrics(filters.clone(), QueryProfile::Managers)
             .await?;
-        let event = state.observe(&outcome.runners, Utc::now());
+        let event = state.observe(&outcome.runners, now());
         println!("{}", serde_json::to_string(&event)?);
 
         if event.is_complete {
@@ -800,7 +802,7 @@ async fn run_rotation_wait(
 
 fn build_rotation_wait_options(
     config: &RotationWaitConfig,
-    command_started_at: DateTime<Utc>,
+    command_started_at: Timestamp,
 ) -> Result<RotationWaitOptions> {
     Ok(RotationWaitOptions {
         rotation_window_start: resolve_rotation_window_start(config, command_started_at)?,
@@ -812,14 +814,13 @@ fn build_rotation_wait_options(
 
 fn resolve_rotation_window_start(
     config: &RotationWaitConfig,
-    command_started_at: DateTime<Utc>,
-) -> Result<DateTime<Utc>> {
+    command_started_at: Timestamp,
+) -> Result<Timestamp> {
     let Some(start) = config.rotation_window_start.as_deref() else {
         return Ok(command_started_at);
     };
 
-    let time = NaiveTime::parse_from_str(start.trim(), "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(start.trim(), "%H:%M"))
+    let time = parse_clock_time(start.trim())
         .with_context(|| "rotation_window_start must use HH:MM or HH:MM:SS")?;
 
     match config
@@ -829,26 +830,28 @@ fn resolve_rotation_window_start(
         .filter(|value| !value.is_empty())
     {
         Some(timezone) => {
-            let tz: chrono_tz::Tz = timezone
-                .parse()
+            let time_zone = TimeZone::get(timezone)
                 .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
-            let local_now = command_started_at.with_timezone(&tz);
-            let local_window = local_now.date_naive().and_time(time);
-            match tz.from_local_datetime(&local_window) {
-                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
-                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
-                LocalResult::None => anyhow::bail!(
+            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_window = local_now.date().to_datetime(time);
+            match classify_civil_timestamp(&time_zone, local_window)? {
+                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                    Ok(timestamp)
+                }
+                CivilTimestamp::Gap => anyhow::bail!(
                     "rotation_window_start does not exist in timezone {timezone} today"
                 ),
             }
         }
         None => {
-            let local_now = command_started_at.with_timezone(&Local);
-            let local_window = local_now.date_naive().and_time(time);
-            match Local.from_local_datetime(&local_window) {
-                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
-                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
-                LocalResult::None => anyhow::bail!(
+            let time_zone = system_time_zone();
+            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_window = local_now.date().to_datetime(time);
+            match classify_civil_timestamp(&time_zone, local_window)? {
+                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                    Ok(timestamp)
+                }
+                CivilTimestamp::Gap => anyhow::bail!(
                     "rotation_window_start does not exist in the system timezone today"
                 ),
             }
@@ -866,7 +869,8 @@ fn build_stale_threshold(
 ) -> Result<ContactThreshold> {
     match (command, stale_cutoff) {
         (CliCommand::Flames, Some(input)) => {
-            let cutoff = parse_stale_cutoff(input, Local::now())
+            let local_now = now().to_zoned(system_time_zone());
+            let cutoff = parse_stale_cutoff(input, &local_now)
                 .map_err(anyhow::Error::msg)?
                 .context("--stale-cutoff cannot be blank")?;
             Ok(ContactThreshold::Since(cutoff))
@@ -1383,9 +1387,7 @@ mod tests {
 
     #[test]
     fn rotation_wait_defaults_window_start_to_command_start() {
-        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:34:56Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let command_started_at = time::parse_rfc3339("2026-06-29T12:34:56Z").unwrap();
 
         let options = build_rotation_wait_options(
             &crate::config::RotationWaitConfig::default(),
@@ -1401,9 +1403,7 @@ mod tests {
 
     #[test]
     fn rotation_wait_uses_configured_timezone_window_start() {
-        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let command_started_at = time::parse_rfc3339("2026-06-29T12:00:00Z").unwrap();
         let config = crate::config::RotationWaitConfig {
             timezone: Some("Europe/London".to_string()),
             rotation_window_start: Some("00:00".to_string()),
@@ -1414,9 +1414,42 @@ mod tests {
 
         assert_eq!(
             options.rotation_window_start,
-            DateTime::parse_from_rfc3339("2026-06-28T23:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc)
+            time::parse_rfc3339("2026-06-28T23:00:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn rotation_wait_configured_timezone_fold_uses_earlier_instant() {
+        let command_started_at = time::parse_rfc3339("2026-10-25T12:00:00Z").unwrap();
+        let config = crate::config::RotationWaitConfig {
+            timezone: Some("Europe/London".to_string()),
+            rotation_window_start: Some("01:30".to_string()),
+            ..crate::config::RotationWaitConfig::default()
+        };
+
+        let options = build_rotation_wait_options(&config, command_started_at).unwrap();
+
+        assert_eq!(
+            options.rotation_window_start,
+            time::parse_rfc3339("2026-10-25T00:30:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn rotation_wait_configured_timezone_gap_is_rejected() {
+        let command_started_at = time::parse_rfc3339("2026-03-29T12:00:00Z").unwrap();
+        let config = crate::config::RotationWaitConfig {
+            timezone: Some("Europe/London".to_string()),
+            rotation_window_start: Some("01:30".to_string()),
+            ..crate::config::RotationWaitConfig::default()
+        };
+
+        let error = build_rotation_wait_options(&config, command_started_at)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("rotation_window_start does not exist in timezone Europe/London today")
         );
     }
 

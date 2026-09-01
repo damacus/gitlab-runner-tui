@@ -1,5 +1,6 @@
 use crate::config::RunnerDiscoveryMode;
 use crate::models::runner::{RunnerSortKey, TagFilterMode};
+use crate::time::{elapsed_seconds, now as timestamp_now, parse_rfc3339};
 use crate::tui::{
     app::{
         detail_layout_mode, latest_runner_contact_label, manager_contact_detail,
@@ -8,7 +9,6 @@ use crate::tui::{
     },
     styles,
 };
-use chrono::Utc;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -473,7 +473,7 @@ fn sort_column_index(rotating: bool, tab: Tab, sort_key: RunnerSortKey) -> Optio
 }
 
 fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: bool) {
-    let now = Utc::now();
+    let now = timestamp_now();
     let active_tab = app.active_tab();
     let active_sort = app.effective_sort_key();
     let visible_range = visible_row_range(
@@ -712,7 +712,7 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
-    let now = Utc::now();
+    let now = timestamp_now();
     let active_sort = app.effective_sort_key();
     let visible_range = visible_row_range(
         app.manager_rows.len(),
@@ -811,7 +811,7 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         return;
     };
 
-    let now = Utc::now();
+    let now = timestamp_now();
 
     // Compute wrappable tags lines given available inner width (subtract 2 for border).
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -852,9 +852,9 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
     let registered = runner
         .created_at
         .as_deref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .and_then(|timestamp| parse_rfc3339(timestamp).ok())
         .map(|dt| {
-            let age = (now - dt.with_timezone(&Utc)).num_seconds().max(0) as u64;
+            let age = elapsed_seconds(now, dt).max(0) as u64;
             format!("{} ago", format_age(age))
         })
         .unwrap_or_else(|| "-".to_string());

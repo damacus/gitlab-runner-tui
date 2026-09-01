@@ -29,7 +29,7 @@ run = "cargo build --release --target x86_64-unknown-linux-musl"
 [tasks."build:musl-static"]
 description = "Build a static Linux x86_64 musl release binary"
 env = { RUSTFLAGS = "-C target-feature=+crt-static" }
-run = "cargo build --release --target x86_64-unknown-linux-musl"
+run = "cargo zigbuild --release --target x86_64-unknown-linux-musl"
 
 [tasks.test]
 description = "Run the full test suite"
@@ -58,6 +58,14 @@ run = "cargo deny --all-features check advisories"
 [tasks."deps:update"]
 description = "Update dependencies in Cargo.lock; accepts cargo update arguments"
 run = "cargo update"
+
+[tasks."deps:tree"]
+description = "Inspect the resolved dependency tree; accepts cargo tree arguments"
+run = "cargo tree"
+
+[tasks."toolchain:targets"]
+description = "Install the Rust targets used by local cross-build verification"
+run = "rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu"
 
 [tasks."docker:build"]
 description = "Build the local container image"

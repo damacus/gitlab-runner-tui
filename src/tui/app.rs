@@ -13,8 +13,12 @@ use crate::models::runner::{
     parse_manager_contacted_at, parse_stale_cutoff, runner_matches_filters, sort_runner_indices,
     ContactThreshold, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
 };
+use crate::time::{
+    elapsed_millis, elapsed_seconds, format_absolute_timestamp, format_user_cutoff_input,
+    format_user_cutoff_label, now as timestamp_now, parse_rfc3339, system_time_zone,
+};
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, Utc};
+use jiff::Timestamp;
 use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use reqwest::Url;
 use std::collections::HashMap;
@@ -432,7 +436,7 @@ pub struct App {
     pub tab_counts: HashMap<Tab, usize>,
 
     pub filter_input: String,
-    pub stale_cutoff_at: Option<DateTime<Utc>>,
+    pub stale_cutoff_at: Option<Timestamp>,
     pub stale_cutoff_input: String,
     pub selected_versions: Vec<String>,
     pub version_list_state: ListState,
@@ -1216,19 +1220,16 @@ impl App {
         self.last_fetch_failed = true;
         if self.has_partial_results {
             if let Some(metrics) = self.live_query_metrics.as_mut() {
-                metrics.finished_at = Utc::now();
-                metrics.duration_millis = metrics
-                    .finished_at
-                    .signed_duration_since(metrics.started_at)
-                    .num_milliseconds()
-                    .max(0) as u128;
+                metrics.finished_at = timestamp_now();
+                metrics.duration_millis =
+                    elapsed_millis(metrics.finished_at, metrics.started_at).max(0) as u128;
                 metrics.succeeded = false;
                 metrics.error_message = Some(error_message.clone());
             }
         } else {
             self.live_query_metrics = Some(LiveQueryMetrics::failure(
-                Utc::now(),
-                Utc::now(),
+                timestamp_now(),
+                timestamp_now(),
                 0,
                 self.conductor.discovery_mode(),
                 error_message.clone(),
@@ -1316,7 +1317,7 @@ impl App {
         self.selected_tags
             .retain(|tag| self.tag_options.contains(tag));
 
-        let now = Utc::now();
+        let now = timestamp_now();
         let mut filtered_indices: Vec<usize> = self
             .raw_runners
             .iter()
@@ -1658,12 +1659,13 @@ impl App {
             &self.raw_runners,
             &self.build_filters(),
             self.effective_sort_key(),
-            Utc::now(),
+            timestamp_now(),
         ));
     }
 
     fn apply_stale_cutoff_input(&mut self) {
-        match parse_stale_cutoff(&self.stale_cutoff_input, Local::now()) {
+        let local_now = timestamp_now().to_zoned(system_time_zone());
+        match parse_stale_cutoff(&self.stale_cutoff_input, &local_now) {
             Ok(cutoff) => {
                 self.stale_cutoff_at = cutoff;
                 self.mode = AppMode::Dashboard;
@@ -2211,7 +2213,7 @@ pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
     }
 }
 
-pub fn latest_runner_contact(runner: &Runner) -> Option<DateTime<Utc>> {
+pub fn latest_runner_contact(runner: &Runner) -> Option<Timestamp> {
     runner
         .managers
         .iter()
@@ -2219,21 +2221,13 @@ pub fn latest_runner_contact(runner: &Runner) -> Option<DateTime<Utc>> {
         .max()
 }
 
-fn format_stale_cutoff_input(cutoff: DateTime<Utc>) -> String {
-    let local_cutoff = cutoff.with_timezone(&Local);
-    let today = Local::now().date_naive();
-    if local_cutoff.date_naive() == today {
-        local_cutoff.format("%H:%M:%S").to_string()
-    } else {
-        local_cutoff.to_rfc3339()
-    }
+fn format_stale_cutoff_input(cutoff: Timestamp) -> String {
+    let local_now = timestamp_now().to_zoned(system_time_zone());
+    format_user_cutoff_input(cutoff, &local_now)
 }
 
-fn format_stale_cutoff_label(cutoff: DateTime<Utc>) -> String {
-    cutoff
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S %Z")
-        .to_string()
+fn format_stale_cutoff_label(cutoff: Timestamp) -> String {
+    format_user_cutoff_label(cutoff, system_time_zone())
 }
 
 fn open_in_browser(url: &str) -> Result<()> {
@@ -2363,7 +2357,7 @@ pub fn runner_admin_url(host: &str, runner_id: u64) -> Result<Url> {
     Ok(url)
 }
 
-pub fn latest_runner_contact_label(runner: &Runner, now: DateTime<Utc>) -> String {
+pub fn latest_runner_contact_label(runner: &Runner, now: Timestamp) -> String {
     latest_runner_contact(runner)
         .map(|contact| relative_timestamp_label(contact, now))
         .unwrap_or_else(|| "Never".to_string())
@@ -2376,7 +2370,7 @@ pub fn latest_runner_contact_detail(runner: &Runner) -> String {
         .unwrap_or_else(|| "Never".to_string())
 }
 
-pub fn manager_contact_label(manager: &RunnerManager, now: DateTime<Utc>) -> String {
+pub fn manager_contact_label(manager: &RunnerManager, now: Timestamp) -> String {
     parse_contact_timestamp(manager.contacted_at.as_deref())
         .map(|contact| relative_timestamp_label(contact, now))
         .unwrap_or_else(|| "Never".to_string())
@@ -2388,14 +2382,12 @@ pub fn manager_contact_detail(manager: &RunnerManager) -> String {
         .unwrap_or_else(|| "Never".to_string())
 }
 
-fn parse_contact_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    value
-        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|timestamp| timestamp.with_timezone(&Utc))
+fn parse_contact_timestamp(value: Option<&str>) -> Option<Timestamp> {
+    value.and_then(|timestamp| parse_rfc3339(timestamp).ok())
 }
 
-fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let seconds = now.signed_duration_since(timestamp).num_seconds().max(0);
+fn relative_timestamp_label(timestamp: Timestamp, now: Timestamp) -> String {
+    let seconds = elapsed_seconds(now, timestamp).max(0);
 
     match seconds {
         0..=89 => "just now".to_string(),
@@ -2405,10 +2397,6 @@ fn relative_timestamp_label(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> Str
     }
 }
 
-fn format_absolute_timestamp(timestamp: DateTime<Utc>) -> String {
-    timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2416,7 +2404,6 @@ mod tests {
     use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::metrics::QueryRequestCounts;
     use crate::models::manager::RunnerManager;
-    use chrono::TimeZone;
     use mockito::{Matcher, Server};
     use std::time::Duration;
     use termina::event::{KeyCode, KeyEvent, Modifiers};
@@ -2514,7 +2501,7 @@ mod tests {
     }
 
     fn test_outcome(runners: Vec<Runner>) -> QueryOutcome {
-        let now = Utc::now();
+        let now = timestamp_now();
         QueryOutcome {
             metrics: LiveQueryMetrics::success(
                 now,
@@ -2934,7 +2921,7 @@ mod tests {
     #[tokio::test]
     async fn test_stale_cutoff_esc_cancels_edit() {
         let mut app = test_app();
-        let existing = Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 0).unwrap();
+        let existing = parse_rfc3339("2026-05-12T10:00:00Z").unwrap();
         app.stale_cutoff_at = Some(existing);
         app.focus_stale_cutoff();
         app.stale_cutoff_input = "12:00".to_string();
@@ -2949,7 +2936,7 @@ mod tests {
     async fn test_blank_stale_cutoff_restores_default_threshold() {
         let mut app = test_app();
         app.demo_mode = true;
-        app.stale_cutoff_at = Some(Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 0).unwrap());
+        app.stale_cutoff_at = Some(parse_rfc3339("2026-05-12T10:00:00Z").unwrap());
         app.focus_stale_cutoff();
         app.stale_cutoff_input.clear();
         app.handle_key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
@@ -3435,10 +3422,7 @@ mod tests {
         );
 
         let contact = latest_runner_contact(&runner).expect("contact");
-        assert_eq!(
-            contact,
-            Utc.with_ymd_and_hms(2024, 1, 21, 9, 15, 0).unwrap()
-        );
+        assert_eq!(contact, parse_rfc3339("2024-01-21T09:15:00Z").unwrap());
     }
 
     #[test]
@@ -3452,10 +3436,7 @@ mod tests {
         );
 
         assert_eq!(
-            latest_runner_contact_label(
-                &runner,
-                Utc.with_ymd_and_hms(2024, 1, 22, 9, 15, 0).unwrap()
-            ),
+            latest_runner_contact_label(&runner, parse_rfc3339("2024-01-22T09:15:00Z").unwrap()),
             "Never"
         );
         assert_eq!(latest_runner_contact_detail(&runner), "Never");
@@ -3469,10 +3450,7 @@ mod tests {
         };
 
         assert_eq!(
-            manager_contact_label(
-                &manager,
-                Utc.with_ymd_and_hms(2024, 1, 21, 10, 15, 0).unwrap()
-            ),
+            manager_contact_label(&manager, parse_rfc3339("2024-01-21T10:15:00Z").unwrap()),
             "2h ago"
         );
         assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");

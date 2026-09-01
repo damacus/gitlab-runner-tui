@@ -40,8 +40,7 @@ rpassword = "7.3"
 keyring = "4.1.6"
 
 # Utility
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10"
+jiff = { version = "0.2", features = ["serde", "tzdb-bundle-always"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2.4"

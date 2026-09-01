@@ -1,6 +1,7 @@
 use crate::config::{RunnerTarget, RunnerTargetKind};
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
+use crate::time::{elapsed_seconds, now, parse_rfc2822};
 use anyhow::{Context, Result};
 use reqwest::{
     header::{HeaderMap, HeaderValue, LINK, RETRY_AFTER},
@@ -312,11 +313,11 @@ fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
         return Some(Duration::from_secs(seconds).min(GET_BACKOFF_CAP));
     }
 
-    let retry_at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-    let delay = retry_at.signed_duration_since(chrono::Utc::now());
+    let retry_at = parse_rfc2822(value).ok()?;
+    let delay_seconds = elapsed_seconds(retry_at, now());
     Some(
-        delay
-            .to_std()
+        u64::try_from(delay_seconds)
+            .map(Duration::from_secs)
             .unwrap_or(Duration::ZERO)
             .min(GET_BACKOFF_CAP),
     )
@@ -735,7 +736,7 @@ mod tests {
         );
         assert_eq!(retry_after_delay(&headers), Some(Duration::ZERO));
 
-        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc2822();
+        let future = crate::time::format_rfc2822(crate::time::add_seconds(now(), 3_600)).unwrap();
         headers.insert(RETRY_AFTER, HeaderValue::try_from(future.as_str()).unwrap());
         assert_eq!(retry_after_delay(&headers), Some(GET_BACKOFF_CAP));
     }

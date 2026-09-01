@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct RunnerManager {
     pub id: u64,
     pub system_id: String,
-    pub created_at: String, // Keeping as String for now, will parse to DateTime later or verify serde_json handles it if we use chrono
+    pub created_at: String,
     pub contacted_at: Option<String>,
     pub ip_address: Option<String>,
     pub status: String,

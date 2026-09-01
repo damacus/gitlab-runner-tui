@@ -1,5 +1,6 @@
 use super::manager::RunnerManager;
-use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
+use crate::time::{elapsed_seconds, parse_rfc3339, parse_user_cutoff};
+use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, cmp::Reverse, time::Instant};
 
@@ -104,16 +105,14 @@ pub struct RunnerFilters {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContactThreshold {
     OlderThanSecs(u64),
-    Since(DateTime<Utc>),
+    Since(Timestamp),
 }
 
 impl ContactThreshold {
-    pub fn is_contact_stale(self, contacted_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    pub fn is_contact_stale(self, contacted_at: Option<Timestamp>, now: Timestamp) -> bool {
         match contacted_at {
             Some(contacted_at) => match self {
-                Self::OlderThanSecs(seconds) => {
-                    now.signed_duration_since(contacted_at).num_seconds() > seconds as i64
-                }
+                Self::OlderThanSecs(seconds) => elapsed_seconds(now, contacted_at) > seconds as i64,
                 Self::Since(cutoff) => contacted_at <= cutoff,
             },
             None => true,
@@ -152,50 +151,27 @@ pub struct LocalBenchmarkSnapshot {
 }
 
 #[allow(dead_code)]
-pub fn parse_runner_created_at(runner: &Runner) -> Option<DateTime<Utc>> {
+pub fn parse_runner_created_at(runner: &Runner) -> Option<Timestamp> {
     parse_timestamp(runner.created_at.as_deref())
 }
 
 #[allow(dead_code)]
-pub fn parse_manager_created_at(manager: &RunnerManager) -> Option<DateTime<Utc>> {
+pub fn parse_manager_created_at(manager: &RunnerManager) -> Option<Timestamp> {
     parse_timestamp(Some(manager.created_at.as_str()))
 }
 
 #[allow(dead_code)]
-pub fn parse_manager_contacted_at(manager: &RunnerManager) -> Option<DateTime<Utc>> {
+pub fn parse_manager_contacted_at(manager: &RunnerManager) -> Option<Timestamp> {
     parse_timestamp(manager.contacted_at.as_deref())
 }
 
 #[allow(dead_code)]
-pub fn parse_stale_cutoff(
-    input: &str,
-    now: DateTime<Local>,
-) -> Result<Option<DateTime<Utc>>, String> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Ok(None);
-    }
-
-    if let Ok(timestamp) = DateTime::parse_from_rfc3339(input) {
-        return Ok(Some(timestamp.with_timezone(&Utc)));
-    }
-
-    let time = NaiveTime::parse_from_str(input, "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(input, "%H:%M"))
-        .map_err(|_| "Use HH:MM, HH:MM:SS, or an RFC3339 timestamp".to_string())?;
-    let local_cutoff = now.date_naive().and_time(time);
-
-    match Local.from_local_datetime(&local_cutoff) {
-        LocalResult::Single(timestamp) => Ok(Some(timestamp.with_timezone(&Utc))),
-        LocalResult::Ambiguous(earliest, _) => Ok(Some(earliest.with_timezone(&Utc))),
-        LocalResult::None => {
-            Err("Cutoff time does not exist in the local timezone today".to_string())
-        }
-    }
+pub fn parse_stale_cutoff(input: &str, now: &Zoned) -> Result<Option<Timestamp>, String> {
+    parse_user_cutoff(input, now)
 }
 
 #[allow(dead_code)]
-pub fn latest_runner_contact_at(runner: &Runner) -> Option<DateTime<Utc>> {
+pub fn latest_runner_contact_at(runner: &Runner) -> Option<Timestamp> {
     runner
         .managers
         .iter()
@@ -204,9 +180,8 @@ pub fn latest_runner_contact_at(runner: &Runner) -> Option<DateTime<Utc>> {
 }
 
 #[allow(dead_code)]
-pub fn runner_age_secs(runner: &Runner, now: DateTime<Utc>) -> Option<u64> {
-    parse_runner_created_at(runner)
-        .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0) as u64)
+pub fn runner_age_secs(runner: &Runner, now: Timestamp) -> Option<u64> {
+    parse_runner_created_at(runner).map(|created_at| elapsed_seconds(now, created_at).max(0) as u64)
 }
 
 #[allow(dead_code)]
@@ -247,11 +222,7 @@ pub fn extract_runner_tags(runners: &[Runner]) -> Vec<String> {
 }
 
 #[allow(dead_code)]
-pub fn runner_matches_filters(
-    runner: &Runner,
-    filters: &RunnerFilters,
-    now: DateTime<Utc>,
-) -> bool {
+pub fn runner_matches_filters(runner: &Runner, filters: &RunnerFilters, now: Timestamp) -> bool {
     if let Some(tags) = &filters.tag_list {
         if !tags
             .iter()
@@ -327,7 +298,7 @@ pub fn runner_matches_filters(
 pub fn apply_runner_filters(
     runners: &[Runner],
     filters: &RunnerFilters,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<Runner> {
     runners
         .iter()
@@ -337,7 +308,7 @@ pub fn apply_runner_filters(
 }
 
 #[allow(dead_code)]
-pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: DateTime<Utc>) {
+pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: Timestamp) {
     match sort_key {
         RunnerSortKey::None => {}
         RunnerSortKey::Status => runners.sort_by(|left, right| {
@@ -378,7 +349,7 @@ pub fn sort_runner_indices(
     runners: &[Runner],
     indices: &mut [usize],
     sort_key: RunnerSortKey,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) {
     match sort_key {
         RunnerSortKey::None => {}
@@ -425,13 +396,13 @@ pub fn sort_runner_indices(
 
 fn sort_runners_by_last_contact_with<F>(runners: &mut [Runner], mut contact_key: F)
 where
-    F: FnMut(&Runner) -> Option<DateTime<Utc>>,
+    F: FnMut(&Runner) -> Option<Timestamp>,
 {
     runners.sort_by_cached_key(|runner| (contact_key(runner).map(Reverse), runner.id));
 }
 
 #[allow(dead_code)]
-pub fn sort_managers_by_last_contact(managers: &mut [RunnerManager], _now: DateTime<Utc>) {
+pub fn sort_managers_by_last_contact(managers: &mut [RunnerManager], _now: Timestamp) {
     managers.sort_by(|left, right| {
         compare_option_datetimes(
             parse_manager_contacted_at(left),
@@ -446,7 +417,7 @@ pub fn benchmark_runner_processing(
     runners: &[Runner],
     filters: &RunnerFilters,
     sort_key: RunnerSortKey,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> LocalBenchmarkSnapshot {
     const SAMPLE_SIZES: [usize; 5] = [10, 50, 100, 1_000, 10_000];
     let mut measurements = Vec::new();
@@ -521,13 +492,11 @@ fn runner_versions(runner: &Runner) -> Vec<&str> {
         .collect()
 }
 
-fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
-    value
-        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-        .map(|timestamp| timestamp.with_timezone(&Utc))
+fn parse_timestamp(value: Option<&str>) -> Option<Timestamp> {
+    value.and_then(|timestamp| parse_rfc3339(timestamp).ok())
 }
 
-fn compare_option_datetimes(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Ordering {
+fn compare_option_datetimes(left: Option<Timestamp>, right: Option<Timestamp>) -> Ordering {
     match (left, right) {
         (Some(left), Some(right)) => right.cmp(&left), // Newer first
         (None, Some(_)) => Ordering::Less,             // None first
@@ -557,6 +526,14 @@ fn compare_versions_asc(left: &str, right: &str) -> Ordering {
 mod tests {
     use super::*;
     use crate::models::manager::RunnerManager;
+    use crate::time::{add_seconds, format_rfc3339, now as timestamp_now, system_time_zone};
+    use jiff::tz::TimeZone;
+
+    fn london_now(input: &str) -> Zoned {
+        parse_rfc3339(input)
+            .unwrap()
+            .to_zoned(TimeZone::get("Europe/London").unwrap())
+    }
 
     #[test]
     fn test_runner_deserialization() {
@@ -701,54 +678,50 @@ mod tests {
 
     #[test]
     fn test_parse_stale_cutoff_accepts_hour_and_minute() {
-        let now = DateTime::parse_from_rfc3339("2026-05-12T09:30:00+01:00")
-            .unwrap()
-            .with_timezone(&Local);
-        let cutoff = parse_stale_cutoff("11:00", now).unwrap().unwrap();
-        let local_cutoff = cutoff.with_timezone(&Local);
+        let now = london_now("2026-05-12T09:30:00+01:00");
+        let cutoff = parse_stale_cutoff("11:00", &now).unwrap().unwrap();
+        let local_cutoff = cutoff.to_zoned(now.time_zone().clone());
 
-        assert_eq!(local_cutoff.date_naive(), now.date_naive());
-        assert_eq!(local_cutoff.format("%H:%M:%S").to_string(), "11:00:00");
+        assert_eq!(local_cutoff.date(), now.date());
+        assert_eq!(local_cutoff.strftime("%H:%M:%S").to_string(), "11:00:00");
     }
 
     #[test]
     fn test_parse_stale_cutoff_accepts_hour_minute_and_second() {
-        let now = DateTime::parse_from_rfc3339("2026-05-12T09:30:00+01:00")
-            .unwrap()
-            .with_timezone(&Local);
-        let cutoff = parse_stale_cutoff("11:00:30", now).unwrap().unwrap();
-        let local_cutoff = cutoff.with_timezone(&Local);
+        let now = london_now("2026-05-12T09:30:00+01:00");
+        let cutoff = parse_stale_cutoff("11:00:30", &now).unwrap().unwrap();
+        let local_cutoff = cutoff.to_zoned(now.time_zone().clone());
 
-        assert_eq!(local_cutoff.date_naive(), now.date_naive());
-        assert_eq!(local_cutoff.format("%H:%M:%S").to_string(), "11:00:30");
+        assert_eq!(local_cutoff.date(), now.date());
+        assert_eq!(local_cutoff.strftime("%H:%M:%S").to_string(), "11:00:30");
     }
 
     #[test]
     fn test_parse_stale_cutoff_accepts_rfc3339() {
-        let now = Local::now();
-        let cutoff = parse_stale_cutoff("2026-05-12T11:00:00+01:00", now)
+        let now = timestamp_now().to_zoned(system_time_zone());
+        let cutoff = parse_stale_cutoff("2026-05-12T11:00:00+01:00", &now)
             .unwrap()
             .unwrap();
 
-        assert_eq!(cutoff.to_rfc3339(), "2026-05-12T10:00:00+00:00");
+        assert_eq!(format_rfc3339(cutoff), "2026-05-12T10:00:00+00:00");
     }
 
     #[test]
     fn test_parse_stale_cutoff_blank_clears_cutoff() {
-        assert_eq!(parse_stale_cutoff("   ", Local::now()).unwrap(), None);
+        let now = timestamp_now().to_zoned(system_time_zone());
+        assert_eq!(parse_stale_cutoff("   ", &now).unwrap(), None);
     }
 
     #[test]
     fn test_parse_stale_cutoff_rejects_invalid_input() {
-        assert!(parse_stale_cutoff("not-a-time", Local::now()).is_err());
+        let now = timestamp_now().to_zoned(system_time_zone());
+        assert!(parse_stale_cutoff("not-a-time", &now).is_err());
     }
 
     #[test]
     fn test_contact_threshold_cutoff_treats_equal_contact_as_stale() {
-        let cutoff = DateTime::parse_from_rfc3339("2026-05-12T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let after = cutoff + chrono::Duration::seconds(1);
+        let cutoff = parse_rfc3339("2026-05-12T10:00:00Z").unwrap();
+        let after = add_seconds(cutoff, 1);
         let threshold = ContactThreshold::Since(cutoff);
 
         assert!(threshold.is_contact_stale(Some(cutoff), after));
@@ -878,14 +851,12 @@ mod tests {
             ..RunnerFilters::default()
         };
 
-        assert!(runner_matches_filters(&runner, &filters, Utc::now()));
+        assert!(runner_matches_filters(&runner, &filters, timestamp_now()));
     }
 
     #[test]
     fn test_runner_matches_older_than_requires_valid_created_at() {
-        let now = DateTime::parse_from_rfc3339("2024-02-20T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = parse_rfc3339("2024-02-20T00:00:00Z").unwrap();
         let runner = create_test_runner(1, "online", Some("online"));
         let filters = RunnerFilters {
             older_than_secs: Some(60 * 60 * 24 * 7),
@@ -915,13 +886,13 @@ mod tests {
             ..RunnerFilters::default()
         };
 
-        let filtered = apply_runner_filters(&[prod.clone(), qa], &filters, Utc::now());
+        let filtered = apply_runner_filters(&[prod.clone(), qa], &filters, timestamp_now());
         assert_eq!(filtered, vec![prod]);
     }
 
     #[test]
     fn test_sort_runners_by_status() {
-        let now = Utc::now();
+        let now = timestamp_now();
         let offline = create_test_runner(1, "offline", Some("offline"));
         let online = create_test_runner(2, "online", Some("online"));
 
@@ -933,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_sort_runners_by_last_contact_handles_missing() {
-        let now = Utc::now();
+        let now = timestamp_now();
         let mut stale = create_test_runner(1, "online", Some("online"));
         stale.managers[0].contacted_at = Some("2024-01-01T00:00:00Z".to_string());
 
@@ -985,7 +956,7 @@ mod tests {
         });
 
         let mut cached = [older, recent_first, invalid, missing, recent_tie];
-        sort_runners(&mut cached, RunnerSortKey::LastContact, Utc::now());
+        sort_runners(&mut cached, RunnerSortKey::LastContact, timestamp_now());
 
         assert_eq!(
             cached.iter().map(|runner| runner.id).collect::<Vec<_>>(),
@@ -1045,7 +1016,7 @@ mod tests {
 
     #[test]
     fn test_sort_runners_by_version() {
-        let now = Utc::now();
+        let now = timestamp_now();
         let mut older = create_test_runner(1, "online", Some("online"));
         older.version = Some("17.4.0".to_string());
         let mut newer = create_test_runner(2, "online", Some("online"));
@@ -1072,7 +1043,7 @@ mod tests {
         runners[1].tag_list = vec!["a".to_string()];
         let extra_manager = runners[3].managers[0].clone();
         runners[3].managers.push(extra_manager);
-        let now = Utc::now();
+        let now = timestamp_now();
 
         for sort_key in [
             RunnerSortKey::None,
@@ -1122,7 +1093,7 @@ mod tests {
         };
         first.contacted_at = Some("2024-01-01T00:00:00Z".to_string());
         let mut managers = vec![first.clone(), second.clone()];
-        sort_managers_by_last_contact(&mut managers, Utc::now());
+        sort_managers_by_last_contact(&mut managers, timestamp_now());
         assert_eq!(managers[0].id, second.id);
         assert_eq!(managers[1].id, first.id);
     }
@@ -1137,7 +1108,7 @@ mod tests {
             &runners,
             &RunnerFilters::default(),
             RunnerSortKey::Status,
-            Utc::now(),
+            timestamp_now(),
         );
 
         assert_eq!(snapshot.measurements.len(), 2);

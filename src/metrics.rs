@@ -1,5 +1,5 @@
 use crate::config::RunnerDiscoveryMode;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -17,8 +17,8 @@ pub struct EnrichmentReuseCounts {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveQueryMetrics {
-    pub started_at: DateTime<Utc>,
-    pub finished_at: DateTime<Utc>,
+    pub started_at: Timestamp,
+    pub finished_at: Timestamp,
     pub duration_millis: u128,
     pub result_count: usize,
     pub discovery_mode: RunnerDiscoveryMode,
@@ -30,8 +30,8 @@ pub struct LiveQueryMetrics {
 
 impl LiveQueryMetrics {
     pub fn success(
-        started_at: DateTime<Utc>,
-        finished_at: DateTime<Utc>,
+        started_at: Timestamp,
+        finished_at: Timestamp,
         duration_millis: u128,
         result_count: usize,
         discovery_mode: RunnerDiscoveryMode,
@@ -51,8 +51,8 @@ impl LiveQueryMetrics {
     }
 
     pub fn failure(
-        started_at: DateTime<Utc>,
-        finished_at: DateTime<Utc>,
+        started_at: Timestamp,
+        finished_at: Timestamp,
         duration_millis: u128,
         discovery_mode: RunnerDiscoveryMode,
         error_message: String,
@@ -71,8 +71,8 @@ impl LiveQueryMetrics {
     }
 
     pub fn success_with_reuse(
-        started_at: DateTime<Utc>,
-        finished_at: DateTime<Utc>,
+        started_at: Timestamp,
+        finished_at: Timestamp,
         duration_millis: u128,
         result_count: usize,
         discovery_mode: RunnerDiscoveryMode,
@@ -90,5 +90,30 @@ impl LiveQueryMetrics {
             succeeded: true,
             error_message: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::time::parse_rfc3339;
+
+    #[test]
+    fn timestamps_remain_rfc3339_strings_in_metrics_json() {
+        let metrics = LiveQueryMetrics::success(
+            parse_rfc3339("2026-05-12T10:00:00Z").unwrap(),
+            parse_rfc3339("2026-05-12T10:00:00.125Z").unwrap(),
+            125,
+            2,
+            RunnerDiscoveryMode::AllRunners,
+            QueryRequestCounts::default(),
+        );
+
+        let json = serde_json::to_string(&metrics).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"started_at":"2026-05-12T10:00:00Z","finished_at":"2026-05-12T10:00:00.125Z","duration_millis":125,"result_count":2,"discovery_mode":"all_runners","request_counts":{"list_requests":0,"detail_requests":0,"manager_requests":0},"reused_enrichments":{"detail_enrichments":0,"manager_enrichments":0},"succeeded":true,"error_message":null}"#
+        );
     }
 }
