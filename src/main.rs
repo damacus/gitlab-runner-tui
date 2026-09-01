@@ -418,24 +418,37 @@ where
     screen_result.and(raw_mode_result)
 }
 
-async fn run_tui(mut app: App) -> Result<()> {
-    let mut session = TuiSession::new()?;
-    let mut event_handler = EventHandler::new(
+async fn run_tui(app: App) -> Result<()> {
+    let session = TuiSession::new()?;
+    let event_handler = EventHandler::new(
         std::time::Duration::from_millis(250),
         session.event_stream(),
     );
 
+    run_tui_with_session(app, session, event_handler).await
+}
+
+async fn run_tui_with_session<T>(
+    mut app: App,
+    mut session: TuiSession<T>,
+    mut event_handler: EventHandler,
+) -> Result<()>
+where
+    T: TerminaTerminal,
+{
     let result = loop {
         if let Err(error) = session.terminal.draw(|frame| ui::render(&mut app, frame)) {
             break Err(error.into());
         }
 
-        if let Some(event) = event_handler.next().await {
-            match event {
-                Event::Key(key) => app.handle_key(key).await,
-                Event::Resize(_, _) => {}
-                Event::Tick => app.tick().await,
-            }
+        let event = match event_handler.next().await {
+            Ok(event) => event,
+            Err(error) => break Err(error).context("Failed to read terminal event"),
+        };
+        match event {
+            Event::Key(key) => app.handle_key(key).await,
+            Event::Resize(_, _) => {}
+            Event::Tick => app.tick().await,
         }
 
         if app.should_quit {
@@ -1884,6 +1897,54 @@ mod tests {
         }
     }
 
+    fn cleanup_test_app() -> App {
+        let client = GitLabClient::new("https://gitlab.com".to_string(), "token".to_string())
+            .expect("client");
+        App::new(Conductor::new(client, Vec::new()), AppConfig::default())
+    }
+
+    async fn run_tui_until_terminal_failure<S>(reader: S) -> (anyhow::Error, CleanupTerminal)
+    where
+        S: futures::Stream<Item = std::io::Result<termina::Event>> + Send + Unpin + 'static,
+    {
+        let output = CleanupTerminal::new(false);
+        let output_state = output.clone();
+        let terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+        let mut session = TuiSession {
+            terminal,
+            restored: false,
+        };
+        enter_tui_mode(&mut session.terminal).expect("enter TUI mode");
+        let event_handler =
+            EventHandler::with_stream(std::time::Duration::from_secs(60), 1, reader);
+
+        let error = run_tui_with_session(cleanup_test_app(), session, event_handler)
+            .await
+            .expect_err("terminal input failure should stop the TUI");
+
+        (error, output_state)
+    }
+
+    fn assert_terminal_was_restored(output: &CleanupTerminal) {
+        assert_eq!(
+            output
+                .raw_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            output
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let restore_sequence = b"\x1b[?1049l\x1b[?25h";
+        let output_bytes = output.output.lock().expect("output lock");
+        assert!(output_bytes
+            .windows(restore_sequence.len())
+            .any(|window| window == restore_sequence));
+    }
+
     #[test]
     fn tui_mode_restores_the_screen_cursor_and_raw_mode() {
         let output = CleanupTerminal::new(false);
@@ -1925,6 +1986,29 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_read_error_restores_terminal_before_returning_error() {
+        let reader = futures::stream::iter([Err(std::io::Error::other("terminal read failed"))]);
+
+        let (error, output) = run_tui_until_terminal_failure(reader).await;
+
+        assert!(
+            format!("{error:#}").contains("Failed to read terminal event: terminal read failed")
+        );
+        assert_terminal_was_restored(&output);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_eof_restores_terminal_before_returning_error() {
+        let reader = futures::stream::empty::<std::io::Result<termina::Event>>();
+
+        let (error, output) = run_tui_until_terminal_failure(reader).await;
+
+        assert!(format!("{error:#}")
+            .contains("Failed to read terminal event: terminal event stream closed"));
+        assert_terminal_was_restored(&output);
     }
 
     struct StopAwarePendingStream {

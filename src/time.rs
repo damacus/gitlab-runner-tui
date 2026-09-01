@@ -170,6 +170,18 @@ pub fn format_absolute_timestamp(timestamp: Timestamp) -> String {
     timestamp.strftime("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
+pub fn format_absolute_rfc3339_timestamp(input: &str) -> Result<String, jiff::Error> {
+    let timestamp = parse_rfc3339(input)?;
+    if contains_leap_second(input) {
+        let preceding_second = timestamp.checked_sub(SignedDuration::from_secs(1))?;
+        Ok(preceding_second
+            .strftime("%Y-%m-%d %H:%M:60 UTC")
+            .to_string())
+    } else {
+        Ok(format_absolute_timestamp(timestamp))
+    }
+}
+
 pub fn elapsed_seconds(now: Timestamp, earlier: Timestamp) -> i64 {
     now.duration_since(earlier).as_secs()
 }
@@ -248,6 +260,14 @@ mod tests {
         assert_eq!(
             leap_second,
             parse_rfc3339("2017-01-01T00:00:00.120Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn absolute_rfc3339_format_preserves_the_leap_second_marker() {
+        assert_eq!(
+            format_absolute_rfc3339_timestamp("2016-12-31T23:59:60Z").unwrap(),
+            "2016-12-31 23:59:60 UTC"
         );
     }
 

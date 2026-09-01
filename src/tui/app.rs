@@ -13,8 +13,10 @@ use crate::models::runner::{
     parse_manager_contacted_at, parse_stale_cutoff, runner_matches_filters, sort_runner_indices,
     ContactThreshold, LocalBenchmarkSnapshot, Runner, RunnerFilters, RunnerSortKey, TagFilterMode,
 };
+#[cfg(test)]
+use crate::time::format_absolute_timestamp;
 use crate::time::{
-    elapsed_millis, elapsed_seconds, format_absolute_timestamp, format_user_cutoff_input,
+    elapsed_millis, elapsed_seconds, format_absolute_rfc3339_timestamp, format_user_cutoff_input,
     format_user_cutoff_label, now as timestamp_now, parse_rfc3339, system_time_zone,
 };
 use anyhow::{Context, Result};
@@ -2377,8 +2379,10 @@ pub fn manager_contact_label(manager: &RunnerManager, now: Timestamp) -> String 
 }
 
 pub fn manager_contact_detail(manager: &RunnerManager) -> String {
-    parse_contact_timestamp(manager.contacted_at.as_deref())
-        .map(format_absolute_timestamp)
+    manager
+        .contacted_at
+        .as_deref()
+        .and_then(|timestamp| format_absolute_rfc3339_timestamp(timestamp).ok())
         .unwrap_or_else(|| "Never".to_string())
 }
 
@@ -3454,6 +3458,16 @@ mod tests {
             "2h ago"
         );
         assert_eq!(manager_contact_detail(&manager), "2024-01-21 08:15:00 UTC");
+    }
+
+    #[test]
+    fn manager_contact_detail_preserves_leap_second_terminal_output() {
+        let manager = RunnerManager {
+            contacted_at: Some("2016-12-31T23:59:60Z".to_string()),
+            ..test_manager(7, "online")
+        };
+
+        assert_eq!(manager_contact_detail(&manager), "2016-12-31 23:59:60 UTC");
     }
 
     #[tokio::test]
