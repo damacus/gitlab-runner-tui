@@ -20,23 +20,12 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
-        id: lint_pr_title
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3
-        if: always() && (steps.lint_pr_title.outputs.error_message != null)
+      - uses: commit-check/commit-check-action@f803083a5bf0867b60d77189bc3810fce2f0e314 # v2.15.0
         with:
-          header: pr-title-lint-error
-          message: |
-            Hey there and thank you for opening this pull request! 👋🏼
-
-            We require pull request titles to follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/) and it looks like
-            your proposed title needs to be adjusted.
-
-            Details:
-
-            ```
-            ${{ steps.lint_pr_title.outputs.error_message }}
-            ```
+          message: false
+          branch: false
+          pr-title: true
+          job-summary: true
+          pr-comments: true
+        env:
+          CCHK_ALLOW_COMMIT_TYPES: "build,chore,ci,docs,feat,fix,perf,refactor,revert,security,style,test"
