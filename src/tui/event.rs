@@ -96,7 +96,7 @@ impl EventHandler {
     }
 
     #[cfg(test)]
-    fn with_stream<S>(tick_rate: Duration, capacity: usize, reader: S) -> Self
+    pub(crate) fn with_stream<S>(tick_rate: Duration, capacity: usize, reader: S) -> Self
     where
         S: Stream<Item = std::io::Result<TerminaEvent>> + Send + Unpin + 'static,
     {

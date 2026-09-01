@@ -322,14 +322,14 @@ fn run_auth_command(command: AuthCommand, args: &Args, config: &AppConfig) -> Re
     Ok(())
 }
 
-type AppTerminal = Terminal<TerminaBackend<PlatformTerminal>>;
+type AppTerminal<T> = Terminal<TerminaBackend<T>>;
 
-struct TuiSession {
-    terminal: AppTerminal,
+struct TuiSession<T: TerminaTerminal = PlatformTerminal> {
+    terminal: AppTerminal<T>,
     restored: bool,
 }
 
-impl TuiSession {
+impl TuiSession<PlatformTerminal> {
     fn new() -> Result<Self> {
         let terminal = Terminal::new(TerminaBackend::new(platform_terminal()?))?;
         let mut session = Self {
@@ -344,7 +344,12 @@ impl TuiSession {
 
         Ok(session)
     }
+}
 
+impl<T> TuiSession<T>
+where
+    T: TerminaTerminal,
+{
     fn event_stream(&self) -> EventStream {
         EventStream::new(self.terminal.backend().terminal().event_reader(), |_| true)
     }
@@ -356,7 +361,10 @@ impl TuiSession {
     }
 }
 
-impl Drop for TuiSession {
+impl<T> Drop for TuiSession<T>
+where
+    T: TerminaTerminal,
+{
     fn drop(&mut self) {
         if !self.restored {
             let _ = self.restore();
@@ -416,7 +424,9 @@ async fn run_tui(mut app: App) -> Result<()> {
     );
 
     let result = loop {
-        session.terminal.draw(|frame| ui::render(&mut app, frame))?;
+        if let Err(error) = session.terminal.draw(|frame| ui::render(&mut app, frame)) {
+            break Err(error.into());
+        }
 
         if let Some(event) = event_handler.next().await {
             match event {
@@ -431,8 +441,27 @@ async fn run_tui(mut app: App) -> Result<()> {
         }
     };
 
+    finish_tui(result, &mut event_handler, &mut session).await
+}
+
+async fn finish_tui<T>(
+    result: Result<()>,
+    event_handler: &mut EventHandler,
+    session: &mut TuiSession<T>,
+) -> Result<()>
+where
+    T: TerminaTerminal,
+{
     event_handler.stop().await;
-    result.and(session.restore().map_err(Into::into))
+
+    match (result, session.restore()) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(error), Err(restoration_error)) => Err(error.context(format!(
+            "terminal restoration also failed: {restoration_error}"
+        ))),
+    }
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -1724,6 +1753,8 @@ mod tests {
         output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
         raw_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         cooked_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        producer_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        cleanup_after_producer_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         fail_writes: bool,
     }
 
@@ -1733,8 +1764,20 @@ mod tests {
                 output: Default::default(),
                 raw_mode_calls: Default::default(),
                 cooked_mode_calls: Default::default(),
+                producer_stopped: None,
+                cleanup_after_producer_stop: None,
                 fail_writes,
             }
+        }
+
+        fn observe_producer_stop(
+            mut self,
+            producer_stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            cleanup_after_producer_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> Self {
+            self.producer_stopped = Some(producer_stopped);
+            self.cleanup_after_producer_stop = Some(cleanup_after_producer_stop);
+            self
         }
     }
 
@@ -1762,6 +1805,14 @@ mod tests {
         fn enter_cooked_mode(&mut self) -> std::io::Result<()> {
             self.cooked_mode_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let (Some(producer_stopped), Some(cleanup_after_producer_stop)) =
+                (&self.producer_stopped, &self.cleanup_after_producer_stop)
+            {
+                cleanup_after_producer_stop.store(
+                    producer_stopped.load(std::sync::atomic::Ordering::Acquire),
+                    std::sync::atomic::Ordering::Release,
+                );
+            }
             Ok(())
         }
 
@@ -1841,5 +1892,61 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    struct StopAwarePendingStream {
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl futures::Stream for StopAwarePendingStream {
+        type Item = std::io::Result<termina::Event>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for StopAwarePendingStream {
+        fn drop(&mut self) {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn draw_failure_stops_events_before_restoring_and_reports_restore_failure() {
+        let producer_stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cleanup_after_producer_stop =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let output = CleanupTerminal::new(true).observe_producer_stop(
+            std::sync::Arc::clone(&producer_stopped),
+            std::sync::Arc::clone(&cleanup_after_producer_stop),
+        );
+        let terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+        let mut session = TuiSession {
+            terminal,
+            restored: false,
+        };
+        let reader = StopAwarePendingStream {
+            stopped: std::sync::Arc::clone(&producer_stopped),
+        };
+        let mut event_handler =
+            EventHandler::with_stream(std::time::Duration::from_secs(60), 1, reader);
+
+        let error = finish_tui(
+            Err(anyhow::anyhow!("draw failed")),
+            &mut event_handler,
+            &mut session,
+        )
+        .await
+        .expect_err("draw and restoration failures should be returned");
+
+        assert!(producer_stopped.load(std::sync::atomic::Ordering::Acquire));
+        assert!(cleanup_after_producer_stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(format!("{error:#}").contains("draw failed"));
+        assert!(format!("{error:#}").contains("terminal restoration also failed: output failed"));
     }
 }
