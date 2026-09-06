@@ -1,11 +1,12 @@
 use crate::models::runner::{parse_manager_contacted_at, parse_manager_created_at, Runner};
-use chrono::{DateTime, Utc};
+use crate::time::elapsed_seconds;
+use jiff::Timestamp;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RotationWaitOptions {
-    pub rotation_window_start: DateTime<Utc>,
+    pub rotation_window_start: Timestamp,
     pub active_contacted_within_secs: u64,
     pub missing_runner_grace_polls: u64,
     pub completion_stability_polls: u64,
@@ -64,7 +65,7 @@ impl RotationWaitState {
         }
     }
 
-    pub fn observe(&mut self, runners: &[Runner], now: DateTime<Utc>) -> RotationWaitEvent {
+    pub fn observe(&mut self, runners: &[Runner], now: Timestamp) -> RotationWaitEvent {
         let was_baseline = !self.observed_baseline;
         self.observed_baseline = true;
 
@@ -194,10 +195,10 @@ impl RotationWaitState {
         event
     }
 
-    fn is_eligible(&self, runner: &Runner, now: DateTime<Utc>) -> bool {
+    fn is_eligible(&self, runner: &Runner, now: Timestamp) -> bool {
         runner.managers.iter().any(|manager| {
             parse_manager_contacted_at(manager).is_some_and(|contacted_at| {
-                now.signed_duration_since(contacted_at).num_seconds()
+                elapsed_seconds(now, contacted_at)
                     <= self.options.active_contacted_within_secs as i64
             })
         })
@@ -230,7 +231,7 @@ fn runner_system_ids(runner: &Runner) -> BTreeSet<String> {
 mod tests {
     use super::*;
     use crate::models::{manager::RunnerManager, runner::Runner};
-    use chrono::{DateTime, Utc};
+    use crate::time::parse_rfc3339;
 
     fn runner(id: u64, system_ids: &[&str]) -> Runner {
         Runner {
@@ -272,19 +273,15 @@ mod tests {
 
     fn options() -> RotationWaitOptions {
         RotationWaitOptions {
-            rotation_window_start: DateTime::parse_from_rfc3339("2026-06-29T10:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
+            rotation_window_start: parse_rfc3339("2026-06-29T10:00:00Z").unwrap(),
             active_contacted_within_secs: 3600,
             missing_runner_grace_polls: 2,
             completion_stability_polls: 2,
         }
     }
 
-    fn observed_at() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-06-29T10:05:00Z")
-            .unwrap()
-            .with_timezone(&Utc)
+    fn observed_at() -> Timestamp {
+        parse_rfc3339("2026-06-29T10:05:00Z").unwrap()
     }
 
     #[test]

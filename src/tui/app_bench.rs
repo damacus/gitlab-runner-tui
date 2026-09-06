@@ -6,7 +6,7 @@ mod tests {
         runner_clone_count, sort_runners, LocalBenchmarkSnapshot, Runner, RunnerFilters,
         RunnerSortKey,
     };
-    use chrono::Utc;
+    use crate::time::now;
     use std::time::Instant;
 
     fn build_runners(total: u64) -> Vec<Runner> {
@@ -56,7 +56,7 @@ mod tests {
         };
 
         let snapshot =
-            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, Utc::now());
+            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, now());
 
         assert_eq!(
             snapshot
@@ -74,12 +74,8 @@ mod tests {
 
     #[test]
     fn test_benchmark_snapshot_is_empty_when_no_runners_loaded() {
-        let snapshot = benchmark_runner_processing(
-            &[],
-            &RunnerFilters::default(),
-            RunnerSortKey::None,
-            Utc::now(),
-        );
+        let snapshot =
+            benchmark_runner_processing(&[], &RunnerFilters::default(), RunnerSortKey::None, now());
 
         assert_eq!(snapshot, LocalBenchmarkSnapshot::default());
     }
@@ -96,9 +92,8 @@ mod tests {
         for sample_size in [1_000, 10_000] {
             reset_runner_clone_count();
             let legacy_started = Instant::now();
-            let mut legacy_view =
-                apply_runner_filters(&runners[..sample_size], &filters, Utc::now());
-            sort_runners(&mut legacy_view, RunnerSortKey::LastContact, Utc::now());
+            let mut legacy_view = apply_runner_filters(&runners[..sample_size], &filters, now());
+            sort_runners(&mut legacy_view, RunnerSortKey::LastContact, now());
             let legacy_micros = legacy_started.elapsed().as_micros();
             let legacy_clones = runner_clone_count();
             assert_eq!(legacy_clones, sample_size);
@@ -108,7 +103,7 @@ mod tests {
         reset_runner_clone_count();
         let projected_started = Instant::now();
         let snapshot =
-            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, Utc::now());
+            benchmark_runner_processing(&runners, &filters, RunnerSortKey::LastContact, now());
         let projected_micros = projected_started.elapsed().as_micros();
 
         for (sample_size, budget_micros) in [(1_000, 2_000_000_u128), (10_000, 10_000_000)] {

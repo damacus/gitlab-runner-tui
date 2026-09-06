@@ -11,8 +11,8 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # TUI
-ratatui = "0.30"
-crossterm = { version = "0.29", features = ["event-stream"] }
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets", "layout-cache", "macros", "termina", "underline-color", "unstable-backend-writer"] }
+termina = { version = "0.3", features = ["event-stream", "windows-legacy"] }
 
 # Async & HTTP
 tokio = { version = "1.36", features = ["full"] }
@@ -33,16 +33,14 @@ anyhow = "1.0"
 
 # CLI & Config
 clap = { version = "4.5", features = ["derive", "env"] }
-dotenvy = "0.15"
+dotenv = { package = "dotenv-ng", version = "1.0" }
 toml = "1.0"
-dirs = "6.0"
+etcetera = "0.11"
 rpassword = "7.3"
-urlencoding = "2.1"
 keyring = "4.1.6"
 
 # Utility
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10"
+jiff = { version = "0.2", features = ["serde", "tzdb-bundle-always"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2.4"

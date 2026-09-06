@@ -1,4 +1,3 @@
-use crossterm::event::{Event as CrosstermEvent, KeyEvent};
 use futures::{Stream, StreamExt};
 use std::{
     sync::{
@@ -6,6 +5,10 @@ use std::{
         Arc,
     },
     time::Duration,
+};
+use termina::{
+    event::{KeyEvent, KeyEventKind},
+    Event as TerminaEvent, EventStream,
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -29,7 +32,7 @@ pub enum Event {
 /// first.
 #[derive(Clone)]
 struct EventSender {
-    sender: mpsc::Sender<Event>,
+    sender: mpsc::Sender<std::io::Result<Event>>,
     tick_pending: Arc<AtomicBool>,
 }
 
@@ -39,9 +42,17 @@ impl EventSender {
     }
 
     async fn send_event(&self, event: Event, token: &CancellationToken) -> bool {
+        self.send_result(Ok(event), token).await
+    }
+
+    async fn send_error(&self, error: std::io::Error, token: &CancellationToken) -> bool {
+        self.send_result(Err(error), token).await
+    }
+
+    async fn send_result(&self, result: std::io::Result<Event>, token: &CancellationToken) -> bool {
         tokio::select! {
             _ = token.cancelled() => false,
-            result = self.sender.send(event) => result.is_ok(),
+            result = self.sender.send(result) => result.is_ok(),
         }
     }
 
@@ -50,7 +61,7 @@ impl EventSender {
             return true;
         }
 
-        match self.sender.try_send(Event::Tick) {
+        match self.sender.try_send(Ok(Event::Tick)) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.tick_pending.store(false, Ordering::Release);
@@ -65,24 +76,37 @@ impl EventSender {
 }
 
 pub struct EventHandler {
-    receiver: mpsc::Receiver<Event>,
+    receiver: mpsc::Receiver<std::io::Result<Event>>,
     tick_pending: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
     producer: Option<JoinHandle<()>>,
 }
 
 impl EventHandler {
-    pub fn new(tick_rate: Duration) -> Self {
-        Self::with_stream(
-            tick_rate,
-            EVENT_QUEUE_CAPACITY,
-            crossterm::event::EventStream::new(),
-        )
+    pub fn new(tick_rate: Duration, reader: EventStream) -> Self {
+        let (sender, receiver) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let tick_pending = Arc::new(AtomicBool::new(false));
+        let event_sender = EventSender {
+            sender,
+            tick_pending: Arc::clone(&tick_pending),
+        };
+        let cancellation_token = CancellationToken::new();
+        let token = cancellation_token.clone();
+        let producer =
+            tokio::task::spawn_local(run_event_producer(reader, tick_rate, event_sender, token));
+
+        Self {
+            receiver,
+            tick_pending,
+            cancellation_token,
+            producer: Some(producer),
+        }
     }
 
-    fn with_stream<S>(tick_rate: Duration, capacity: usize, reader: S) -> Self
+    #[cfg(test)]
+    pub(crate) fn with_stream<S>(tick_rate: Duration, capacity: usize, reader: S) -> Self
     where
-        S: Stream<Item = std::io::Result<CrosstermEvent>> + Send + Unpin + 'static,
+        S: Stream<Item = std::io::Result<TerminaEvent>> + Send + Unpin + 'static,
     {
         let (sender, receiver) = mpsc::channel(capacity);
         let tick_pending = Arc::new(AtomicBool::new(false));
@@ -102,12 +126,17 @@ impl EventHandler {
         }
     }
 
-    pub async fn next(&mut self) -> Option<Event> {
-        let event = self.receiver.recv().await?;
+    pub async fn next(&mut self) -> std::io::Result<Event> {
+        let event = self.receiver.recv().await.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "terminal event producer stopped",
+            )
+        })??;
         if matches!(event, Event::Tick) {
             self.tick_pending.store(false, Ordering::Release);
         }
-        Some(event)
+        Ok(event)
     }
 
     pub async fn stop(&mut self) {
@@ -130,24 +159,44 @@ async fn run_event_producer<S>(
     sender: EventSender,
     token: CancellationToken,
 ) where
-    S: Stream<Item = std::io::Result<CrosstermEvent>> + Unpin,
+    S: Stream<Item = std::io::Result<TerminaEvent>> + Unpin,
 {
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
             event = reader.next() => match event {
-                Some(Ok(CrosstermEvent::Key(key))) => {
+                Some(Ok(TerminaEvent::Key(key)))
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
                     if !sender.send_key(key, &token).await {
                         break;
                     }
                 }
-                Some(Ok(CrosstermEvent::Resize(width, height))) => {
-                    if !sender.send_event(Event::Resize(width, height), &token).await {
+                Some(Ok(TerminaEvent::WindowResized(size))) => {
+                    if !sender
+                        .send_event(Event::Resize(size.cols, size.rows), &token)
+                        .await
+                    {
                         break;
                     }
                 }
-                Some(Ok(_)) | Some(Err(_)) => {}
-                None => break,
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    let _ = sender.send_error(error, &token).await;
+                    break;
+                }
+                None => {
+                    let _ = sender
+                        .send_error(
+                            std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "terminal event stream closed",
+                            ),
+                            &token,
+                        )
+                        .await;
+                    break;
+                }
             },
             _ = tokio::time::sleep(tick_rate) => {
                 if !sender.try_send_tick() {
@@ -161,15 +210,22 @@ async fn run_event_producer<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyModifiers};
     use futures::stream;
     use std::{
         pin::Pin,
         task::{Context, Poll},
     };
+    use termina::event::{KeyCode, KeyEventKind, Modifiers};
 
     fn key(character: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
+        KeyEvent::new(KeyCode::Char(character), Modifiers::NONE)
+    }
+
+    fn key_with_kind(character: char, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            kind,
+            ..key(character)
+        }
     }
 
     fn test_channel(capacity: usize) -> (EventSender, EventHandler) {
@@ -197,7 +253,7 @@ mod tests {
         }
 
         assert_eq!(handler.receiver.len(), 1);
-        assert_eq!(handler.next().await, Some(Event::Tick));
+        assert_eq!(handler.next().await.unwrap(), Event::Tick);
         assert_eq!(handler.receiver.len(), 0);
 
         assert!(sender.try_send_tick());
@@ -223,13 +279,13 @@ mod tests {
                 .is_err()
         );
 
-        assert_eq!(handler.next().await, Some(Event::Key(key('a'))));
+        assert_eq!(handler.next().await.unwrap(), Event::Key(key('a')));
         assert!(tokio::time::timeout(Duration::from_secs(1), &mut blocked)
             .await
             .expect("blocked key send should resume when capacity is available")
             .expect("key sender task should not panic"));
-        assert_eq!(handler.next().await, Some(Event::Key(key('b'))));
-        assert_eq!(handler.next().await, Some(Event::Key(key('c'))));
+        assert_eq!(handler.next().await.unwrap(), Event::Key(key('b')));
+        assert_eq!(handler.next().await.unwrap(), Event::Key(key('c')));
     }
 
     struct DropAwarePendingStream {
@@ -237,7 +293,7 @@ mod tests {
     }
 
     impl Stream for DropAwarePendingStream {
-        type Item = std::io::Result<CrosstermEvent>;
+        type Item = std::io::Result<TerminaEvent>;
 
         fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             Poll::Pending
@@ -285,20 +341,70 @@ mod tests {
 
     #[tokio::test]
     async fn producer_delivers_keys_and_stops_when_stream_closes() {
-        let reader = stream::iter([Ok(CrosstermEvent::Key(key('x')))]);
+        let reader = stream::iter([Ok(TerminaEvent::Key(key('x')))]);
         let mut handler = EventHandler::with_stream(Duration::from_secs(60), 2, reader);
 
-        assert_eq!(handler.next().await, Some(Event::Key(key('x'))));
+        assert_eq!(handler.next().await.unwrap(), Event::Key(key('x')));
         handler.stop().await;
         assert!(handler.producer.is_none());
     }
 
     #[tokio::test]
     async fn producer_delivers_resize_events() {
-        let reader = stream::iter([Ok(CrosstermEvent::Resize(132, 43))]);
+        let reader = stream::iter([Ok(TerminaEvent::WindowResized(termina::WindowSize {
+            cols: 132,
+            rows: 43,
+            pixel_width: None,
+            pixel_height: None,
+        }))]);
         let mut handler = EventHandler::with_stream(Duration::from_secs(60), 2, reader);
 
-        assert_eq!(handler.next().await, Some(Event::Resize(132, 43)));
+        assert_eq!(handler.next().await.unwrap(), Event::Resize(132, 43));
+        handler.stop().await;
+    }
+
+    #[tokio::test]
+    async fn producer_accepts_press_and_repeat_and_ignores_release() {
+        let reader = stream::iter([
+            Ok(TerminaEvent::Key(key_with_kind('p', KeyEventKind::Press))),
+            Ok(TerminaEvent::Key(key_with_kind('r', KeyEventKind::Repeat))),
+            Ok(TerminaEvent::Key(key_with_kind('x', KeyEventKind::Release))),
+        ]);
+        let mut handler = EventHandler::with_stream(Duration::from_secs(60), 3, reader);
+
+        assert_eq!(handler.next().await.unwrap(), Event::Key(key('p')));
+        assert_eq!(
+            handler.next().await.unwrap(),
+            Event::Key(key_with_kind('r', KeyEventKind::Repeat))
+        );
+        assert_eq!(
+            handler.next().await.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        handler.stop().await;
+    }
+
+    #[tokio::test]
+    async fn producer_propagates_terminal_read_errors() {
+        let reader = stream::iter([Err(std::io::Error::other("terminal read failed"))]);
+        let mut handler = EventHandler::with_stream(Duration::from_secs(60), 1, reader);
+
+        let error = handler.next().await.unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "terminal read failed");
+        handler.stop().await;
+    }
+
+    #[tokio::test]
+    async fn producer_reports_terminal_stream_eof() {
+        let reader = stream::empty::<std::io::Result<TerminaEvent>>();
+        let mut handler = EventHandler::with_stream(Duration::from_secs(60), 1, reader);
+
+        let error = handler.next().await.unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "terminal event stream closed");
         handler.stop().await;
     }
 }

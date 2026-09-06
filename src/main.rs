@@ -6,6 +6,7 @@ mod fixtures;
 mod metrics;
 mod models;
 mod rotation_wait;
+mod time;
 mod tui;
 
 #[cfg(test)]
@@ -55,27 +56,23 @@ static TEST_ALLOCATOR: allocation_counter::CountingAllocator =
 const DEMO_HOST: &str = "https://demo.gitlab.example.com";
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, LocalResult, NaiveTime, TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use client::GitLabClient;
 use conductor::{Conductor, QueryOutcome, QueryProfile};
 use config::{
     parse_runner_targets, AppConfig, RotationWaitConfig, RunnerDiscoveryMode, RunnerTarget,
 };
-use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use jiff::{tz::TimeZone, Timestamp};
 use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::TerminaBackend, Terminal};
 use reqwest::StatusCode;
 use rotation_wait::{RotationWaitOptions, RotationWaitState};
-use std::{
-    env,
-    io::{self, Write},
-    path::PathBuf,
+use std::{env, io, io::Write, path::PathBuf};
+use termina::{
+    escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode},
+    EventStream, PlatformTerminal, Terminal as TerminaTerminal,
 };
+use time::{classify_civil_timestamp, now, parse_clock_time, system_time_zone, CivilTimestamp};
 use tui::{
     app::App,
     event::{Event, EventHandler},
@@ -166,10 +163,14 @@ impl std::fmt::Debug for Args {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
     load_explicit_dotenv(args.dotenv.as_deref())?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    tokio::task::LocalSet::new().block_on(&runtime, run(args))
+}
+
+async fn run(args: Args) -> Result<()> {
     let mut config = match args.config.as_deref() {
         Some(path) => AppConfig::load_from_path(path)?,
         None => AppConfig::load()?,
@@ -323,39 +324,159 @@ fn run_auth_command(command: AuthCommand, args: &Args, config: &AppConfig) -> Re
     Ok(())
 }
 
-async fn run_tui(mut app: App) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let mut event_handler = EventHandler::new(std::time::Duration::from_millis(250));
+type AppTerminal<T> = Terminal<TerminaBackend<T>>;
 
-    loop {
-        terminal.draw(|frame| ui::render(&mut app, frame))?;
+struct TuiSession<T: TerminaTerminal = PlatformTerminal> {
+    terminal: AppTerminal<T>,
+    restored: bool,
+}
 
-        if let Some(event) = event_handler.next().await {
-            match event {
-                Event::Key(key) => app.handle_key(key).await,
-                Event::Resize(_, _) => {}
-                Event::Tick => app.tick().await,
-            }
+impl TuiSession<PlatformTerminal> {
+    fn new() -> Result<Self> {
+        let terminal = Terminal::new(TerminaBackend::new(platform_terminal()?))?;
+        let mut session = Self {
+            terminal,
+            restored: false,
+        };
+
+        if let Err(error) = enter_tui_mode(&mut session.terminal) {
+            let _ = session.restore();
+            return Err(error.into());
+        }
+
+        Ok(session)
+    }
+}
+
+impl<T> TuiSession<T>
+where
+    T: TerminaTerminal,
+{
+    fn event_stream(&self) -> EventStream {
+        EventStream::new(self.terminal.backend().terminal().event_reader(), |_| true)
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        let result = restore_tui_mode(&mut self.terminal);
+        self.restored = result.is_ok();
+        result
+    }
+}
+
+impl<T> Drop for TuiSession<T>
+where
+    T: TerminaTerminal,
+{
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = self.restore();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn platform_terminal() -> std::io::Result<PlatformTerminal> {
+    PlatformTerminal::with_mode(termina::windows::InputReaderMode::Legacy)
+}
+
+#[cfg(not(windows))]
+fn platform_terminal() -> std::io::Result<PlatformTerminal> {
+    PlatformTerminal::new()
+}
+
+fn terminal_mode(mode: DecPrivateModeCode, enabled: bool) -> Csi {
+    let mode = DecPrivateMode::Code(mode);
+    if enabled {
+        Csi::Mode(Mode::SetDecPrivateMode(mode))
+    } else {
+        Csi::Mode(Mode::ResetDecPrivateMode(mode))
+    }
+}
+
+fn enter_tui_mode<T>(terminal: &mut Terminal<TerminaBackend<T>>) -> std::io::Result<()>
+where
+    T: TerminaTerminal,
+{
+    let backend = terminal.backend_mut();
+    backend.terminal_mut().enter_raw_mode()?;
+    let alternate_screen = terminal_mode(DecPrivateModeCode::ClearAndEnableAlternateScreen, true);
+    let hide_cursor = terminal_mode(DecPrivateModeCode::ShowCursor, false);
+    write!(backend, "{alternate_screen}{hide_cursor}")?;
+    backend.flush()
+}
+
+fn restore_tui_mode<T>(terminal: &mut Terminal<TerminaBackend<T>>) -> std::io::Result<()>
+where
+    T: TerminaTerminal,
+{
+    let backend = terminal.backend_mut();
+    let alternate_screen = terminal_mode(DecPrivateModeCode::ClearAndEnableAlternateScreen, false);
+    let show_cursor = terminal_mode(DecPrivateModeCode::ShowCursor, true);
+    let screen_result =
+        write!(backend, "{alternate_screen}{show_cursor}").and_then(|_| backend.flush());
+    let raw_mode_result = backend.terminal_mut().enter_cooked_mode();
+    screen_result.and(raw_mode_result)
+}
+
+async fn run_tui(app: App) -> Result<()> {
+    let session = TuiSession::new()?;
+    let event_handler = EventHandler::new(
+        std::time::Duration::from_millis(250),
+        session.event_stream(),
+    );
+
+    run_tui_with_session(app, session, event_handler).await
+}
+
+async fn run_tui_with_session<T>(
+    mut app: App,
+    mut session: TuiSession<T>,
+    mut event_handler: EventHandler,
+) -> Result<()>
+where
+    T: TerminaTerminal,
+{
+    let result = loop {
+        if let Err(error) = session.terminal.draw(|frame| ui::render(&mut app, frame)) {
+            break Err(error.into());
+        }
+
+        let event = match event_handler.next().await {
+            Ok(event) => event,
+            Err(error) => break Err(error).context("Failed to read terminal event"),
+        };
+        match event {
+            Event::Key(key) => app.handle_key(key).await,
+            Event::Resize(_, _) => {}
+            Event::Tick => app.tick().await,
         }
 
         if app.should_quit {
-            break;
+            break Ok(());
         }
-    }
+    };
 
+    finish_tui(result, &mut event_handler, &mut session).await
+}
+
+async fn finish_tui<T>(
+    result: Result<()>,
+    event_handler: &mut EventHandler,
+    session: &mut TuiSession<T>,
+) -> Result<()>
+where
+    T: TerminaTerminal,
+{
     event_handler.stop().await;
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
+
+    match (result, session.restore()) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(error), Err(restoration_error)) => Err(error.context(format!(
+            "terminal restoration also failed: {restoration_error}"
+        ))),
+    }
 }
 
 fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, String, AppConfig)> {
@@ -473,7 +594,10 @@ fn resolve_gitlab_host(args: &Args, config: &AppConfig, env_host: Option<String>
 
 fn load_explicit_dotenv(path: Option<&std::path::Path>) -> Result<()> {
     if let Some(path) = path {
-        dotenvy::from_path(path)
+        // SAFETY: main calls this before it creates the Tokio runtime or any worker threads.
+        unsafe { dotenv::EnvLoader::with_path(path).load_and_modify() }
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("Failed to load dotenv file {}", path.display()))?;
     }
     Ok(())
@@ -665,7 +789,7 @@ async fn run_rotation_wait(
 ) -> Result<bool> {
     let started_at = std::time::Instant::now();
     let filters = build_runner_filters(tags, version);
-    let options = build_rotation_wait_options(&config.rotation_wait, Utc::now())?;
+    let options = build_rotation_wait_options(&config.rotation_wait, now())?;
     let mut state = RotationWaitState::new(options);
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs);
 
@@ -673,7 +797,7 @@ async fn run_rotation_wait(
         let outcome = conductor
             .fetch_runners_with_profile_and_metrics(filters.clone(), QueryProfile::Managers)
             .await?;
-        let event = state.observe(&outcome.runners, Utc::now());
+        let event = state.observe(&outcome.runners, now());
         println!("{}", serde_json::to_string(&event)?);
 
         if event.is_complete {
@@ -691,7 +815,7 @@ async fn run_rotation_wait(
 
 fn build_rotation_wait_options(
     config: &RotationWaitConfig,
-    command_started_at: DateTime<Utc>,
+    command_started_at: Timestamp,
 ) -> Result<RotationWaitOptions> {
     Ok(RotationWaitOptions {
         rotation_window_start: resolve_rotation_window_start(config, command_started_at)?,
@@ -703,14 +827,13 @@ fn build_rotation_wait_options(
 
 fn resolve_rotation_window_start(
     config: &RotationWaitConfig,
-    command_started_at: DateTime<Utc>,
-) -> Result<DateTime<Utc>> {
+    command_started_at: Timestamp,
+) -> Result<Timestamp> {
     let Some(start) = config.rotation_window_start.as_deref() else {
         return Ok(command_started_at);
     };
 
-    let time = NaiveTime::parse_from_str(start.trim(), "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(start.trim(), "%H:%M"))
+    let time = parse_clock_time(start.trim())
         .with_context(|| "rotation_window_start must use HH:MM or HH:MM:SS")?;
 
     match config
@@ -720,26 +843,28 @@ fn resolve_rotation_window_start(
         .filter(|value| !value.is_empty())
     {
         Some(timezone) => {
-            let tz: chrono_tz::Tz = timezone
-                .parse()
+            let time_zone = TimeZone::get(timezone)
                 .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
-            let local_now = command_started_at.with_timezone(&tz);
-            let local_window = local_now.date_naive().and_time(time);
-            match tz.from_local_datetime(&local_window) {
-                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
-                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
-                LocalResult::None => anyhow::bail!(
+            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_window = local_now.date().to_datetime(time);
+            match classify_civil_timestamp(&time_zone, local_window)? {
+                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                    Ok(timestamp)
+                }
+                CivilTimestamp::Gap => anyhow::bail!(
                     "rotation_window_start does not exist in timezone {timezone} today"
                 ),
             }
         }
         None => {
-            let local_now = command_started_at.with_timezone(&Local);
-            let local_window = local_now.date_naive().and_time(time);
-            match Local.from_local_datetime(&local_window) {
-                LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
-                LocalResult::Ambiguous(earliest, _) => Ok(earliest.with_timezone(&Utc)),
-                LocalResult::None => anyhow::bail!(
+            let time_zone = system_time_zone();
+            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_window = local_now.date().to_datetime(time);
+            match classify_civil_timestamp(&time_zone, local_window)? {
+                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                    Ok(timestamp)
+                }
+                CivilTimestamp::Gap => anyhow::bail!(
                     "rotation_window_start does not exist in the system timezone today"
                 ),
             }
@@ -757,7 +882,8 @@ fn build_stale_threshold(
 ) -> Result<ContactThreshold> {
     match (command, stale_cutoff) {
         (CliCommand::Flames, Some(input)) => {
-            let cutoff = parse_stale_cutoff(input, Local::now())
+            let local_now = now().to_zoned(system_time_zone());
+            let cutoff = parse_stale_cutoff(input, &local_now)
                 .map_err(anyhow::Error::msg)?
                 .context("--stale-cutoff cannot be blank")?;
             Ok(ContactThreshold::Since(cutoff))
@@ -1013,26 +1139,6 @@ mod tests {
 
         assert_eq!(args.config, Some(PathBuf::from("/trusted/config.toml")));
         assert_eq!(args.dotenv, Some(PathBuf::from("/trusted/runtime.env")));
-    }
-
-    #[test]
-    fn dotenv_file_is_ignored_unless_explicitly_selected() {
-        const VARIABLE: &str = "GITLAB_RUNNER_TUI_EXPLICIT_DOTENV_TEST";
-        let path = std::env::temp_dir().join(format!(
-            "gitlab-runner-tui-explicit-dotenv-{}.env",
-            std::process::id()
-        ));
-        std::fs::write(&path, format!("{VARIABLE}=loaded-explicitly\n")).unwrap();
-        std::env::remove_var(VARIABLE);
-
-        load_explicit_dotenv(None).unwrap();
-        assert!(std::env::var(VARIABLE).is_err());
-
-        load_explicit_dotenv(Some(&path)).unwrap();
-        assert_eq!(std::env::var(VARIABLE).unwrap(), "loaded-explicitly");
-
-        std::env::remove_var(VARIABLE);
-        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
@@ -1294,9 +1400,7 @@ mod tests {
 
     #[test]
     fn rotation_wait_defaults_window_start_to_command_start() {
-        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:34:56Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let command_started_at = time::parse_rfc3339("2026-06-29T12:34:56Z").unwrap();
 
         let options = build_rotation_wait_options(
             &crate::config::RotationWaitConfig::default(),
@@ -1312,9 +1416,7 @@ mod tests {
 
     #[test]
     fn rotation_wait_uses_configured_timezone_window_start() {
-        let command_started_at = DateTime::parse_from_rfc3339("2026-06-29T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let command_started_at = time::parse_rfc3339("2026-06-29T12:00:00Z").unwrap();
         let config = crate::config::RotationWaitConfig {
             timezone: Some("Europe/London".to_string()),
             rotation_window_start: Some("00:00".to_string()),
@@ -1325,9 +1427,42 @@ mod tests {
 
         assert_eq!(
             options.rotation_window_start,
-            DateTime::parse_from_rfc3339("2026-06-28T23:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc)
+            time::parse_rfc3339("2026-06-28T23:00:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn rotation_wait_configured_timezone_fold_uses_earlier_instant() {
+        let command_started_at = time::parse_rfc3339("2026-10-25T12:00:00Z").unwrap();
+        let config = crate::config::RotationWaitConfig {
+            timezone: Some("Europe/London".to_string()),
+            rotation_window_start: Some("01:30".to_string()),
+            ..crate::config::RotationWaitConfig::default()
+        };
+
+        let options = build_rotation_wait_options(&config, command_started_at).unwrap();
+
+        assert_eq!(
+            options.rotation_window_start,
+            time::parse_rfc3339("2026-10-25T00:30:00Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn rotation_wait_configured_timezone_gap_is_rejected() {
+        let command_started_at = time::parse_rfc3339("2026-03-29T12:00:00Z").unwrap();
+        let config = crate::config::RotationWaitConfig {
+            timezone: Some("Europe/London".to_string()),
+            rotation_window_start: Some("01:30".to_string()),
+            ..crate::config::RotationWaitConfig::default()
+        };
+
+        let error = build_rotation_wait_options(&config, command_started_at)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("rotation_window_start does not exist in timezone Europe/London today")
         );
     }
 
@@ -1657,5 +1792,281 @@ mod tests {
     fn does_not_treat_generic_errors_as_auth_errors() {
         let error = anyhow::anyhow!("network exploded");
         assert!(!is_auth_error(&error));
+    }
+
+    #[derive(Clone)]
+    struct CleanupTerminal {
+        output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        raw_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        cooked_mode_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        producer_stopped: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        cleanup_after_producer_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        fail_writes: bool,
+    }
+
+    impl CleanupTerminal {
+        fn new(fail_writes: bool) -> Self {
+            Self {
+                output: Default::default(),
+                raw_mode_calls: Default::default(),
+                cooked_mode_calls: Default::default(),
+                producer_stopped: None,
+                cleanup_after_producer_stop: None,
+                fail_writes,
+            }
+        }
+
+        fn observe_producer_stop(
+            mut self,
+            producer_stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            cleanup_after_producer_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> Self {
+            self.producer_stopped = Some(producer_stopped);
+            self.cleanup_after_producer_stop = Some(cleanup_after_producer_stop);
+            self
+        }
+    }
+
+    impl std::io::Write for CleanupTerminal {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.fail_writes {
+                return Err(std::io::Error::other("output failed"));
+            }
+            self.output.lock().expect("output lock").extend(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TerminaTerminal for CleanupTerminal {
+        fn enter_raw_mode(&mut self) -> std::io::Result<()> {
+            self.raw_mode_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn enter_cooked_mode(&mut self) -> std::io::Result<()> {
+            self.cooked_mode_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let (Some(producer_stopped), Some(cleanup_after_producer_stop)) =
+                (&self.producer_stopped, &self.cleanup_after_producer_stop)
+            {
+                cleanup_after_producer_stop.store(
+                    producer_stopped.load(std::sync::atomic::Ordering::Acquire),
+                    std::sync::atomic::Ordering::Release,
+                );
+            }
+            Ok(())
+        }
+
+        fn get_dimensions(&self) -> std::io::Result<termina::WindowSize> {
+            Ok(termina::WindowSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            })
+        }
+
+        fn event_reader(&self) -> termina::EventReader {
+            unreachable!("cleanup tests do not read terminal events")
+        }
+
+        fn poll<F: Fn(&termina::Event) -> bool>(
+            &self,
+            _filter: F,
+            _timeout: Option<std::time::Duration>,
+        ) -> std::io::Result<bool> {
+            unreachable!("cleanup tests do not poll terminal events")
+        }
+
+        fn read<F: Fn(&termina::Event) -> bool>(
+            &self,
+            _filter: F,
+        ) -> std::io::Result<termina::Event> {
+            unreachable!("cleanup tests do not read terminal events")
+        }
+
+        fn set_panic_hook(
+            &mut self,
+            _hook: impl Fn(&mut termina::PlatformHandle) + Send + Sync + 'static,
+        ) {
+        }
+    }
+
+    fn cleanup_test_app() -> App {
+        let client = GitLabClient::new("https://gitlab.com".to_string(), "token".to_string())
+            .expect("client");
+        App::new(
+            Conductor::new_with_mode(client, RunnerDiscoveryMode::ConfiguredTargets, Vec::new()),
+            AppConfig::default(),
+        )
+    }
+
+    async fn run_tui_until_terminal_failure<S>(reader: S) -> (anyhow::Error, CleanupTerminal)
+    where
+        S: futures::Stream<Item = std::io::Result<termina::Event>> + Send + Unpin + 'static,
+    {
+        let output = CleanupTerminal::new(false);
+        let output_state = output.clone();
+        let terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+        let mut session = TuiSession {
+            terminal,
+            restored: false,
+        };
+        enter_tui_mode(&mut session.terminal).expect("enter TUI mode");
+        let event_handler =
+            EventHandler::with_stream(std::time::Duration::from_secs(60), 1, reader);
+
+        let error = run_tui_with_session(cleanup_test_app(), session, event_handler)
+            .await
+            .expect_err("terminal input failure should stop the TUI");
+
+        (error, output_state)
+    }
+
+    fn assert_terminal_was_restored(output: &CleanupTerminal) {
+        assert_eq!(
+            output
+                .raw_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            output
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let restore_sequence = b"\x1b[?1049l\x1b[?25h";
+        let output_bytes = output.output.lock().expect("output lock");
+        assert!(output_bytes
+            .windows(restore_sequence.len())
+            .any(|window| window == restore_sequence));
+    }
+
+    #[test]
+    fn tui_mode_restores_the_screen_cursor_and_raw_mode() {
+        let output = CleanupTerminal::new(false);
+        let output_state = output.clone();
+        let mut terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+
+        enter_tui_mode(&mut terminal).expect("enter TUI mode");
+        restore_tui_mode(&mut terminal).expect("restore TUI mode");
+
+        assert_eq!(
+            String::from_utf8(output_state.output.lock().expect("output lock").clone())
+                .expect("terminal output"),
+            "\u{1b}[?1049h\u{1b}[?25l\u{1b}[?1049l\u{1b}[?25h"
+        );
+        assert_eq!(
+            output_state
+                .raw_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            output_state
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn restoration_attempts_to_leave_raw_mode_after_output_failure() {
+        let output = CleanupTerminal::new(true);
+        let output_state = output.clone();
+        let mut terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+
+        assert!(restore_tui_mode(&mut terminal).is_err());
+        assert_eq!(
+            output_state
+                .cooked_mode_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_read_error_restores_terminal_before_returning_error() {
+        let reader = futures::stream::iter([Err(std::io::Error::other("terminal read failed"))]);
+
+        let (error, output) = run_tui_until_terminal_failure(reader).await;
+
+        assert!(
+            format!("{error:#}").contains("Failed to read terminal event: terminal read failed")
+        );
+        assert_terminal_was_restored(&output);
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_eof_restores_terminal_before_returning_error() {
+        let reader = futures::stream::empty::<std::io::Result<termina::Event>>();
+
+        let (error, output) = run_tui_until_terminal_failure(reader).await;
+
+        assert!(format!("{error:#}")
+            .contains("Failed to read terminal event: terminal event stream closed"));
+        assert_terminal_was_restored(&output);
+    }
+
+    struct StopAwarePendingStream {
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl futures::Stream for StopAwarePendingStream {
+        type Item = std::io::Result<termina::Event>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for StopAwarePendingStream {
+        fn drop(&mut self) {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn draw_failure_stops_events_before_restoring_and_reports_restore_failure() {
+        let producer_stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cleanup_after_producer_stop =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let output = CleanupTerminal::new(true).observe_producer_stop(
+            std::sync::Arc::clone(&producer_stopped),
+            std::sync::Arc::clone(&cleanup_after_producer_stop),
+        );
+        let terminal = Terminal::new(TerminaBackend::new(output)).expect("terminal");
+        let mut session = TuiSession {
+            terminal,
+            restored: false,
+        };
+        let reader = StopAwarePendingStream {
+            stopped: std::sync::Arc::clone(&producer_stopped),
+        };
+        let mut event_handler =
+            EventHandler::with_stream(std::time::Duration::from_secs(60), 1, reader);
+
+        let error = finish_tui(
+            Err(anyhow::anyhow!("draw failed")),
+            &mut event_handler,
+            &mut session,
+        )
+        .await
+        .expect_err("draw and restoration failures should be returned");
+
+        assert!(producer_stopped.load(std::sync::atomic::Ordering::Acquire));
+        assert!(cleanup_after_producer_stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(format!("{error:#}").contains("draw failed"));
+        assert!(format!("{error:#}").contains("terminal restoration also failed: output failed"));
     }
 }

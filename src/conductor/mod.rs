@@ -1,18 +1,21 @@
 use crate::client::GitLabClient;
+#[cfg(test)]
+use crate::config::DEFAULT_MAX_ENRICHMENT_REQUESTS;
 use crate::config::{
-    RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, DEFAULT_MAX_ENRICHMENT_REQUESTS,
-    MAX_MAX_ENRICHMENT_REQUESTS, MIN_MAX_ENRICHMENT_REQUESTS,
+    RunnerDiscoveryMode, RunnerTarget, RunnerTargetKind, MAX_MAX_ENRICHMENT_REQUESTS,
+    MIN_MAX_ENRICHMENT_REQUESTS,
 };
 use crate::metrics::{EnrichmentReuseCounts, LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{
     apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
 };
+use crate::time::{elapsed_millis, now};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use futures::{
     stream::{self, StreamExt},
     TryStreamExt,
 };
+use jiff::Timestamp;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -30,10 +33,8 @@ struct TargetFetchResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum QueryProfile {
     Summary,
-    Detail,
     Managers,
     Full,
 }
@@ -49,10 +50,6 @@ impl QueryProfile {
         match self {
             Self::Summary => EnrichmentProfile {
                 detail: false,
-                managers: false,
-            },
-            Self::Detail => EnrichmentProfile {
-                detail: true,
                 managers: false,
             },
             Self::Managers => EnrichmentProfile {
@@ -198,15 +195,7 @@ fn is_forbidden(error: &anyhow::Error) -> bool {
 }
 
 impl Conductor {
-    #[allow(dead_code)]
-    pub fn new(client: GitLabClient, runner_targets: Vec<RunnerTarget>) -> Self {
-        Self::new_with_mode(
-            client,
-            RunnerDiscoveryMode::ConfiguredTargets,
-            runner_targets,
-        )
-    }
-
+    #[cfg(test)]
     pub fn new_with_mode(
         client: GitLabClient,
         discovery_mode: RunnerDiscoveryMode,
@@ -255,7 +244,7 @@ impl Conductor {
         &self.client
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn fetch_runners(&self, filters: RunnerFilters) -> Result<Vec<Runner>> {
         Ok(self.fetch_runners_with_metrics(filters).await?.runners)
     }
@@ -284,7 +273,7 @@ impl Conductor {
     where
         F: FnOnce(Vec<Runner>) -> Vec<Runner>,
     {
-        let started_at = Utc::now();
+        let started_at = now();
         let started = Instant::now();
         let initial_profile = base_profile
             .enrichment()
@@ -301,13 +290,13 @@ impl Conductor {
         if !self.demo_mode {
             local_filters.tag_list = None;
         }
-        let runners = apply_runner_filters(&runners, &local_filters, Utc::now());
+        let runners = apply_runner_filters(&runners, &local_filters, now());
         let runners = select_results(runners);
         let final_profile = output_profile.enrichment().missing_from(initial_profile);
         let runners = self
             .enrich_runners(runners, final_profile, &mut request_counts)
             .await;
-        let finished_at = Utc::now();
+        let finished_at = now();
         let metrics = LiveQueryMetrics::success(
             started_at,
             finished_at,
@@ -484,7 +473,7 @@ impl Conductor {
         if !self.demo_mode {
             local_filters.tag_list = None;
         }
-        let runners = apply_runner_filters(&runners, &local_filters, Utc::now());
+        let runners = apply_runner_filters(&runners, &local_filters, now());
         let metrics = self.success_metrics(
             started_at,
             runners.len(),
@@ -504,16 +493,13 @@ impl Conductor {
 
     fn success_metrics(
         &self,
-        started_at: DateTime<Utc>,
+        started_at: Timestamp,
         result_count: usize,
         request_counts: QueryRequestCounts,
         reused_enrichments: EnrichmentReuseCounts,
     ) -> LiveQueryMetrics {
-        let finished_at = Utc::now();
-        let duration_millis = finished_at
-            .signed_duration_since(started_at)
-            .num_milliseconds()
-            .max(0) as u128;
+        let finished_at = now();
+        let duration_millis = elapsed_millis(finished_at, started_at).max(0) as u128;
         LiveQueryMetrics::success_with_reuse(
             started_at,
             finished_at,
@@ -813,24 +799,9 @@ impl Conductor {
             filters,
             QueryProfile::Managers,
             QueryProfile::Full,
-            move |runners| filter_uncontacted_runners(runners, Utc::now(), threshold),
+            move |runners| filter_uncontacted_runners(runners, now(), threshold),
         )
         .await
-    }
-
-    /// Returns (online_count, total_count) - reserved for potential status aggregation
-    #[allow(dead_code)]
-    pub async fn check_runner_statuses(&self, filters: RunnerFilters) -> Result<(usize, usize)> {
-        let runners = self
-            .fetch_runners_with_profile_and_metrics(filters, QueryProfile::Managers)
-            .await?
-            .runners;
-        let total = runners.len();
-        let online = runners
-            .iter()
-            .filter(|r| r.managers.iter().any(|m| m.status == "online"))
-            .count();
-        Ok((online, total))
     }
 
     pub async fn list_runners_without_managers_with_metrics(
@@ -916,7 +887,7 @@ fn is_runner_offline(runner: &Runner) -> bool {
     !runner.managers.is_empty() && !runner.managers.iter().any(|m| m.status == "online")
 }
 
-fn is_runner_uncontacted(runner: &Runner, now: DateTime<Utc>, threshold: ContactThreshold) -> bool {
+fn is_runner_uncontacted(runner: &Runner, now: Timestamp, threshold: ContactThreshold) -> bool {
     if runner.managers.is_empty() {
         return false;
     }
@@ -934,7 +905,7 @@ fn filter_offline_runners(runners: Vec<Runner>) -> Vec<Runner> {
 
 fn filter_uncontacted_runners(
     runners: Vec<Runner>,
-    now: DateTime<Utc>,
+    now: Timestamp,
     threshold: ContactThreshold,
 ) -> Vec<Runner> {
     runners
@@ -996,6 +967,7 @@ mod tests {
     use super::*;
     use crate::config::{RunnerTarget, RunnerTargetKind};
     use crate::models::manager::RunnerManager;
+    use crate::time::{add_seconds, format_rfc3339, subtract_seconds};
     use mockito::{Matcher, Server};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -2136,51 +2108,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_runner_statuses() {
-        let mut server = Server::new_async().await;
-        let mocks = setup_runner_mocks(
-            &mut server,
-            &[
-                // Runner 1: one online manager -> online
-                (1, "online", &["prod"], &[(10, "online")]),
-                // Runner 2: only offline managers -> offline
-                (
-                    2,
-                    "offline",
-                    &["staging"],
-                    &[(20, "offline"), (21, "offline")],
-                ),
-                // Runner 3: multiple managers, one online -> online
-                (3, "online", &["dev"], &[(30, "offline"), (31, "online")]),
-                // Runner 4: no managers -> offline (no online manager)
-                (4, "online", &["test"], &[]),
-            ],
-        )
-        .await;
-
-        let client = GitLabClient::new(server.url(), "test-token".to_string()).unwrap();
-        let conductor = Conductor::new_with_mode(
-            client,
-            RunnerDiscoveryMode::ConfiguredTargets,
-            vec![group_target("123")],
-        );
-
-        let (online, total) = conductor
-            .check_runner_statuses(RunnerFilters::default())
-            .await
-            .unwrap();
-
-        // Total 4 runners
-        assert_eq!(total, 4);
-        // Runners 1 and 3 are online, so 2 online runners
-        assert_eq!(online, 2);
-
-        for mock in &mocks {
-            mock.assert_async().await;
-        }
-    }
-
-    #[tokio::test]
     async fn test_enrichment_adds_tags_from_detail() {
         let mut server = Server::new_async().await;
         let mocks = setup_runner_mocks(
@@ -2528,8 +2455,8 @@ mod tests {
     async fn test_list_uncontacted_runners_respects_threshold_and_all_manager_rule() {
         let mut server = Server::new_async().await;
 
-        let stale_contact = (Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
-        let recent_contact = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        let stale_contact = format_rfc3339(subtract_seconds(now(), 120));
+        let recent_contact = format_rfc3339(subtract_seconds(now(), 10));
 
         let list_mock = server
             .mock("GET", "/api/v4/groups/123/runners")
@@ -2613,7 +2540,7 @@ mod tests {
     async fn test_list_uncontacted_runners_treats_missing_or_invalid_timestamps_as_uncontacted() {
         let mut server = Server::new_async().await;
 
-        let recent_contact = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+        let recent_contact = format_rfc3339(subtract_seconds(now(), 5));
 
         let list_mock = server
             .mock("GET", "/api/v4/groups/123/runners")
@@ -2750,9 +2677,9 @@ mod tests {
 
     #[test]
     fn test_filter_uncontacted_runners_socket_free() {
-        let now = Utc::now();
-        let stale = (now - chrono::Duration::seconds(120)).to_rfc3339();
-        let recent = (now - chrono::Duration::seconds(10)).to_rfc3339();
+        let now = now();
+        let stale = format_rfc3339(subtract_seconds(now, 120));
+        let recent = format_rfc3339(subtract_seconds(now, 10));
 
         let runners = vec![
             // all stale -> uncontacted
@@ -2774,11 +2701,11 @@ mod tests {
 
     #[test]
     fn test_filter_uncontacted_runners_cutoff_requires_contact_after_cutoff() {
-        let now = Utc::now();
-        let cutoff = now - chrono::Duration::seconds(60);
-        let before = (cutoff - chrono::Duration::seconds(1)).to_rfc3339();
-        let equal = cutoff.to_rfc3339();
-        let after = (cutoff + chrono::Duration::seconds(1)).to_rfc3339();
+        let now = now();
+        let cutoff = subtract_seconds(now, 60);
+        let before = format_rfc3339(subtract_seconds(cutoff, 1));
+        let equal = format_rfc3339(cutoff);
+        let after = format_rfc3339(add_seconds(cutoff, 1));
 
         let runners = vec![
             test_runner(1, &[("online", Some(&before)), ("offline", Some(&equal))]),
