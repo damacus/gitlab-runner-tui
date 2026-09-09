@@ -4,7 +4,7 @@ rust = { version = "1.98.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-zigbuild" = "0.23.3"
 "aqua:rhysd/actionlint" = "1.7.12"
 lefthook = "2.1.12"
-zig = "0.15.1"
+zig = "0.15.2"
 
 [tasks.build]
 description = "Build the debug binary"
