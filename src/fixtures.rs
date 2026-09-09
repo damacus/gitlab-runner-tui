@@ -2,13 +2,12 @@ use crate::models::{
     manager::RunnerManager,
     runner::{Runner, RunnerGroup},
 };
-use chrono::{Duration, SecondsFormat, Utc};
+use crate::time::{format_rfc3339_millis, now, subtract_minutes};
 
 pub fn demo_runners() -> Vec<Runner> {
-    let now = Utc::now();
-    let contacted_minutes_ago = |minutes| {
-        Some((now - Duration::minutes(minutes)).to_rfc3339_opts(SecondsFormat::Millis, true))
-    };
+    let now = now();
+    let contacted_minutes_ago =
+        |minutes| Some(format_rfc3339_millis(subtract_minutes(now, minutes)));
 
     vec![
         // --- ONLINE runners (6) ---

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use etcetera::{choose_base_strategy, BaseStrategy};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -10,6 +11,33 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const DEFAULT_MAX_ENRICHMENT_REQUESTS: usize = 10;
 pub const MIN_MAX_ENRICHMENT_REQUESTS: usize = 2;
 pub const MAX_MAX_ENRICHMENT_REQUESTS: usize = 64;
+
+const CONFIG_DIRECTORY_NAME: &str = "gitlab-runner-tui";
+const CONFIG_FILE_NAME: &str = "config.toml";
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigPlatform {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+#[cfg(test)]
+fn resolve_config_path(platform: ConfigPlatform, home_dir: &Path, config_dir: &Path) -> PathBuf {
+    let config_dir = match platform {
+        ConfigPlatform::MacOs => home_dir.join("Library").join("Application Support"),
+        ConfigPlatform::Linux | ConfigPlatform::Windows => config_dir.to_path_buf(),
+    };
+
+    config_path(config_dir)
+}
+
+fn config_path(config_dir: PathBuf) -> PathBuf {
+    config_dir
+        .join(CONFIG_DIRECTORY_NAME)
+        .join(CONFIG_FILE_NAME)
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -121,9 +149,18 @@ impl AppConfig {
     }
 
     pub fn canonical_path() -> Result<PathBuf> {
-        dirs::config_dir()
-            .map(|config_dir| config_dir.join("gitlab-runner-tui").join("config.toml"))
-            .context("Could not determine a config directory for gitlab-runner-tui")
+        let base_strategy = choose_base_strategy()
+            .context("Could not determine a config directory for gitlab-runner-tui")?;
+
+        #[cfg(target_os = "macos")]
+        let config_dir = base_strategy
+            .home_dir()
+            .join("Library")
+            .join("Application Support");
+        #[cfg(not(target_os = "macos"))]
+        let config_dir = base_strategy.config_dir();
+
+        Ok(config_path(config_dir))
     }
 
     pub fn save_to_canonical_path(&self) -> Result<PathBuf> {
@@ -762,13 +799,39 @@ mod tests {
     }
 
     #[test]
-    fn test_canonical_path_uses_gitlab_runner_tui_dir() {
-        if let Some(config_dir) = dirs::config_dir() {
-            assert_eq!(
-                AppConfig::canonical_path().unwrap(),
-                config_dir.join("gitlab-runner-tui").join("config.toml")
-            );
-        }
+    fn resolves_linux_xdg_config_path() {
+        assert_eq!(
+            resolve_config_path(
+                ConfigPlatform::Linux,
+                Path::new("/home/alice"),
+                Path::new("/home/alice/.config"),
+            ),
+            Path::new("/home/alice/.config/gitlab-runner-tui/config.toml"),
+        );
+    }
+
+    #[test]
+    fn resolves_windows_roaming_application_data_path() {
+        assert_eq!(
+            resolve_config_path(
+                ConfigPlatform::Windows,
+                Path::new("C:/Users/Alice"),
+                Path::new("C:/Users/Alice/AppData/Roaming"),
+            ),
+            Path::new("C:/Users/Alice/AppData/Roaming/gitlab-runner-tui/config.toml"),
+        );
+    }
+
+    #[test]
+    fn resolves_macos_application_support_path() {
+        assert_eq!(
+            resolve_config_path(
+                ConfigPlatform::MacOs,
+                Path::new("/Users/alice"),
+                Path::new("/Users/alice/.config"),
+            ),
+            Path::new("/Users/alice/Library/Application Support/gitlab-runner-tui/config.toml"),
+        );
     }
 
     #[test]

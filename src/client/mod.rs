@@ -1,6 +1,7 @@
 use crate::config::{RunnerTarget, RunnerTargetKind};
 use crate::models::manager::RunnerManager;
 use crate::models::runner::{Runner, RunnerFilters};
+use crate::time::{now, parse_rfc2822};
 use anyhow::{Context, Result};
 use reqwest::{
     header::{HeaderMap, HeaderValue, LINK, RETRY_AFTER},
@@ -307,16 +308,18 @@ fn is_retryable_status(status: StatusCode) -> bool {
 }
 
 fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    retry_after_delay_at(headers, now())
+}
+
+fn retry_after_delay_at(headers: &HeaderMap, current_time: jiff::Timestamp) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds).min(GET_BACKOFF_CAP));
     }
 
-    let retry_at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
-    let delay = retry_at.signed_duration_since(chrono::Utc::now());
+    let retry_at = parse_rfc2822(value).ok()?;
     Some(
-        delay
-            .to_std()
+        Duration::try_from(retry_at.duration_since(current_time))
             .unwrap_or(Duration::ZERO)
             .min(GET_BACKOFF_CAP),
     )
@@ -735,9 +738,39 @@ mod tests {
         );
         assert_eq!(retry_after_delay(&headers), Some(Duration::ZERO));
 
-        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc2822();
+        let future = crate::time::format_rfc2822(crate::time::add_seconds(now(), 3_600)).unwrap();
         headers.insert(RETRY_AFTER, HeaderValue::try_from(future.as_str()).unwrap());
         assert_eq!(retry_after_delay(&headers), Some(GET_BACKOFF_CAP));
+    }
+
+    #[test]
+    fn retry_after_http_date_preserves_subsecond_remaining_delay() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:01 GMT"),
+        );
+        let current_time = crate::time::parse_rfc3339("2015-10-21T07:28:00.250Z").unwrap();
+
+        assert_eq!(
+            retry_after_delay_at(&headers, current_time),
+            Some(Duration::from_millis(750))
+        );
+    }
+
+    #[test]
+    fn retry_after_leap_second_does_not_retry_early() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Sat, 31 Dec 2016 23:59:60 +0000"),
+        );
+        let current_time = crate::time::parse_rfc3339("2016-12-31T23:59:59.500Z").unwrap();
+
+        assert_eq!(
+            retry_after_delay_at(&headers, current_time),
+            Some(Duration::from_millis(500))
+        );
     }
 
     #[tokio::test]
