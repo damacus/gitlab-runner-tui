@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.19...v0.1.20) (2026-09-11)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate dirs to v7 ([#230](https://github.com/damacus/gitlab-runner-tui/issues/230)) ([bac35f1](https://github.com/damacus/gitlab-runner-tui/commit/bac35f1d697f5eab58ebe859e340ffe8ba36822d))
+* **refactor:** replace stale dependencies ([#223](https://github.com/damacus/gitlab-runner-tui/issues/223)) ([2e67b7c](https://github.com/damacus/gitlab-runner-tui/commit/2e67b7c9d1729d4390be1669823ef8ac4ffac31f))
+
 ## [0.1.19](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.18...v0.1.19) (2026-08-20)
 
 
