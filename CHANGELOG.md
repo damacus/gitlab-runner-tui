@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.20...v0.1.21) (2026-09-25)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate termina to 0.4 ([#237](https://github.com/damacus/gitlab-runner-tui/issues/237)) ([acb2992](https://github.com/damacus/gitlab-runner-tui/commit/acb2992c759a3fcc71d16a730f4d2bf423a836c9))
+
 ## [0.1.20](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.19...v0.1.20) (2026-09-24)
 
 
