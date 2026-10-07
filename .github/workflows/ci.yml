@@ -30,7 +30,7 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
         with:
-          version: 2026.10.3
+          version: 2026.10.4
           install_args: rust
 
       - name: Cache cargo registry
@@ -67,7 +67,7 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
         with:
-          version: 2026.10.3
+          version: 2026.10.4
           install_args: rust
 
       - name: Check formatting
@@ -89,7 +89,7 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5
         with:
-          version: 2026.10.3
+          version: 2026.10.4
           install_args: rust
 
       - name: Build debug
