@@ -36,10 +36,17 @@ archives:
 
 | Operating system | Architecture | Archive |
 | --- | --- | --- |
-| Linux | x86-64 | `gitlab-runner-tui-linux-amd64.tar.gz` |
-| Linux | ARM64 | `gitlab-runner-tui-linux-arm64.tar.gz` |
+| Linux (glibc >= 2.31) | x86-64 | `gitlab-runner-tui-linux-amd64.tar.gz` |
+| Linux (glibc >= 2.31) | ARM64 | `gitlab-runner-tui-linux-arm64.tar.gz` |
+| Linux (any libc, static) | x86-64 | `gitlab-runner-tui-linux-amd64-musl.tar.gz` |
+| Linux (any libc, static) | ARM64 | `gitlab-runner-tui-linux-arm64-musl.tar.gz` |
 | macOS | Intel | `gitlab-runner-tui-macos-amd64.tar.gz` |
 | macOS | Apple silicon | `gitlab-runner-tui-macos-arm64.tar.gz` |
+
+The GNU Linux archives require glibc 2.31 or newer (Debian 11, Ubuntu 20.04, or
+later). On older distributions, use a `-musl` archive: it is fully static and
+has no libc requirement. The verified kernel floor is Linux 4.18. See
+[Platform support](docs/platform-support.md) for the full baselines.
 
 Download the matching archive and `checksums-sha256.txt`. Then extract the binary and put it on
 your `PATH`. For example, on Linux x86-64:
@@ -317,7 +324,21 @@ the Docker-managed environment.
 
 Each release also publishes `ghcr.io/damacus/gitlab-runner-tui-ci`. That image includes `sh`,
 `bash`, `grep`, and `jq`, and has no application entrypoint so GitLab Runner can execute job
-scripts normally.
+scripts normally. Use it as the job image directly:
+
+```yaml
+runner-inventory:
+  image: ghcr.io/damacus/gitlab-runner-tui-ci:0.1.21
+  variables:
+    GITLAB_HOST: https://gitlab.example.com
+    # Set GITLAB_TOKEN as a masked CI/CD variable.
+  script:
+    - gitlab-runner-tui fetch --summary | jq '.runners | length'
+```
+
+The main image cannot run GitLab jobs: it is built `FROM scratch` with the application as its
+entrypoint and has no shell. See [Platform support](docs/platform-support.md) for image
+requirements and the verified Linux kernel baseline.
 
 ## Troubleshooting
 
