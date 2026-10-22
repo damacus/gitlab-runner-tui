@@ -73,6 +73,10 @@ impl GitLabClient {
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            // A redirect must never forward the custom GitLab credential header.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                attempt.error("GitLab API redirects are not allowed; configure the canonical host")
+            }))
             .default_headers(headers)
             .build()
             .context("Failed to build reqwest client")?;
@@ -864,6 +868,34 @@ mod tests {
             .unwrap_err();
         assert!(join_error.is_cancelled());
         rate_limited.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn redirects_do_not_forward_gitlab_credentials() {
+        let mut destination = Server::new_async().await;
+        let leaked_request = destination
+            .mock("GET", "/api/v4/user")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(200)
+            .with_body(r#"{"id":1,"username":"alice"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let mut source = Server::new_async().await;
+        let redirect = source
+            .mock("GET", "/api/v4/user")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(302)
+            .with_header("location", &format!("{}/api/v4/user", destination.url()))
+            .create_async()
+            .await;
+        let client = GitLabClient::new(source.url(), "test-token".to_string()).unwrap();
+
+        let result = client.validate_token().await;
+
+        leaked_request.assert_async().await;
+        redirect.assert_async().await;
+        assert!(result.is_err(), "a redirect must not validate the token");
     }
 
     #[tokio::test]

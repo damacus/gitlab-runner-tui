@@ -7,3 +7,11 @@ target/
 *.md
 TODO.md
 app_spec.txt
+.claude/
+.jules/
+.serena/
+.superpowers/
+.gemini/
+logs/
+output/
+tmp/
