@@ -22,7 +22,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - name: Monitor runner activity
+      - &harden-rust-runner
+        name: Monitor runner activity
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: ${{ runner.os == 'Linux' && 'block' || 'audit' }}
@@ -72,18 +73,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Monitor runner activity
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
-        with:
-          egress-policy: block
-          allowed-endpoints: >-
-            github.com:443
-            index.crates.io:443
-            mise-versions.jdx.dev:443
-            release-assets.githubusercontent.com:443
-            static.crates.io:443
-            static.rust-lang.org:443
-            tuf-repo-cdn.sigstore.dev:443
+      - *harden-rust-runner
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -107,18 +97,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Monitor runner activity
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
-        with:
-          egress-policy: block
-          allowed-endpoints: >-
-            github.com:443
-            index.crates.io:443
-            mise-versions.jdx.dev:443
-            release-assets.githubusercontent.com:443
-            static.crates.io:443
-            static.rust-lang.org:443
-            tuf-repo-cdn.sigstore.dev:443
+      - *harden-rust-runner
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
