@@ -4,10 +4,10 @@ WORKDIR /app
 RUN apk add --no-cache musl-dev
 
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --locked --release && rm -rf src
 
 COPY src/ src/
-RUN touch src/main.rs && cargo build --release && strip target/release/gitlab-runner-tui
+RUN touch src/main.rs && cargo build --locked --release && strip target/release/gitlab-runner-tui
 
 FROM alpine:3.24 AS ci
 RUN apk add --no-cache bash ca-certificates grep jq

@@ -7,4 +7,7 @@ logs/
 tmp/
 output/
 .gemini/
+.jules/
+.serena/
+.kitchen/
 *.pending-snap

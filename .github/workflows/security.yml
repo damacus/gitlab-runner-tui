@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       full_history:
@@ -17,6 +19,7 @@ permissions:
   contents: read
 
 env:
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
   GITLEAKS_VERSION: 8.30.1
   GITLEAKS_LINUX_X64_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 
@@ -25,6 +28,15 @@ jobs:
     name: Dependency advisories
     runs-on: ubuntu-latest
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            index.crates.io:443
+            static.crates.io:443
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -42,6 +54,14 @@ jobs:
     name: Current tree and new commit secrets
     runs-on: ubuntu-latest
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            release-assets.githubusercontent.com:443
+
       - name: Checkout complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -77,10 +97,15 @@ jobs:
           gitleaks git --log-opts="$MERGE_BASE..$HEAD_SHA" --redact=100 --no-banner --no-color .
 
   full-history-secret-audit:
-    name: Full history (blocked by issue #155)
+    name: "Full history (blocked by issue #155)"
     if: github.event_name == 'workflow_dispatch' && inputs.full_history
     runs-on: ubuntu-latest
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Checkout complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -98,3 +123,28 @@ jobs:
 
       - name: Scan all reachable history
         run: gitleaks git --log-opts=--all --redact=100 --no-banner --no-color .
+
+  workflow-policy:
+    name: Workflow security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            mise-versions.jdx.dev:443
+            release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5
+        with:
+          version: 2026.10.17
+          install_args: aqua:rhysd/actionlint aqua:zizmorcore/zizmor
+      - run: mise run workflow:lint
+      - run: mise run workflow:security

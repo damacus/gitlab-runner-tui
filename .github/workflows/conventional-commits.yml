@@ -18,14 +18,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
+    timeout-minutes: 5
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >-
+            api.github.com:443
+            files.pythonhosted.org:443
+            pypi.org:443
+            tmaproduction.blob.core.windows.net:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+
       - uses: commit-check/commit-check-action@c6f5d0d50051a1249a381847322c5d85e15a6e06 # v2.18.1
         with:
           message: false
           branch: false
           pr-title: true
           job-summary: true
-          pr-comments: true
+          pr-comments: false
         env:
           CCHK_ALLOW_COMMIT_TYPES: "build,chore,ci,docs,feat,fix,perf,refactor,revert,security,style,test"
