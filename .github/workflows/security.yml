@@ -31,7 +31,11 @@ jobs:
       - name: Monitor runner activity
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            index.crates.io:443
+            static.crates.io:443
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -53,7 +57,10 @@ jobs:
       - name: Monitor runner activity
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            release-assets.githubusercontent.com:443
 
       - name: Checkout complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -125,7 +132,11 @@ jobs:
       - name: Monitor runner activity
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >-
+            github.com:443
+            mise-versions.jdx.dev:443
+            release-assets.githubusercontent.com:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -136,4 +147,3 @@ jobs:
           install_args: aqua:rhysd/actionlint aqua:zizmorcore/zizmor
       - run: mise run workflow:lint
       - run: mise run workflow:security
-      - run: mise run test:release-gate

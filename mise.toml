@@ -95,14 +95,6 @@ run = "actionlint"
 description = "Check Actions for unsafe permissions, inputs and dependencies"
 run = "zizmor --offline --no-progress .github"
 
-[tasks."security:secrets"]
-description = "Scan the working tree for secrets without printing their values"
-run = "python3 scripts/scan-secrets.py"
-
-[tasks."test:release-gate"]
-description = "Test the release gate success and failure boundaries without network access"
-run = "python3 tests/test_release_gate.py"
-
 [tasks."security:history"]
 description = "Scan all reachable Git history with fully redacted findings"
 run = "gitleaks git --log-opts=--all --redact=100 --no-banner --no-color ."
@@ -121,4 +113,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "workflow:security", "test:release-gate", "security:secrets", "diff:check"]
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "workflow:security", "diff:check"]

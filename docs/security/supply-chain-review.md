@@ -38,9 +38,8 @@ sole author does not provide independent review.
   their removal or replacement is deferred. The tag is rechecked before upload.
 - Renovate changes need review and have a seven-day release-age delay. This
   reduces exposure to newly compromised versions; it is not proof of safety.
-- Actionlint and offline zizmor check workflows.
-  Release gate tests exercise success, wrong source, failed checks, pending
-  checks, API errors and invalid tags without contacting GitHub.
+- Actionlint and offline zizmor check workflows. CI runs gitleaks directly;
+  no Python wrapper or Python test suite is part of this repository.
 - Daily dependency and current-tree secret checks supplement PR checks.
 - Obsolete .claude and .jules tracked files and local .gemini, .serena and
   .superpowers state were removed. Generic AGENTS.md, .github/skills and design
@@ -50,15 +49,32 @@ sole author does not provide independent review.
 
 [Harden-Runner](https://github.com/step-security/harden-runner) is useful here.
 The public repository and GitHub-hosted runners qualify for the free Community
-tier. The pinned action is first in every job and initially uses audit mode.
+tier. The pinned action is first in every job. Audited Linux CI, secret,
+advisory, workflow-lint and PR-title jobs now use block mode with per-job
+allowlists; macOS, Windows, release and manual history jobs remain in audit mode.
 It records runner network activity and can surface unexpected destinations.
 This sends security telemetry to StepSecurity. Windows and macOS support audit
 mode; Linux also supports endpoint blocking.
 
-Audit mode is not an outbound allowlist. After successful cold and warm runs,
-review telemetry separately for builds, dependency scans, release uploads and
-container publishing, then trial Linux block mode with observed destinations.
-Do not guess the Cargo, GitHub, tool download and registry endpoint list.
+The policies come from CI run 39765402589, Security run 39765402754 and
+PR-title run 39767094701. The agent logs identify the destination, port and
+calling process. GitHub Actions cache/result storage and StepSecurity control
+traffic already have built-in agent allowances; no broad new wildcard or
+unexplained domain was added. All explicit entries use HTTPS port 443.
+
+CI permits GitHub checkout and release assets, mise version lookup, the Rust
+distribution server, and the Cargo index and package CDN. Secret scans permit
+only GitHub and its release asset server. Advisory checks permit GitHub and
+the Cargo index and CDN. Workflow lint permits GitHub, release assets and mise
+version lookup. The existing PR-title action installs Python dependencies and
+verifies GitHub attestations; its audited destinations are PyPI, its package
+CDN, the GitHub API and the specific Sigstore and attestation storage hosts.
+That third-party implementation does not add Python files to this repository.
+
+Release publication and manual full-history scans need their own audits before
+blocking is enabled. One observed run cannot establish every future download
+or publishing path; new blocked destinations require investigation, not an
+automatic wider allowlist.
 
 The action itself adds privileged code and a vendor dependency. Pinning its
 wrapper does not pin every service or runtime component it fetches. It cannot
