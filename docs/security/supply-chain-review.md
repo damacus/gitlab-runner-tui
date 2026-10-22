@@ -71,6 +71,11 @@ verifies GitHub attestations; its audited destinations are PyPI, its package
 CDN, the GitHub API and the specific Sigstore and attestation storage hosts.
 That third-party implementation does not add Python files to this repository.
 
+The first enforced run, 39767872665, blocked
+`tuf-repo-cdn.sigstore.dev` during mise download verification. The cached audit
+had not exercised this metadata refresh. This exact HTTPS host was added to
+the mise-installing jobs; signature verification remains enabled.
+
 Release publication and manual full-history scans need their own audits before
 blocking is enabled. One observed run cannot establish every future download
 or publishing path; new blocked destinations require investigation, not an
