@@ -13,12 +13,12 @@ required new-change checks from the full-history cleanup tracked by issue #155.
 
 ## Dependency advisories
 
-The `Dependency advisories` job uses the official cargo-deny action pinned to
-commit `3c6349835b2b7b196a839186cb8b78e02f7b5f25` (`v2.1.1`). That action's
-digest-pinned image embeds cargo-deny 0.20.2. It runs:
+The `Dependency advisories` job installs the Rust compiler and cargo-deny
+through the pinned mise setup action. Their versions come from `mise.toml`,
+including cargo-deny 0.20.2. CI and local development both run:
 
 ```fish
-cargo deny --all-features check advisories
+mise run security
 ```
 
 `deny.toml` checks the RustSec advisory database with all Cargo features
@@ -50,6 +50,11 @@ verifying the archive's pinned SHA-256 digest. It performs two required scans:
 Both scans use 100 percent redaction. No credential values should appear in CI
 logs or reports.
 
+CI calls `mise run security:secrets` for the committed tree and
+`mise run security:changes` for the introduced commits. The commands and flags
+are defined once in `mise.toml`; see [the task reference](../build-tasks.md).
+The gitleaks archive download and pinned SHA-256 verification are retained.
+
 `.gitleaksignore` contains one exact commit/path/rule/line fingerprint for the
 non-secret UI rendering sentinel that was added and later replaced on this
 feature branch. It is not a regex or path-wide exception, and it does not match
@@ -65,7 +70,7 @@ They do not assert that old repository history is clean.
 The manual `Full history (blocked by issue #155)` job runs:
 
 ```fish
-gitleaks git --log-opts=--all --redact=100 --no-banner --no-color .
+mise run security:history
 ```
 
 It is opt-in through `workflow_dispatch` and is not a required green check.

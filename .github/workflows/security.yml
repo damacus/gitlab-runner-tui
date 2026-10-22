@@ -35,20 +35,25 @@ jobs:
           allowed-endpoints: >-
             github.com:443
             index.crates.io:443
+            mise-versions.jdx.dev:443
+            release-assets.githubusercontent.com:443
             static.crates.io:443
+            static.rust-lang.org:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Check RustSec advisories
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1, cargo-deny 0.20.2
+      - name: Install advisory-check tools
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5
         with:
-          command: check
-          arguments: --all-features
-          command-arguments: advisories
-          log-level: warn
+          version: 2026.10.17
+          install_args: rust cargo:cargo-deny
+
+      - name: Check RustSec advisories
+        run: mise run security
 
   secret-changes:
     name: Current tree and new commit secrets
@@ -61,6 +66,7 @@ jobs:
           allowed-endpoints: >-
             github.com:443
             release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
 
       - name: Checkout complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -78,10 +84,14 @@ jobs:
           sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
+      - name: Install mise task runner
+        uses: &mise-runner jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5
+        with: &mise-runner-options
+          version: 2026.10.17
+          install: false
+
       - name: Scan current tracked tree
-        run: |
-          git archive --format=tar HEAD --output=/tmp/current-tree.tar
-          gitleaks dir --max-archive-depth=1 --redact=100 --no-banner --no-color /tmp/current-tree.tar
+        run: mise run security:secrets
 
       - name: Scan commits introduced by this change
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -89,12 +99,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
-            BASE_SHA="origin/$DEFAULT_BRANCH"
-          fi
-          MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
-          gitleaks git --log-opts="$MERGE_BASE..$HEAD_SHA" --redact=100 --no-banner --no-color .
+        run: mise run security:changes
 
   full-history-secret-audit:
     name: "Full history (blocked by issue #155)"
@@ -121,8 +126,12 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
 
+      - name: Install mise task runner
+        uses: *mise-runner
+        with: *mise-runner-options
+
       - name: Scan all reachable history
-        run: gitleaks git --log-opts=--all --redact=100 --no-banner --no-color .
+        run: mise run security:history
 
   workflow-policy:
     name: Workflow security
