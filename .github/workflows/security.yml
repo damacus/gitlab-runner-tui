@@ -22,6 +22,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
 jobs:
   dependency-advisories:
     name: Dependency advisories
@@ -85,7 +88,7 @@ jobs:
           gitleaks git --log-opts="$MERGE_BASE..$HEAD_SHA" --redact=100 --no-banner --no-color .
 
   full-history-secret-audit:
-    name: Full history (blocked by issue #155)
+    name: "Full history (blocked by issue #155)"
     if: github.event_name == 'workflow_dispatch' && inputs.full_history
     runs-on: ubuntu-latest
     timeout-minutes: 15

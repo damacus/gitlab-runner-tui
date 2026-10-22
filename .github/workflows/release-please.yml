@@ -193,7 +193,7 @@ jobs:
     needs: [release-please, verify-release]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
