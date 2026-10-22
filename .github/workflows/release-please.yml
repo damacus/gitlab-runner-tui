@@ -6,6 +6,10 @@ name: release
     branches:
       - main
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -24,6 +28,11 @@ jobs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
@@ -31,9 +40,34 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  verify-release:
+    name: Verify release source and checks
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify immutable source and successful main checks
+        run: bash scripts/verify-release.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: release-please
+    needs: [release-please, verify-release]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ${{ matrix.os }}
     permissions:
@@ -75,10 +109,15 @@ jobs:
             artifact_name: gitlab-runner-tui-macos-arm64
 
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install mise tools
@@ -92,24 +131,20 @@ jobs:
         if: ${{ !matrix.zig_target }}
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           targets: ${{ matrix.target }}
 
       - name: Install Rust target
         if: ${{ matrix.zig_target }}
         run: mise run toolchain:targets
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          key: ${{ matrix.target }}
-
       - name: Build with cargo zigbuild
         if: ${{ matrix.zig_target }}
-        run: cargo zigbuild --release --target ${{ matrix.zig_target }}
+        run: cargo zigbuild --locked --release --target ${{ matrix.zig_target }}
 
       - name: Build with cargo
         if: ${{ !matrix.zig_target }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
         run: |
@@ -123,6 +158,7 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: "*.tar.gz"
+          if-no-files-found: error
 
   smoke-binaries:
     name: Smoke test ${{ matrix.artifact_name }}
@@ -214,7 +250,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: [release-please, build-binaries, smoke-binaries]
+    needs: [release-please, verify-release, build-binaries, smoke-binaries]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -223,9 +259,15 @@ jobs:
       id-token: write
 
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download all artifacts
@@ -233,6 +275,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          pattern: gitlab-runner-tui-*
 
       - name: Generate checksums
         run: |
@@ -245,8 +288,16 @@ jobs:
         with:
           subject-path: artifacts/*.tar.gz
 
+      - name: Recheck release tag source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
+
       - name: Upload release assets
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        # Replacing this pinned action is deferred from the security-only PR.
+        # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # zizmor: ignore[superfluous-actions]
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
@@ -255,7 +306,7 @@ jobs:
 
   docker:
     name: Build and push containers
-    needs: release-please
+    needs: [release-please, verify-release]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -263,10 +314,15 @@ jobs:
       packages: write
 
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up QEMU
@@ -374,23 +430,31 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    needs: release-please
+    needs: [release-please, verify-release]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
+      - name: Monitor runner activity
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.99.1
 
       - name: Publish to crates.io
-        run: cargo publish
+        # Trusted publishing is tracked in issue #308.
+        run: cargo publish --locked # zizmor: ignore[use-trusted-publishing]
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

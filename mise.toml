@@ -1,14 +1,16 @@
 [tools]
 rust = { version = "1.99.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
-"cargo:cargo-zigbuild" = "0.23.4"
+"cargo:cargo-zigbuild" = "0.24.0"
 "aqua:rhysd/actionlint" = "1.7.12"
-lefthook = "latest"
-zig = "latest"
+"aqua:zizmorcore/zizmor" = "1.31.0"
+gitleaks = "8.30.1"
+lefthook = "2.1.12"
+zig = "0.15.2"
 
 [tasks.build]
 description = "Build the debug binary"
-run = "cargo build --verbose"
+run = "cargo build --locked --verbose"
 
 [tasks.dev]
 description = "Run the application with a debug build"
@@ -16,28 +18,28 @@ run = "cargo run"
 
 [tasks."build:release"]
 description = "Build the release binary"
-run = "cargo build --release --verbose"
+run = "cargo build --locked --release --verbose"
 
 [tasks."build:cross"]
 description = "Cross-compile a release binary; pass --target <triple>"
-run = "cargo zigbuild --release"
+run = "cargo zigbuild --locked --release"
 
 [tasks."build:musl"]
 description = "Build a Linux x86_64 musl release binary"
-run = "cargo build --release --target x86_64-unknown-linux-musl"
+run = "cargo build --locked --release --target x86_64-unknown-linux-musl"
 
 [tasks."build:musl-static"]
 description = "Build a static Linux x86_64 musl release binary"
 env = { RUSTFLAGS = "-C target-feature=+crt-static" }
-run = "cargo zigbuild --release --target x86_64-unknown-linux-musl"
+run = "cargo zigbuild --locked --release --target x86_64-unknown-linux-musl"
 
 [tasks.test]
 description = "Run the full test suite"
-run = "cargo test --all-features --verbose"
+run = "cargo test --locked --all-features --verbose"
 
 [tasks."test:nocapture"]
 description = "Run the full test suite and show test output"
-run = "cargo test --all-features -- --nocapture"
+run = "cargo test --locked --all-features -- --nocapture"
 
 [tasks.fmt]
 description = "Check Rust formatting"
@@ -49,7 +51,7 @@ run = "cargo fmt"
 
 [tasks.lint]
 description = "Run Clippy with CI settings"
-run = "cargo clippy --all-targets --all-features -- -D warnings"
+run = "cargo clippy --locked --all-targets --all-features -- -D warnings"
 
 [tasks.security]
 description = "Check dependencies for RustSec advisories"
@@ -89,6 +91,18 @@ docker run --rm gitlab-runner-tui-ci:local sh -c 'command -v gitlab-runner-tui &
 description = "Lint GitHub Actions workflows"
 run = "actionlint"
 
+[tasks."workflow:security"]
+description = "Check Actions for unsafe permissions, inputs and dependencies"
+run = "zizmor --offline --no-progress .github"
+
+[tasks."security:history"]
+description = "Scan all reachable Git history with fully redacted findings"
+run = "gitleaks git --log-opts=--all --redact=100 --no-banner --no-color ."
+
+[tasks."security:main-history"]
+description = "Scan the fetched main branch history with fully redacted findings"
+run = "gitleaks git --log-opts=origin/main --redact=100 --no-banner --no-color ."
+
 [tasks."diff:check"]
 description = "Check the working tree for whitespace errors"
 run = "git diff --check"
@@ -99,4 +113,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "diff:check"]
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "workflow:security", "diff:check"]
