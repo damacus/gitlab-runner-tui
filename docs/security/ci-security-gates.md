@@ -1,5 +1,11 @@
 # CI security gates
 
+The [October supply chain review](supply-chain-review.md) records the current
+controls, build resource assessment and outstanding release risks. Security
+also runs daily, and `Workflow security` runs actionlint, zizmor and the release
+gate regression tests. The full-history scan remains manual: issue #155 was
+closed, but this review still reproduced the historical credential findings.
+
 The `Security` workflow prevents newly introduced Rust dependency advisories
 and secrets from entering maintained branches. It deliberately separates
 required new-change checks from the full-history cleanup tracked by issue #155.

@@ -1,0 +1,20 @@
+name: Install verified gitleaks
+description: Install the pinned upstream archive after verifying its SHA-256 digest
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      # The only PATH entry is created by mktemp under the runner-owned directory.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+        install_dir=$(mktemp -d "$RUNNER_TEMP/gitleaks.XXXXXX")
+        curl --fail --location --silent --show-error \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+          --output "$install_dir/gitleaks.tar.gz"
+        echo "${GITLEAKS_SHA256}  $install_dir/gitleaks.tar.gz" | sha256sum --check
+        tar -xzf "$install_dir/gitleaks.tar.gz" -C "$install_dir" gitleaks
+        chmod 0755 "$install_dir/gitleaks"
+        echo "$install_dir" >> "$GITHUB_PATH"

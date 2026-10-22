@@ -31,11 +31,13 @@ fn auth_status(
 
 #[test]
 fn test_help_output_does_not_leak_token() {
-    let output = Command::new("cargo")
-        .args(["run", "--", "--help"])
+    let output = Command::new(env!("CARGO_BIN_EXE_gitlab-runner-tui"))
+        .arg("--help")
         .env("GITLAB_TOKEN", "sensitive-token-value")
         .output()
         .expect("failed to execute process");
+
+    assert!(output.status.success(), "--help must succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 

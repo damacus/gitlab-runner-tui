@@ -6,8 +6,9 @@
   ],
   "packageRules": [
     {
-      "matchManagers": ["github-actions", "cargo"],
-      "automerge": true
+      "matchPackageNames": ["/.*/"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days"
     }
   ]
 }

@@ -3,41 +3,43 @@ rust = { version = "1.99.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-zigbuild" = "0.23.4"
 "aqua:rhysd/actionlint" = "1.7.12"
+"aqua:zizmorcore/zizmor" = "1.30.1"
+gitleaks = "8.30.1"
 lefthook = "2.1.12"
 zig = "0.15.2"
 
 [tasks.build]
 description = "Build the debug binary"
-run = "cargo build --verbose"
+run = "cargo build --locked"
 
 [tasks.dev]
 description = "Run the application with a debug build"
-run = "cargo run"
+run = "cargo run --locked"
 
 [tasks."build:release"]
 description = "Build the release binary"
-run = "cargo build --release --verbose"
+run = "cargo build --locked --release"
 
 [tasks."build:cross"]
 description = "Cross-compile a release binary; pass --target <triple>"
-run = "cargo zigbuild --release"
+run = "cargo zigbuild --locked --release"
 
 [tasks."build:musl"]
 description = "Build a Linux x86_64 musl release binary"
-run = "cargo build --release --target x86_64-unknown-linux-musl"
+run = "cargo build --locked --release --target x86_64-unknown-linux-musl"
 
 [tasks."build:musl-static"]
 description = "Build a static Linux x86_64 musl release binary"
 env = { RUSTFLAGS = "-C target-feature=+crt-static" }
-run = "cargo zigbuild --release --target x86_64-unknown-linux-musl"
+run = "cargo zigbuild --locked --release --target x86_64-unknown-linux-musl"
 
 [tasks.test]
 description = "Run the full test suite"
-run = "cargo test --all-features --verbose"
+run = "cargo test --locked --all-features"
 
 [tasks."test:nocapture"]
 description = "Run the full test suite and show test output"
-run = "cargo test --all-features -- --nocapture"
+run = "cargo test --locked --all-features -- --nocapture"
 
 [tasks.fmt]
 description = "Check Rust formatting"
@@ -49,7 +51,7 @@ run = "cargo fmt"
 
 [tasks.lint]
 description = "Run Clippy with CI settings"
-run = "cargo clippy --all-targets --all-features -- -D warnings"
+run = "cargo clippy --locked --all-targets --all-features -- -D warnings"
 
 [tasks.security]
 description = "Check dependencies for RustSec advisories"
@@ -66,6 +68,10 @@ run = "cargo tree"
 [tasks."toolchain:targets"]
 description = "Install the Rust targets used by local cross-build verification"
 run = "rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu"
+
+[tasks."toolchain:target"]
+description = "Install one Rust target passed as an argument"
+run = "rustup target add"
 
 [tasks."docker:build"]
 description = "Build the local container image"
@@ -89,6 +95,30 @@ docker run --rm gitlab-runner-tui-ci:local sh -c 'command -v gitlab-runner-tui &
 description = "Lint GitHub Actions workflows"
 run = "actionlint"
 
+[tasks."workflow:security"]
+description = "Check Actions for unsafe permissions, inputs and dependencies"
+run = "zizmor --offline --no-progress .github"
+
+[tasks."security:secrets"]
+description = "Scan the working tree for secrets without printing their values"
+run = "python3 scripts/scan-secrets.py"
+
+[tasks."test:release-gate"]
+description = "Test the release gate success and failure boundaries without network access"
+run = "python3 tests/test_release_gate.py"
+
+[tasks."security:history"]
+description = "Scan all reachable Git history with fully redacted findings"
+run = "gitleaks git --log-opts=--all --redact=100 --no-banner --no-color ."
+
+[tasks."security:main-history"]
+description = "Scan the fetched main branch history with fully redacted findings"
+run = "gitleaks git --log-opts=origin/main --redact=100 --no-banner --no-color ."
+
+[tasks.publish]
+description = "Publish the locked crate (requires registry credentials)"
+run = "cargo publish --locked"
+
 [tasks."diff:check"]
 description = "Check the working tree for whitespace errors"
 run = "git diff --check"
@@ -99,4 +129,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "diff:check"]
+run = ["mise run fmt", "mise run workflow:lint", "mise run workflow:security", "mise run test:release-gate", "mise run lint", "mise run test", "mise run build:release", "mise run security", "mise run security:secrets", "mise run diff:check"]
