@@ -29,8 +29,9 @@ sole author does not provide independent review.
   Configure the canonical GitLab host rather than a redirecting URL.
 - Cargo.lock updates rustls to 0.23.46, rustls-webpki to 0.103.16 and
   webpki-root-certs to 1.0.10, addressing the advisory check's TLS findings.
-- Builds and tests use locked resolution. Release Rust installation stays with
-  the existing Rust action, with its compiler version explicitly pinned.
+- Builds and tests use locked resolution. The follow-up build stack shares
+  security and release commands through mise tasks and reads the pinned Rust
+  compiler version from `mise.toml` in both local and CI runs.
 - Release preflight verifies that the version tag resolves to the triggering
   commit and waits for successful CI and Security push runs on that exact SHA.
   Source checkouts use the event SHA. Release builds restore no compiled Cargo
