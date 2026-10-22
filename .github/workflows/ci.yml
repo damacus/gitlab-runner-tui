@@ -6,16 +6,9 @@ on:
   pull_request:
     branches: [main, develop]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
   MISE_TASK_RUN_AUTO_INSTALL: "false"
-  CARGO_INCREMENTAL: "0"
-  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 permissions:
   contents: read
@@ -24,7 +17,6 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -46,11 +38,23 @@ jobs:
           version: 2026.10.17
           install_args: rust
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Cache cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          shared-key: ci-test-v1
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
         run: mise run test
@@ -58,7 +62,6 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     steps:
       - name: Monitor runner activity
@@ -80,19 +83,12 @@ jobs:
       - name: Check formatting
         run: mise run fmt
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: ci-lint-v1
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
       - name: Run clippy
         run: mise run lint
 
   build:
     name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
       - name: Monitor runner activity
@@ -111,11 +107,8 @@ jobs:
           version: 2026.10.17
           install_args: rust
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: ci-release-v1
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Build debug
+        run: mise run build
 
       - name: Build release
         run: mise run build:release

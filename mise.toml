@@ -10,15 +10,15 @@ zig = "0.15.2"
 
 [tasks.build]
 description = "Build the debug binary"
-run = "cargo build --locked"
+run = "cargo build --locked --verbose"
 
 [tasks.dev]
 description = "Run the application with a debug build"
-run = "cargo run --locked"
+run = "cargo run"
 
 [tasks."build:release"]
 description = "Build the release binary"
-run = "cargo build --locked --release"
+run = "cargo build --locked --release --verbose"
 
 [tasks."build:cross"]
 description = "Cross-compile a release binary; pass --target <triple>"
@@ -35,7 +35,7 @@ run = "cargo zigbuild --locked --release --target x86_64-unknown-linux-musl"
 
 [tasks.test]
 description = "Run the full test suite"
-run = "cargo test --locked --all-features"
+run = "cargo test --locked --all-features --verbose"
 
 [tasks."test:nocapture"]
 description = "Run the full test suite and show test output"
@@ -68,10 +68,6 @@ run = "cargo tree"
 [tasks."toolchain:targets"]
 description = "Install the Rust targets used by local cross-build verification"
 run = "rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu"
-
-[tasks."toolchain:target"]
-description = "Install one Rust target passed as an argument"
-run = "rustup target add"
 
 [tasks."docker:build"]
 description = "Build the local container image"
@@ -115,10 +111,6 @@ run = "gitleaks git --log-opts=--all --redact=100 --no-banner --no-color ."
 description = "Scan the fetched main branch history with fully redacted findings"
 run = "gitleaks git --log-opts=origin/main --redact=100 --no-banner --no-color ."
 
-[tasks.publish]
-description = "Publish the locked crate (requires registry credentials)"
-run = "cargo publish --locked"
-
 [tasks."diff:check"]
 description = "Check the working tree for whitespace errors"
 run = "git diff --check"
@@ -129,4 +121,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-run = ["mise run fmt", "mise run workflow:lint", "mise run workflow:security", "mise run test:release-gate", "mise run lint", "mise run test", "mise run build:release", "mise run security", "mise run security:secrets", "mise run diff:check"]
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "workflow:security", "test:release-gate", "security:secrets", "diff:check"]

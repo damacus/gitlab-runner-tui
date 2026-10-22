@@ -29,24 +29,19 @@ sole author does not provide independent review.
   Configure the canonical GitLab host rather than a redirecting URL.
 - Cargo.lock updates rustls to 0.23.46, rustls-webpki to 0.103.16 and
   webpki-root-certs to 1.0.10, addressing the advisory check's TLS findings.
-- Builds and tests use locked resolution. CI and release tools share the
-  repository's pinned Rust version through mise.
+- Builds and tests use locked resolution. Release Rust installation stays with
+  the existing Rust action, with its compiler version explicitly pinned.
 - Release preflight verifies that the version tag resolves to the triggering
   commit and waits for successful CI and Security push runs on that exact SHA.
   Source checkouts use the event SHA. Release builds restore no compiled Cargo
-  cache, and the asset upload job does not check out or compile source.
-- GitHub CLI replaces the third-party release asset upload action. The CLI
-  rechecks the tag before uploading and refuses to overwrite existing assets.
+  cache. The asset upload job retains its checkout and pinned upload action;
+  their removal or replacement is deferred. The tag is rechecked before upload.
 - Renovate changes need review and have a seven-day release-age delay. This
   reduces exposure to newly compromised versions; it is not proof of safety.
-- Actionlint and offline zizmor check workflows and the local composite action.
+- Actionlint and offline zizmor check workflows.
   Release gate tests exercise success, wrong source, failed checks, pending
   checks, API errors and invalid tags without contacting GitHub.
-- A small local composite action centralises checksum-verified gitleaks
-  installation. It avoids duplicate download logic and sudo. Its narrow PATH
-  exception is documented next to the runner-owned temporary directory write.
 - Daily dependency and current-tree secret checks supplement PR checks.
-- Job timeouts and cancellation of superseded CI runs bound wasted resources.
 - Obsolete .claude and .jules tracked files and local .gemini, .serena and
   .superpowers state were removed. Generic AGENTS.md, .github/skills and design
   records under docs remain useful. The two pre-existing stashes are preserved.
@@ -71,29 +66,20 @@ prevent an administrator from deleting the action, changing repository rules,
 or publishing through another path. Retained external audit records and strong
 maintainer authentication are separate controls.
 
-## Build resource assessment
+## Deferred housekeeping and build efficiency
 
-The existing setup repeated debug compilation in a separate Build job even
-though tests already compile the application. Only Test cached Rust output,
-with three caches whose keys omitted the Rust toolchain. The local check task
-started competing Cargo processes, and an integration test spawned cargo run.
+The owner narrowed this PR to security fixes and the requested agent-folder
+cleanup. Existing CI provisioning, cache layout, debug builds, test invocation,
+local check scheduling, artifact compression and retention are preserved.
+Removing the asset-upload checkout, replacing its pinned upload action and
+extracting shared scanner setup are separate changes.
+These optional changes are tracked in
+[issue #310](https://github.com/damacus/gitlab-runner-tui/issues/310).
 
-This pass removes the duplicate debug build, uses toolchain-aware dependency
-caches for each CI job, permits cache saves only on main pushes, disables CI
-incremental output and keeps line-table debug information rather than full
-debug information. Local incremental compilation remains available. The local
-check task runs serially and the integration test executes Cargo's built binary.
-
-These remove known duplicate work and limit CI disk use. No matched CPU, peak
-RSS, disk-use or end-to-end timing benchmark has established the optimal runner
-or job arrangement. Clean release builds deliberately trade cache speed for a
-smaller trust boundary. Do not call this configuration maximally efficient.
-
-The largest remaining waste is Docker compiling both architectures through
-QEMU, separately from downloadable releases, for runtime and CI images with
-separate caches. The owner deferred that redesign. Package already-tested musl
-binaries in both images, then smoke-test before registry publication. Keep this
-separate from the Linux compatibility work in PR #306.
+No matched CPU, peak RSS, disk-use or end-to-end timing benchmark has established
+the optimal runner or job arrangement. Build optimisations, including Docker
+compiling both architectures through QEMU separately from downloadable releases,
+are deferred. See issue #307 for container build and publication isolation.
 
 ## Remaining controls and limits
 
@@ -123,7 +109,6 @@ separate from the Linux compatibility work in PR #306.
    cargo-vet for reviewed dependency changes, and a pinned secret scanner for
    container layers. Add each when it has an owner and an actionable gate.
 
-Prefer existing small tools and short reviewed scripts. A custom action is
-justified for shared repository-specific behaviour such as the verified scanner
-installer. Reimplementing checkout, cryptographic signing or egress monitoring
-would add security-sensitive code without a clear benefit.
+No new composite action is needed to fix the identified security issues.
+Reimplementing checkout, cryptographic signing or egress monitoring would add
+security-sensitive code without a clear benefit.
