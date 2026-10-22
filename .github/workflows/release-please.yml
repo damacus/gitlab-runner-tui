@@ -42,14 +42,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # GNU builds pin the glibc floor (see docs/platform-support.md).
+          # cargo-zigbuild links against the requested glibc version, so the
+          # archive runs on Debian 11 / glibc 2.31 and newer.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            zig_target: x86_64-unknown-linux-gnu.2.31
             artifact_name: gitlab-runner-tui-linux-amd64
 
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            zig_target: aarch64-unknown-linux-gnu.2.31
             artifact_name: gitlab-runner-tui-linux-arm64
-            cross: true
+
+          # Static musl builds have no libc dependency at all.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            zig_target: x86_64-unknown-linux-musl
+            artifact_name: gitlab-runner-tui-linux-amd64-musl
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            zig_target: aarch64-unknown-linux-musl
+            artifact_name: gitlab-runner-tui-linux-arm64-musl
 
           - os: macos-latest
             target: x86_64-apple-darwin
@@ -66,25 +81,34 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
           persist-credentials: false
 
+      - name: Install mise tools
+        if: ${{ matrix.zig_target }}
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5
+        with:
+          version: 2026.10.17
+          install_args: rust zig cargo:cargo-zigbuild
+
       - name: Install Rust toolchain
+        if: ${{ !matrix.zig_target }}
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install Rust target
+        if: ${{ matrix.zig_target }}
+        run: mise run toolchain:targets
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+      - name: Build with cargo zigbuild
+        if: ${{ matrix.zig_target }}
+        run: cargo zigbuild --release --target ${{ matrix.zig_target }}
 
       - name: Build with cargo
+        if: ${{ !matrix.zig_target }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
@@ -100,9 +124,97 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: "*.tar.gz"
 
+  smoke-binaries:
+    name: Smoke test ${{ matrix.artifact_name }}
+    needs: [release-please, build-binaries]
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # debian:11 ships glibc 2.31, the declared GNU floor. The container
+          # has no network and a read-only root; /tmp is the writable workdir
+          # the application needs for its log directory. The CA bundle comes
+          # from the runner because debian:11 does not ship one and its apt
+          # mirrors are archived.
+          - os: ubuntu-latest
+            artifact_name: gitlab-runner-tui-linux-amd64
+            image: debian:11
+            max_glibc: "2.31"
+
+          - os: ubuntu-24.04-arm
+            artifact_name: gitlab-runner-tui-linux-arm64
+            image: debian:11
+            max_glibc: "2.31"
+
+          # alpine has no glibc, which proves the musl builds are static.
+          - os: ubuntu-latest
+            artifact_name: gitlab-runner-tui-linux-amd64-musl
+            image: alpine:3
+            expect_static: true
+
+          - os: ubuntu-24.04-arm
+            artifact_name: gitlab-runner-tui-linux-arm64-musl
+            image: alpine:3
+            expect_static: true
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ matrix.artifact_name }}
+
+      - name: Extract binary
+        run: |
+          tar xzf ./*.tar.gz
+          chmod +x gitlab-runner-tui
+
+      - name: Check glibc requirements
+        if: ${{ matrix.max_glibc }}
+        run: |
+          required=$(readelf -W --dyn-syms gitlab-runner-tui \
+            | grep ' UND ' | grep -v ' WEAK ' \
+            | grep -oE 'GLIBC_[0-9.]+' | sort -Vu)
+          weak=$(readelf -W --dyn-syms gitlab-runner-tui \
+            | grep ' UND ' | grep ' WEAK ' \
+            | grep -oE 'GLIBC_[0-9.]+' | sort -Vu)
+          printf 'mandatory glibc versions:\n%s\n' "$required"
+          printf 'weak glibc versions:\n%s\n' "$weak"
+          highest=$(printf '%s\n' "$required" | sed 's/GLIBC_//' | tail -1)
+          if [ "$(printf '%s\n%s\n' "${{ matrix.max_glibc }}" "$highest" | sort -V | tail -1)" != "${{ matrix.max_glibc }}" ]; then
+            echo "::error::binary requires GLIBC_$highest, above the ${{ matrix.max_glibc }} floor"
+            exit 1
+          fi
+
+      - name: Check musl binary is static
+        if: ${{ matrix.expect_static }}
+        run: |
+          if readelf -d gitlab-runner-tui | grep -q NEEDED; then
+            echo "::error::musl binary has dynamic dependencies"
+            readelf -d gitlab-runner-tui | grep NEEDED
+            exit 1
+          fi
+          echo "no NEEDED entries: statically linked"
+
+      - name: Run binary on baseline image
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp --workdir /tmp \
+            -v "$PWD/gitlab-runner-tui:/usr/local/bin/gitlab-runner-tui:ro" \
+            -v /etc/ssl/certs:/etc/ssl/certs:ro \
+            ${{ matrix.image }} gitlab-runner-tui fetch --help
+          docker run --rm --network none --read-only --tmpfs /tmp --workdir /tmp \
+            -v "$PWD/gitlab-runner-tui:/usr/local/bin/gitlab-runner-tui:ro" \
+            -v /etc/ssl/certs:/etc/ssl/certs:ro \
+            ${{ matrix.image }} gitlab-runner-tui fetch --demo > runners.json
+          jq -e 'type == "object" and (.runners | type == "array") and (.runners | length > 0)' runners.json
+          jq '.runners | length' runners.json
+
   github-release:
     name: Create GitHub Release
-    needs: [release-please, build-binaries]
+    needs: [release-please, build-binaries, smoke-binaries]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -215,6 +327,50 @@ jobs:
           labels: ${{ steps.ci-meta.outputs.labels }}
           cache-from: type=gha,scope=ci
           cache-to: type=gha,mode=max,scope=ci
+
+  smoke-images:
+    name: Smoke test published images
+    needs: [release-please, docker]
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ needs.release-please.outputs.tag_name }}
+
+    steps:
+      - name: Log in to the Container registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke test runtime image
+        run: |
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG#v}"
+          docker run --rm --network none --read-only --tmpfs /tmp --workdir /tmp \
+            "$image" --demo fetch --summary > runners.json
+          jq -e 'type == "object" and (.runners | type == "array") and (.runners | length > 0)' runners.json
+
+      # Mirrors a GitLab Runner job: shell detection like the generated script,
+      # job commands piped on stdin, no network, read-only root, writable /tmp.
+      - name: Smoke test GitLab CI job image
+        run: |
+          image="${{ env.REGISTRY }}/${{ env.CI_IMAGE_NAME }}:${IMAGE_TAG#v}"
+          docker run --rm -i --network none --read-only --tmpfs /tmp --workdir /tmp \
+            "$image" sh -c 'if [ -x /usr/local/bin/bash ]; then exec /usr/local/bin/bash; elif [ -x /usr/bin/bash ]; then exec /usr/bin/bash; elif [ -x /bin/bash ]; then exec /bin/bash; elif [ -x /usr/local/bin/sh ]; then exec /usr/local/bin/sh; elif [ -x /usr/bin/sh ]; then exec /usr/bin/sh; elif [ -x /bin/sh ]; then exec /bin/sh; else echo shell not found; exit 1; fi' <<'CI_SCRIPT'
+          set -eu
+          command -v bash sh grep jq gitlab-runner-tui
+          printf 'grep-check\n' | grep '^grep-check$'
+          test -s /etc/ssl/certs/ca-certificates.crt
+          test "$GITLAB_RUNNER_TUI_CONTAINER" = 1
+          gitlab-runner-tui fetch --help >/tmp/fetch-help.txt
+          gitlab-runner-tui fetch --demo >/tmp/runners.json
+          jq -e 'type == "object" and (.runners | type == "array") and (.runners | length > 0)' /tmp/runners.json
+          jq '.runners | length' /tmp/runners.json
+          CI_SCRIPT
 
   publish-crate:
     name: Publish to crates.io

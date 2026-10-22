@@ -3,8 +3,8 @@ rust = { version = "1.99.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-zigbuild" = "0.23.4"
 "aqua:rhysd/actionlint" = "1.7.12"
-lefthook = "2.1.12"
-zig = "0.15.2"
+lefthook = "latest"
+zig = "latest"
 
 [tasks.build]
 description = "Build the debug binary"
@@ -65,7 +65,7 @@ run = "cargo tree"
 
 [tasks."toolchain:targets"]
 description = "Install the Rust targets used by local cross-build verification"
-run = "rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-gnu"
+run = "rustup target add x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl"
 
 [tasks."docker:build"]
 description = "Build the local container image"
