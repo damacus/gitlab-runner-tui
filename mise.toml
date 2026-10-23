@@ -3,7 +3,7 @@ rust = { version = "1.99.1", components = ["clippy", "rustfmt"] }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-zigbuild" = "0.24.0"
 "aqua:rhysd/actionlint" = "1.7.12"
-"aqua:zizmorcore/zizmor" = "1.31.0"
+"aqua:zizmorcore/zizmor" = "1.31.1"
 gitleaks = "8.30.1"
 lefthook = "2.1.12"
 zig = "0.15.2"
