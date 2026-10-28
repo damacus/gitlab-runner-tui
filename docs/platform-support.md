@@ -45,8 +45,9 @@ Two caveats:
 - **Containers share the host kernel.** Choosing the `-ci` or runtime image
   changes the userspace (shell, libc, tools), not the kernel requirement. A
   container test on a modern host proves nothing about an older kernel.
-- **The ELF ABI note is not evidence.** The GNU binary's `Linux 3.2.0` ABI
-  note records the toolchain's declared minimum, not a tested configuration.
+- **The ELF ABI note is not evidence.** The GNU binary's Linux ABI note
+  records the toolchain's declared minimum, not a tested configuration. Its
+  value can change with the toolchain.
   The 4.18 floor above is the only verified minimum; the musl binary carries
   no ABI note at all.
 
