@@ -69,6 +69,14 @@ run = "cargo tree"
 description = "Install the Rust targets used by local cross-build verification"
 run = "rustup target add x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl"
 
+[tasks."toolchain:target"]
+description = "Install a Rust target; pass its target triple"
+run = "rustup target add"
+
+[tasks.publish]
+description = "Publish the locked crate; accepts cargo publish flags"
+run = "cargo publish --locked"
+
 [tasks."docker:build"]
 description = "Build the local container image"
 run = "docker build --tag gitlab-runner-tui:local ."
@@ -99,6 +107,36 @@ run = "zizmor --offline --no-progress .github"
 description = "Scan all reachable Git history with fully redacted findings"
 run = "gitleaks git --log-opts=--all --redact=100 --no-banner --no-color ."
 
+[tasks."security:secrets"]
+description = "Scan the committed source tree for secrets with full redaction"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+scan_dir=$(mktemp -d)
+trap 'rm -rf "$scan_dir"' EXIT
+git archive --format=tar HEAD --output="$scan_dir/tree.tar"
+gitleaks dir --max-archive-depth=1 --redact=100 --no-banner --no-color "$scan_dir/tree.tar"
+'''
+
+[tasks."security:changes"]
+description = "Scan introduced commits; defaults to origin/main through HEAD"
+usage = '''
+arg "[base]" env="BASE_SHA" default="origin/main" help="Base commit or ref"
+arg "[head]" env="HEAD_SHA" default="HEAD" help="Head commit or ref"
+'''
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+base_ref="${usage_base:?}"
+if [[ "$base_ref" =~ ^0+$ ]]; then
+  base_ref="origin/${DEFAULT_BRANCH:-main}"
+fi
+base_sha=$(git rev-parse --verify --end-of-options "$base_ref^{commit}")
+head_sha=$(git rev-parse --verify --end-of-options "${usage_head:?}^{commit}")
+merge_base=$(git merge-base "$base_sha" "$head_sha")
+gitleaks git --log-opts="$merge_base..$head_sha" --redact=100 --no-banner --no-color .
+'''
+
 [tasks."security:main-history"]
 description = "Scan the fetched main branch history with fully redacted findings"
 run = "gitleaks git --log-opts=origin/main --redact=100 --no-banner --no-color ."
@@ -113,4 +151,4 @@ run = "lefthook install"
 
 [tasks.check]
 description = "Run the local CI and security checks"
-depends = ["build", "build:release", "test", "fmt", "lint", "security", "workflow:lint", "workflow:security", "diff:check"]
+depends = ["build", "build:release", "test", "fmt", "lint", "security", "security:secrets", "security:changes", "workflow:lint", "workflow:security", "diff:check"]
