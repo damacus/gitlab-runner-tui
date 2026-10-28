@@ -32,6 +32,11 @@ struct TargetFetchResult {
     list_requests: usize,
 }
 
+/// Requested observations, rather than a guarantee that every detail request succeeds.
+///
+/// Batch queries require requested manager observations and any detail needed by filters.
+/// Other detail failures retain list data. Streaming enrichment requires every requested
+/// observation and returns an error if any of them cannot be fetched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueryProfile {
     Summary,
@@ -283,6 +288,12 @@ impl Conductor {
             .await
     }
 
+    /// Fetch runners with the requested enrichment.
+    ///
+    /// Discovery, requested manager observations and filter-dependent detail must succeed.
+    /// Optional detail failures retain list data, so successful metrics do not guarantee
+    /// that every returned row has detail fields. See `stream_runner_summary_enrichment`
+    /// for the stricter streaming contract.
     pub async fn fetch_runners_with_profile_and_metrics(
         &self,
         filters: RunnerFilters,
