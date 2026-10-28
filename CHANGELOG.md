@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.22](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.21...v0.1.22) (2026-10-28)
+
+
+### Bug Fixes
+
+* build GNU Linux releases against glibc 2.31 and add baseline smoke tests ([#306](https://github.com/damacus/gitlab-runner-tui/issues/306)) ([e3d7c58](https://github.com/damacus/gitlab-runner-tui/commit/e3d7c58c198610a984e3827a29200d958a6d4c8e))
+* keep runner queries and refreshes reliable ([#318](https://github.com/damacus/gitlab-runner-tui/issues/318)) ([603e6c6](https://github.com/damacus/gitlab-runner-tui/commit/603e6c67d2efcb9fcde095fc0a3f813661ca66ad))
+* package termina backend and refresh dependencies ([#320](https://github.com/damacus/gitlab-runner-tui/issues/320)) ([fbec946](https://github.com/damacus/gitlab-runner-tui/commit/fbec946a17f1126eb56cd3513cdab1b8dbe2fdfc))
+
 ## [0.1.21](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.20...v0.1.21) (2026-10-21)
 
 
