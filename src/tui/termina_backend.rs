@@ -285,11 +285,13 @@ impl IntoTermina<ColorSpec> for Color {
 impl IntoTermina<SgrModifiers> for ModifierDiff {
     fn into_termina(self) -> SgrModifiers {
         let removed = self.from - self.to;
-        let added = self.to - self.from;
+        let mut added = self.to - self.from;
         let mut modifiers = SgrModifiers::empty();
 
         if removed.contains(Modifier::BOLD) || removed.contains(Modifier::DIM) {
             modifiers |= SgrModifiers::INTENSITY_NORMAL;
+            // SGR 22 clears both intensity flags, including any retained by the next cell.
+            added |= self.to & (Modifier::BOLD | Modifier::DIM);
         }
         if removed.contains(Modifier::ITALIC) {
             modifiers |= SgrModifiers::NO_ITALIC;
@@ -299,6 +301,8 @@ impl IntoTermina<SgrModifiers> for ModifierDiff {
         }
         if removed.contains(Modifier::SLOW_BLINK) || removed.contains(Modifier::RAPID_BLINK) {
             modifiers |= SgrModifiers::BLINK_NONE;
+            // SGR 25 likewise clears both blink modes.
+            added |= self.to & (Modifier::SLOW_BLINK | Modifier::RAPID_BLINK);
         }
         if removed.contains(Modifier::REVERSED) {
             modifiers |= SgrModifiers::NO_REVERSE;
@@ -570,6 +574,50 @@ mod tests {
         assert!(output.starts_with(&cursor.to_string()));
         assert!(output.contains('x'));
         assert!(output.ends_with(&Csi::Sgr(Sgr::Reset).to_string()));
+    }
+
+    #[test]
+    fn preserves_retained_intensity_between_cells() {
+        for (retained, sequence) in [(Modifier::BOLD, "22;1"), (Modifier::DIM, "22;2")] {
+            let mut backend = backend();
+            let mut first = Cell::new("a");
+            first.set_style(Style::new().add_modifier(Modifier::BOLD | Modifier::DIM));
+            let mut second = Cell::new("b");
+            second.set_style(Style::new().add_modifier(retained));
+
+            backend
+                .draw([(0, 0, &first), (1, 0, &second)].into_iter())
+                .unwrap();
+
+            assert!(backend
+                .terminal
+                .output()
+                .contains(&format!("a\u{1b}[{sequence}mb")));
+        }
+    }
+
+    #[test]
+    fn preserves_retained_blink_between_cells() {
+        for (retained, sequence) in [
+            (Modifier::SLOW_BLINK, "25;5"),
+            (Modifier::RAPID_BLINK, "25;6"),
+        ] {
+            let mut backend = backend();
+            let mut first = Cell::new("a");
+            first
+                .set_style(Style::new().add_modifier(Modifier::SLOW_BLINK | Modifier::RAPID_BLINK));
+            let mut second = Cell::new("b");
+            second.set_style(Style::new().add_modifier(retained));
+
+            backend
+                .draw([(0, 0, &first), (1, 0, &second)].into_iter())
+                .unwrap();
+
+            assert!(backend
+                .terminal
+                .output()
+                .contains(&format!("a\u{1b}[{sequence}mb")));
+        }
     }
 
     #[test]
