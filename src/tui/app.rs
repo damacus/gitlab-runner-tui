@@ -858,7 +858,7 @@ impl App {
             PollDisplayState::Refreshing
         } else if self.last_fetch_failed {
             PollDisplayState::Error
-        } else if self.polling_active && self.poll_timed_out() {
+        } else if self.poll_started_at.is_some() && self.poll_timed_out() {
             PollDisplayState::TimedOut
         } else if self.polling_active {
             PollDisplayState::Live
@@ -880,7 +880,7 @@ impl App {
         let interval = self.config.poll_interval_secs;
         let elapsed = self
             .last_refresh_at
-            .or(self.last_poll_at)?
+            .max(self.last_poll_at)?
             .elapsed()
             .as_secs();
         Some(interval.saturating_sub(elapsed.min(interval)))
@@ -902,11 +902,7 @@ impl App {
         self.has_partial_results = false;
         self.error_message = None;
 
-        let client = self.conductor.client().clone();
-        let mode = self.conductor.discovery_mode();
-        let demo_mode = self.conductor.demo_mode;
-        let targets = self.config.runner_targets.clone();
-        let max_enrichment_requests = self.config.max_enrichment_requests;
+        let conductor = self.conductor.clone();
         let filters = self.build_filters();
         let summary_filters = summary_discovery_filters(&filters);
         let enrichment_cache = self.enrichment_cache.clone();
@@ -915,14 +911,6 @@ impl App {
         let (updates_tx, updates_rx) = mpsc::channel(4);
 
         let handle = tokio::spawn(async move {
-            let mut conductor = Conductor::new_with_mode_and_enrichment_limit(
-                client,
-                mode,
-                targets,
-                max_enrichment_requests,
-            );
-            conductor.demo_mode = demo_mode;
-
             if tab == Tab::Runners {
                 match conductor
                     .fetch_runner_summaries_with_metrics(summary_filters.clone())
@@ -966,14 +954,20 @@ impl App {
                                 },
                             )
                             .await;
+                        let kind = match cached_outcome {
+                            Ok(cached_outcome) => {
+                                SearchUpdateKind::Complete(Box::new(SearchCompletion {
+                                    outcome: cached_outcome.outcome,
+                                    cache: Some(cached_outcome.cache),
+                                }))
+                            }
+                            Err(error) => SearchUpdateKind::Failed(error),
+                        };
                         let _ = updates_tx
                             .send(SearchUpdate {
                                 generation,
                                 tab,
-                                kind: SearchUpdateKind::Complete(Box::new(SearchCompletion {
-                                    outcome: cached_outcome.outcome,
-                                    cache: Some(cached_outcome.cache),
-                                })),
+                                kind,
                             })
                             .await;
                     }
@@ -1034,12 +1028,18 @@ impl App {
     /// Check whether the background search has finished and, if so, apply its result.
     pub async fn poll_pending_search(&mut self) {
         let mut updates = Vec::new();
-        let mut task_finished = false;
+        let mut channel_closed = false;
         if let Some(pending) = self.pending_search.as_mut() {
-            while let Ok(update) = pending.updates.try_recv() {
-                updates.push(update);
+            loop {
+                match pending.updates.try_recv() {
+                    Ok(update) => updates.push(update),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        channel_closed = true;
+                        break;
+                    }
+                }
             }
-            task_finished = pending.handle.is_finished();
         }
 
         let mut saw_terminal = false;
@@ -1051,7 +1051,8 @@ impl App {
             self.process_search_update(update);
         }
 
-        if saw_terminal || task_finished {
+        // Only a drained, closed channel proves that no terminal update can still arrive.
+        if saw_terminal || channel_closed {
             if let Some(pending) = self.pending_search.take() {
                 if let Err(error) = pending.handle.await {
                     if !error.is_cancelled() && self.is_loading {
@@ -1059,7 +1060,7 @@ impl App {
                             "Search task failed unexpectedly: {error}"
                         ));
                     }
-                } else if task_finished && !saw_terminal && self.is_loading {
+                } else if channel_closed && !saw_terminal && self.is_loading {
                     self.process_search_failure(anyhow::anyhow!(
                         "Search task ended without a final update"
                     ));
@@ -1754,7 +1755,7 @@ impl App {
         }
 
         self.last_refresh_at
-            .or(self.last_poll_at)
+            .max(self.last_poll_at)
             .map(|last_poll| last_poll.elapsed().as_secs() >= self.config.poll_interval_secs)
             .unwrap_or(false)
     }
@@ -2522,6 +2523,102 @@ mod tests {
         .expect("summary rows should be published promptly");
     }
 
+    #[tokio::test]
+    async fn finished_task_keeps_its_open_update_channel_until_terminal_delivery() {
+        let mut app = test_app();
+        app.is_loading = true;
+        let (sender, updates) = mpsc::channel(4);
+        let handle = tokio::spawn(async {});
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        app.pending_search = Some(PendingSearch { handle, updates });
+
+        app.poll_pending_search().await;
+        assert!(
+            app.is_loading,
+            "task completion alone must not discard an open channel"
+        );
+        assert!(app.error_message.is_none());
+
+        sender
+            .send(SearchUpdate {
+                generation: app.search_generation,
+                tab: Tab::Runners,
+                kind: SearchUpdateKind::Complete(Box::new(SearchCompletion {
+                    outcome: test_outcome(vec![test_runner(1, vec![])]),
+                    cache: None,
+                })),
+            })
+            .await
+            .unwrap();
+        drop(sender);
+        app.poll_pending_search().await;
+        assert!(!app.is_loading);
+        assert_eq!(app.raw_runners[0].id, 1);
+        assert!(app.error_message.is_none());
+        assert!(app.pending_search.is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_update_channel_without_completion_ends_loading_with_an_error() {
+        let mut app = test_app();
+        app.is_loading = true;
+        let (sender, updates) = mpsc::channel(4);
+        let handle = tokio::spawn(async move {
+            drop(sender);
+        });
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        app.pending_search = Some(PendingSearch { handle, updates });
+
+        app.poll_pending_search().await;
+
+        assert!(!app.is_loading);
+        assert!(app.pending_search.is_none());
+        assert!(app
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("without a final update"));
+    }
+
+    #[tokio::test]
+    async fn failed_manager_enrichment_keeps_rows_but_reports_an_incomplete_search() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1)))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "17.1.0"))
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(401)
+            .create_async()
+            .await;
+        let mut app = network_test_app(server.url());
+        app.start_search();
+        app.await_pending_search().await;
+
+        assert!(app.last_fetch_failed);
+        assert!(app.has_partial_results);
+        assert_eq!(app.raw_runners[0].id, 1);
+        assert!(!app.live_query_metrics.as_ref().unwrap().succeeded);
+        assert!(app.error_message.as_ref().unwrap().contains("401"));
+        list.assert_async().await;
+        detail.assert_async().await;
+        managers.assert_async().await;
+    }
+
     #[test]
     fn settings_draft_preserves_config_only_enrichment_limit() {
         let config = AppConfig {
@@ -3191,6 +3288,28 @@ mod tests {
         app.tick().await;
 
         assert!(!app.polling_active);
+        assert_eq!(app.poll_display_state(), PollDisplayState::TimedOut);
+        app.toggle_polling();
+        app.toggle_polling();
+        assert_eq!(app.poll_display_state(), PollDisplayState::Paused);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_waits_a_full_interval_after_the_latest_attempt() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.polling_active = true;
+        app.poll_started_at = Some(now);
+        app.config.poll_interval_secs = 60;
+        app.last_refresh_at = Some(now - Duration::from_secs(61));
+        app.last_poll_at = Some(now);
+        app.process_search_failure(anyhow::anyhow!("temporary failure"));
+
+        assert!(!app.should_poll_now());
+        assert_eq!(app.next_poll_in_secs(), Some(60));
+        app.tick().await;
+        assert!(!app.is_loading);
+        assert!(app.pending_search.is_none());
     }
 
     #[test]
