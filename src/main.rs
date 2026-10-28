@@ -64,7 +64,7 @@ use config::{
 };
 use jiff::{tz::TimeZone, Timestamp};
 use models::runner::{parse_stale_cutoff, ContactThreshold, RunnerFilters};
-use ratatui::{backend::TerminaBackend, Terminal};
+use ratatui::Terminal;
 use reqwest::StatusCode;
 use rotation_wait::{RotationWaitOptions, RotationWaitState};
 use std::{env, io, io::Write, path::PathBuf};
@@ -76,6 +76,7 @@ use time::{classify_civil_timestamp, now, parse_clock_time, system_time_zone, Ci
 use tui::{
     app::App,
     event::{Event, EventHandler},
+    termina_backend::TerminaBackend,
     ui,
 };
 
