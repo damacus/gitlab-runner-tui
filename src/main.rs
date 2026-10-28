@@ -221,7 +221,10 @@ async fn run(args: Args) -> Result<()> {
                 config.max_enrichment_requests,
             )
         } else {
-            bootstrap_interactive_conductor(host, token, config.clone()).await?
+            let (conductor, resolved_config) =
+                bootstrap_interactive_conductor(host, token, config.clone()).await?;
+            config = resolved_config;
+            conductor
         }
     };
 
@@ -490,11 +493,25 @@ fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, S
 }
 
 async fn bootstrap_interactive_conductor(
+    host: String,
+    token: String,
+    config: AppConfig,
+) -> Result<(Conductor, AppConfig)> {
+    bootstrap_interactive_conductor_with_setup(host, token, config, run_first_time_setup).await
+}
+
+async fn bootstrap_interactive_conductor_with_setup<F>(
     mut host: String,
     mut token: String,
     mut config: AppConfig,
-) -> Result<Conductor> {
+    mut setup: F,
+) -> Result<(Conductor, AppConfig)>
+where
+    F: FnMut(String, &mut AppConfig) -> Result<(String, String, AppConfig)>,
+{
     loop {
+        config.gitlab_host = Some(host.clone());
+        config.gitlab_token = Some(token.clone());
         let client = GitLabClient::new(host.clone(), token.clone())?;
         let conductor = Conductor::new_with_mode_and_enrichment_limit(
             client,
@@ -504,7 +521,7 @@ async fn bootstrap_interactive_conductor(
         );
 
         match validate_interactive_credentials(&conductor).await {
-            Ok(()) => return Ok(conductor),
+            Ok(()) => return Ok((conductor, config)),
             Err(error) if is_auth_error(&error) => {
                 println!("GitLab authentication failed during startup.");
                 println!(
@@ -513,7 +530,7 @@ async fn bootstrap_interactive_conductor(
                 println!();
 
                 let (updated_host, updated_token, updated_config) =
-                    run_first_time_setup(host.clone(), &mut config)?;
+                    setup(host.clone(), &mut config)?;
                 host = updated_host;
                 token = updated_token;
                 config = updated_config;
@@ -560,6 +577,7 @@ where
     F: FnOnce(&str) -> Result<Option<String>>,
 {
     let host = resolve_gitlab_host(args, &config, env_host);
+    config.gitlab_host = Some(host.clone());
 
     let token = match env_token.or_else(|| config.gitlab_token.clone()) {
         Some(token) => Some(token),
@@ -1728,6 +1746,7 @@ mod tests {
 
         assert_eq!(host, "https://gitlab.com");
         assert_eq!(token, "glpat-test");
+        assert_eq!(config.gitlab_host.as_deref(), Some(host.as_str()));
         assert!(config.runner_targets.is_empty());
     }
 
@@ -1792,6 +1811,61 @@ mod tests {
     fn does_not_treat_generic_errors_as_auth_errors() {
         let error = anyhow::anyhow!("network exploded");
         assert!(!is_auth_error(&error));
+    }
+
+    #[tokio::test]
+    async fn reauthentication_returns_the_effective_configuration_with_its_conductor() {
+        let mut old_server = Server::new_async().await;
+        let mut new_server = Server::new_async().await;
+        let rejected = old_server
+            .mock("GET", "/api/v4/user")
+            .match_header("PRIVATE-TOKEN", "expired-token")
+            .with_status(401)
+            .create_async()
+            .await;
+        let accepted = new_server
+            .mock("GET", "/api/v4/user")
+            .match_header("PRIVATE-TOKEN", "replacement-token")
+            .with_status(200)
+            .create_async()
+            .await;
+        let replacement = AppConfig {
+            gitlab_host: Some(new_server.url()),
+            gitlab_token: Some("replacement-token".into()),
+            discovery_mode: RunnerDiscoveryMode::ConfiguredTargets,
+            runner_targets: vec![crate::config::RunnerTarget {
+                kind: crate::config::RunnerTargetKind::Group,
+                id: "new-group".into(),
+                label: None,
+            }],
+            max_enrichment_requests: 12,
+            ..AppConfig::default()
+        };
+        let (conductor, config) = bootstrap_interactive_conductor_with_setup(
+            old_server.url(),
+            "expired-token".into(),
+            AppConfig::default(),
+            |host, config| {
+                assert_eq!(host, old_server.url());
+                assert_eq!(config.gitlab_token.as_deref(), Some("expired-token"));
+                Ok((
+                    new_server.url(),
+                    "replacement-token".into(),
+                    replacement.clone(),
+                ))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(config, replacement);
+        assert_eq!(conductor.discovery_mode(), config.discovery_mode);
+        let app = App::new(conductor, config);
+        assert_eq!(app.settings_draft.host, new_server.url());
+        assert_eq!(app.settings_draft.token, "replacement-token");
+        assert_eq!(app.settings_draft.runner_targets_input, "group:new-group");
+        rejected.assert_async().await;
+        accepted.assert_async().await;
     }
 
     #[derive(Clone)]

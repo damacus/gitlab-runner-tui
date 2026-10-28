@@ -138,12 +138,16 @@ impl AppConfig {
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(AppConfig::default());
-        }
-
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file {}", path.display()))?;
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AppConfig::default());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to read config file {}", path.display()));
+            }
+        };
         toml::from_str(&contents)
             .with_context(|| format!("Failed to parse config file {}", path.display()))
     }
@@ -796,6 +800,19 @@ mod tests {
         let config = AppConfig::load_from_path(&directory.config_path()).unwrap();
 
         assert_eq!(config, AppConfig::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_metadata_failure_is_not_treated_as_a_missing_file() {
+        let directory = TestDirectory::new("symlink-loop-load");
+        fs::create_dir_all(&directory.0).unwrap();
+        let path = directory.config_path();
+        std::os::unix::fs::symlink("config.toml", &path).unwrap();
+
+        let error = AppConfig::load_from_path(&path).unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(error.chain().any(|cause| cause.is::<std::io::Error>()));
     }
 
     #[test]

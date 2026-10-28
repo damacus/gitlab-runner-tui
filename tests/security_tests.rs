@@ -31,17 +31,23 @@ fn auth_status(
 
 #[test]
 fn test_help_output_does_not_leak_token() {
-    let output = Command::new("cargo")
-        .args(["run", "--", "--help"])
+    let output = Command::new(env!("CARGO_BIN_EXE_gitlab-runner-tui"))
+        .arg("--help")
         .env("GITLAB_TOKEN", "sensitive-token-value")
         .output()
         .expect("failed to execute process");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "help failed: {stderr}");
+    assert!(
+        stdout.contains("Usage:"),
+        "expected application help: {stdout}"
+    );
 
     // Check that the token is NOT present in the output
     assert!(
-        !stdout.contains("sensitive-token-value"),
+        !stdout.contains("sensitive-token-value") && !stderr.contains("sensitive-token-value"),
         "GITLAB_TOKEN leaked in --help output!"
     );
 

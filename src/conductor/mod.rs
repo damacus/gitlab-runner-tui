@@ -10,7 +10,7 @@ use crate::models::runner::{
     apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
 };
 use crate::time::{elapsed_millis, now};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::{
     stream::{self, StreamExt},
     TryStreamExt,
@@ -108,6 +108,7 @@ impl EnrichmentProfile {
     }
 }
 
+#[derive(Clone)]
 pub struct Conductor {
     client: GitLabClient,
     discovery_mode: RunnerDiscoveryMode,
@@ -150,6 +151,34 @@ pub struct CachedQueryOutcome {
 struct RunnerEnrichmentResult {
     runner: Runner,
     succeeded: EnrichmentProfile,
+    detail_error: Option<anyhow::Error>,
+    manager_error: Option<anyhow::Error>,
+}
+
+impl RunnerEnrichmentResult {
+    fn require(&mut self, profile: EnrichmentProfile) -> Result<()> {
+        if profile.detail {
+            if let Some(error) = self.detail_error.take() {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Required detail enrichment failed for runner {}",
+                        self.runner.id
+                    )
+                });
+            }
+        }
+        if profile.managers {
+            if let Some(error) = self.manager_error.take() {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Required manager enrichment failed for runner {}",
+                        self.runner.id
+                    )
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 struct PendingRunnerEnrichment {
@@ -275,14 +304,22 @@ impl Conductor {
     {
         let started_at = now();
         let started = Instant::now();
-        let initial_profile = base_profile
-            .enrichment()
-            .union(EnrichmentProfile::for_filters(&filters));
+        let filter_profile = EnrichmentProfile::for_filters(&filters);
+        let initial_profile = base_profile.enrichment().union(filter_profile);
+        let required_profile = EnrichmentProfile {
+            detail: filter_profile.detail,
+            managers: initial_profile.managers,
+        };
         let (runners, mut request_counts, all_runners_fell_back) =
             self.discover_runners(&filters).await?;
         let runners = self
-            .enrich_runners(runners, initial_profile, &mut request_counts)
-            .await;
+            .enrich_runners(
+                runners,
+                initial_profile,
+                required_profile,
+                &mut request_counts,
+            )
+            .await?;
 
         // `tag_list` is enforced by every GitLab list endpoint. Avoid forcing a detail request
         // solely to repeat that filter locally; demo fixtures still need local tag filtering.
@@ -294,8 +331,13 @@ impl Conductor {
         let runners = select_results(runners);
         let final_profile = output_profile.enrichment().missing_from(initial_profile);
         let runners = self
-            .enrich_runners(runners, final_profile, &mut request_counts)
-            .await;
+            .enrich_runners(
+                runners,
+                final_profile,
+                EnrichmentProfile::default(),
+                &mut request_counts,
+            )
+            .await?;
         let finished_at = now();
         let metrics = LiveQueryMetrics::success(
             started_at,
@@ -312,19 +354,27 @@ impl Conductor {
         })
     }
 
+    /// Fetches list-only rows suitable for `stream_runner_summary_enrichment`.
+    /// Filters that require detail or manager requests must use
+    /// `fetch_runners_with_profile_and_metrics` instead.
     pub async fn fetch_runner_summaries_with_metrics(
         &self,
         filters: RunnerFilters,
     ) -> Result<QueryOutcome> {
+        if !EnrichmentProfile::for_filters(&filters).is_empty() {
+            anyhow::bail!("Summary queries require list-only filters");
+        }
         self.fetch_runners_with_profile_and_metrics(filters, QueryProfile::Summary)
             .await
     }
 
-    /// Enriches summary rows and publishes a complete snapshot after each runner finishes.
+    /// Enriches summaries and publishes one runner update after each enrichment finishes.
     ///
-    /// Snapshots retain every discovered runner so the caller can update visible fields without
-    /// rows disappearing while client-side filters are still waiting on detail data. The returned
-    /// outcome applies all client-side filters and contains the final request counts.
+    /// The caller retains the initial summary rows while applying individual updates. Returning
+    /// false from `publish` stops enrichment and returns the partially enriched outcome/cache.
+    /// Failed enrichment returns an error; already published rows remain available for display,
+    /// but must not be treated as a complete filtered result. Successful completion applies all
+    /// client-side filters and returns the final request counts.
     pub async fn stream_runner_summary_enrichment<F, Fut>(
         &self,
         summaries: QueryOutcome,
@@ -333,7 +383,7 @@ impl Conductor {
         profile: QueryProfile,
         mut cache: RunnerEnrichmentCache,
         mut publish: F,
-    ) -> CachedQueryOutcome
+    ) -> Result<CachedQueryOutcome>
     where
         F: FnMut(EnrichmentProgress) -> Fut,
         Fut: Future<Output = bool>,
@@ -433,7 +483,8 @@ impl Conductor {
             tokio::pin!(enrichments);
 
             if publishing_open {
-                while let Some((pending, result)) = enrichments.next().await {
+                while let Some((pending, mut result)) = enrichments.next().await {
+                    result.require(pending.missing)?;
                     runners[pending.index] = result.runner.clone();
                     if pending.missing.detail {
                         request_counts.detail_requests += 1;
@@ -481,14 +532,14 @@ impl Conductor {
             reused_enrichments,
         );
 
-        CachedQueryOutcome {
+        Ok(CachedQueryOutcome {
             outcome: QueryOutcome {
                 runners,
                 metrics,
                 all_runners_fell_back,
             },
             cache: next_cache,
-        }
+        })
     }
 
     fn success_metrics(
@@ -637,10 +688,11 @@ impl Conductor {
         &self,
         runners: Vec<Runner>,
         profile: EnrichmentProfile,
+        required: EnrichmentProfile,
         request_counts: &mut QueryRequestCounts,
-    ) -> Vec<Runner> {
+    ) -> Result<Vec<Runner>> {
         if profile.is_empty() || runners.is_empty() || self.demo_mode {
-            return runners;
+            return Ok(runners);
         }
 
         if profile.detail {
@@ -655,13 +707,14 @@ impl Conductor {
             let client = self.client.clone();
             let enrichment_permits = Arc::clone(&enrichment_permits);
             async move {
-                Self::enrich_runner(client, enrichment_permits, runner, profile)
-                    .await
-                    .runner
+                let mut result =
+                    Self::enrich_runner(client, enrichment_permits, runner, profile).await;
+                result.require(required)?;
+                Ok(result.runner)
             }
         }))
         .buffer_unordered(self.max_enrichment_requests)
-        .collect()
+        .try_collect()
         .await
     }
 
@@ -704,13 +757,16 @@ impl Conductor {
 
         let existing_managers = runner.managers.clone();
         let mut succeeded = EnrichmentProfile::default();
+        let mut detail_error = None;
+        let mut manager_error = None;
         let mut enriched = match detail_res {
             Some(Ok(detail)) => {
                 succeeded.detail = true;
                 detail
             }
             Some(Err(error)) => {
-                tracing::warn!(runner_id, error = %error, "Failed to fetch runner detail, using list data");
+                tracing::warn!(runner_id, error = ?error, "Failed to fetch runner detail, using list data");
+                detail_error = Some(error);
                 runner
             }
             None => runner,
@@ -722,7 +778,8 @@ impl Conductor {
                 enriched.managers = managers;
             }
             Some(Err(error)) => {
-                tracing::warn!(runner_id, error = %error, "Failed to fetch runner managers, keeping existing manager data");
+                tracing::warn!(runner_id, error = ?error, "Failed to fetch runner managers, keeping existing manager data");
+                manager_error = Some(error);
                 enriched.managers = existing_managers;
             }
             None => enriched.managers = existing_managers,
@@ -731,6 +788,8 @@ impl Conductor {
         RunnerEnrichmentResult {
             runner: enriched,
             succeeded,
+            detail_error,
+            manager_error,
         }
     }
 
@@ -974,6 +1033,157 @@ mod tests {
         Arc, Mutex,
     };
     use tokio::sync::Semaphore;
+
+    #[tokio::test]
+    async fn manager_dependent_queries_reject_failed_manager_observations() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .expect(5)
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(200)
+            .with_body(detail_response_body(1, "online", &[]))
+            .expect(0)
+            .create_async()
+            .await;
+        let managers = server
+            .mock("GET", "/api/v4/runners/1/managers")
+            .with_status(401)
+            .expect(5)
+            .create_async()
+            .await;
+        let conductor = Conductor::new_with_mode(
+            GitLabClient::new(server.url(), "test-token".into()).unwrap(),
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+
+        for query in 0..5 {
+            let filters = RunnerFilters::default();
+            let result = match query {
+                0 => {
+                    conductor
+                        .list_runners_without_managers_with_metrics(filters)
+                        .await
+                }
+                1 => conductor.list_offline_runners_with_metrics(filters).await,
+                2 => {
+                    conductor
+                        .list_uncontacted_runners_with_metrics(
+                            filters,
+                            ContactThreshold::OlderThanSecs(3600),
+                        )
+                        .await
+                }
+                3 => {
+                    conductor
+                        .detect_rotating_runners_with_metrics(filters)
+                        .await
+                }
+                _ => {
+                    conductor
+                        .fetch_runners_with_profile_and_metrics(filters, QueryProfile::Managers)
+                        .await
+                }
+            };
+            let error = result
+                .err()
+                .expect("unknown manager data must not become a successful decision");
+            let message = format!("{error:#}");
+            assert!(message.contains("runner 1"), "{message}");
+            assert!(message.contains("401"), "{message}");
+        }
+        list.assert_async().await;
+        managers.assert_async().await;
+        detail.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn detail_dependent_filters_reject_failed_detail_observations() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(format!("[{}]", list_response_body(1, "online")))
+            .create_async()
+            .await;
+        let detail = server
+            .mock("GET", "/api/v4/runners/1")
+            .with_status(403)
+            .create_async()
+            .await;
+        let conductor = Conductor::new_with_mode(
+            GitLabClient::new(server.url(), "test-token".into()).unwrap(),
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+        let filters = RunnerFilters {
+            version_prefix: Some("17".into()),
+            ..RunnerFilters::default()
+        };
+        let result = conductor
+            .fetch_runners_with_profile_and_metrics(filters, QueryProfile::Summary)
+            .await;
+        let error = result
+            .err()
+            .expect("unknown versions must not silently exclude runners");
+        let message = format!("{error:#}");
+        assert!(message.contains("runner 1"), "{message}");
+        assert!(message.contains("403"), "{message}");
+        list.assert_async().await;
+        detail.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn summary_fetch_rejects_filters_that_break_the_streaming_precondition() {
+        let mut server = Server::new_async().await;
+        let list = server
+            .mock("GET", "/api/v4/groups/123/runners")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .expect(0)
+            .create_async()
+            .await;
+        let conductor = Conductor::new_with_mode(
+            GitLabClient::new(server.url(), "test-token".into()).unwrap(),
+            RunnerDiscoveryMode::ConfiguredTargets,
+            vec![group_target("123")],
+        );
+        for filters in [
+            RunnerFilters {
+                version_prefix: Some("17".into()),
+                ..RunnerFilters::default()
+            },
+            RunnerFilters {
+                popup_tags: Some(vec!["prod".into()]),
+                ..RunnerFilters::default()
+            },
+            RunnerFilters {
+                selected_versions: Some(vec!["17.1.0".into()]),
+                ..RunnerFilters::default()
+            },
+            RunnerFilters {
+                older_than_secs: Some(3600),
+                ..RunnerFilters::default()
+            },
+        ] {
+            let error = conductor
+                .fetch_runner_summaries_with_metrics(filters)
+                .await
+                .err()
+                .expect("successful summaries must not contain enrichment requests");
+            assert!(error.to_string().contains("list-only"));
+        }
+        list.assert_async().await;
+    }
 
     fn list_response_body(id: u64, status: &str) -> String {
         format!(
