@@ -25,6 +25,14 @@ If Docker is installed, open the dashboard without a GitLab account or token:
 docker run --rm -it ghcr.io/damacus/gitlab-runner-tui:latest --demo
 ```
 
+With a [native binary installed](#download-a-native-binary), open the same dashboard with:
+
+```sh
+gitlab-runner-tui --demo
+```
+
+For a noninteractive demo that returns JSON, run `gitlab-runner-tui --demo fetch --summary`.
+
 The demo uses built-in fixture data and does not make network requests.
 
 ## Install
