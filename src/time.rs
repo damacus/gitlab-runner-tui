@@ -2,7 +2,7 @@ use jiff::{
     civil::{DateTime, Time},
     fmt::{rfc2822, temporal::DateTimePrinter},
     tz::{AmbiguousOffset, Offset, TimeZone},
-    SignedDuration, Timestamp, Zoned,
+    SignedDuration, Timestamp, ZonedDateTime,
 };
 
 const RFC3339_MILLIS_PRINTER: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
@@ -44,7 +44,7 @@ pub fn parse_rfc2822(input: &str) -> Result<Timestamp, jiff::Error> {
 
 #[cfg(test)]
 pub fn format_rfc2822(timestamp: Timestamp) -> Result<String, jiff::Error> {
-    RFC2822_PRINTER.zoned_to_string(&timestamp.to_zoned(TimeZone::UTC))
+    RFC2822_PRINTER.zoned_datetime_to_string(&timestamp.to_zoned_datetime(TimeZone::UTC))
 }
 
 fn chrono_rfc3339_printer(timestamp: Timestamp) -> DateTimePrinter {
@@ -129,7 +129,7 @@ pub fn classify_civil_timestamp(
     }
 }
 
-pub fn parse_user_cutoff(input: &str, now: &Zoned) -> Result<Option<Timestamp>, String> {
+pub fn parse_user_cutoff(input: &str, now: &ZonedDateTime) -> Result<Option<Timestamp>, String> {
     let input = input.trim();
     if input.is_empty() {
         return Ok(None);
@@ -154,8 +154,8 @@ pub fn parse_user_cutoff(input: &str, now: &Zoned) -> Result<Option<Timestamp>, 
     }
 }
 
-pub fn format_user_cutoff_input(cutoff: Timestamp, now: &Zoned) -> String {
-    let local_cutoff = cutoff.to_zoned(now.time_zone().clone());
+pub fn format_user_cutoff_input(cutoff: Timestamp, now: &ZonedDateTime) -> String {
+    let local_cutoff = cutoff.to_zoned_datetime(now.time_zone().clone());
     if local_cutoff.date() == now.date() {
         local_cutoff.strftime("%H:%M:%S").to_string()
     } else {
@@ -165,7 +165,7 @@ pub fn format_user_cutoff_input(cutoff: Timestamp, now: &Zoned) -> String {
 
 pub fn format_user_cutoff_label(cutoff: Timestamp, time_zone: TimeZone) -> String {
     cutoff
-        .to_zoned(time_zone)
+        .to_zoned_datetime(time_zone)
         .strftime("%Y-%m-%d %H:%M:%S %Z")
         .to_string()
 }
@@ -328,7 +328,7 @@ mod tests {
     fn local_cutoff_uses_the_supplied_zone_date() {
         let now = parse_rfc3339("2026-05-12T08:30:00Z")
             .unwrap()
-            .to_zoned(TimeZone::get("Europe/London").unwrap());
+            .to_zoned_datetime(TimeZone::get("Europe/London").unwrap());
 
         let cutoff = parse_user_cutoff("11:00", &now).unwrap().unwrap();
 
@@ -339,7 +339,7 @@ mod tests {
     fn user_cutoff_rfc3339_preserves_fraction_width() {
         let now = parse_rfc3339("2026-05-13T08:30:00Z")
             .unwrap()
-            .to_zoned(TimeZone::get("Europe/London").unwrap());
+            .to_zoned_datetime(TimeZone::get("Europe/London").unwrap());
 
         for (input, expected) in [
             ("2026-05-12T10:00:00.120Z", "2026-05-12T11:00:00.120+01:00"),
@@ -370,7 +370,7 @@ mod tests {
     fn local_cutoff_in_a_fold_chooses_the_earlier_instant() {
         let now = parse_rfc3339("2026-10-25T12:00:00Z")
             .unwrap()
-            .to_zoned(TimeZone::get("Europe/London").unwrap());
+            .to_zoned_datetime(TimeZone::get("Europe/London").unwrap());
 
         let cutoff = parse_user_cutoff("01:30", &now).unwrap().unwrap();
 
@@ -392,7 +392,7 @@ mod tests {
     fn local_cutoff_in_a_gap_returns_an_error() {
         let now = parse_rfc3339("2026-03-29T12:00:00Z")
             .unwrap()
-            .to_zoned(TimeZone::get("Europe/London").unwrap());
+            .to_zoned_datetime(TimeZone::get("Europe/London").unwrap());
 
         let error = parse_user_cutoff("01:30", &now).unwrap_err();
 

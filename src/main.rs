@@ -864,7 +864,7 @@ fn resolve_rotation_window_start(
         Some(timezone) => {
             let time_zone = TimeZone::get(timezone)
                 .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
-            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
             let local_window = local_now.date().to_datetime(time);
             match classify_civil_timestamp(&time_zone, local_window)? {
                 CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
@@ -877,7 +877,7 @@ fn resolve_rotation_window_start(
         }
         None => {
             let time_zone = system_time_zone();
-            let local_now = command_started_at.to_zoned(time_zone.clone());
+            let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
             let local_window = local_now.date().to_datetime(time);
             match classify_civil_timestamp(&time_zone, local_window)? {
                 CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
@@ -901,7 +901,7 @@ fn build_stale_threshold(
 ) -> Result<ContactThreshold> {
     match (command, stale_cutoff) {
         (CliCommand::Flames, Some(input)) => {
-            let local_now = now().to_zoned(system_time_zone());
+            let local_now = now().to_zoned_datetime(system_time_zone());
             let cutoff = parse_stale_cutoff(input, &local_now)
                 .map_err(anyhow::Error::msg)?
                 .context("--stale-cutoff cannot be blank")?;
