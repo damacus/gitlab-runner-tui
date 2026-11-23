@@ -1,6 +1,6 @@
 use super::manager::RunnerManager;
 use crate::time::{elapsed_seconds, parse_rfc3339, parse_user_cutoff};
-use jiff::{Timestamp, Zoned};
+use jiff::{Timestamp, ZonedDateTime};
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, cmp::Reverse, time::Instant};
 
@@ -159,7 +159,7 @@ pub fn parse_manager_contacted_at(manager: &RunnerManager) -> Option<Timestamp> 
     parse_timestamp(manager.contacted_at.as_deref())
 }
 
-pub fn parse_stale_cutoff(input: &str, now: &Zoned) -> Result<Option<Timestamp>, String> {
+pub fn parse_stale_cutoff(input: &str, now: &ZonedDateTime) -> Result<Option<Timestamp>, String> {
     parse_user_cutoff(input, now)
 }
 
@@ -517,10 +517,10 @@ mod tests {
     use crate::time::{add_seconds, format_rfc3339, now as timestamp_now, system_time_zone};
     use jiff::tz::TimeZone;
 
-    fn london_now(input: &str) -> Zoned {
+    fn london_now(input: &str) -> ZonedDateTime {
         parse_rfc3339(input)
             .unwrap()
-            .to_zoned(TimeZone::get("Europe/London").unwrap())
+            .to_zoned_datetime(TimeZone::get("Europe/London").unwrap())
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
     fn test_parse_stale_cutoff_accepts_hour_and_minute() {
         let now = london_now("2026-05-12T09:30:00+01:00");
         let cutoff = parse_stale_cutoff("11:00", &now).unwrap().unwrap();
-        let local_cutoff = cutoff.to_zoned(now.time_zone().clone());
+        let local_cutoff = cutoff.to_zoned_datetime(now.time_zone().clone());
 
         assert_eq!(local_cutoff.date(), now.date());
         assert_eq!(local_cutoff.strftime("%H:%M:%S").to_string(), "11:00:00");
@@ -678,7 +678,7 @@ mod tests {
     fn test_parse_stale_cutoff_accepts_hour_minute_and_second() {
         let now = london_now("2026-05-12T09:30:00+01:00");
         let cutoff = parse_stale_cutoff("11:00:30", &now).unwrap().unwrap();
-        let local_cutoff = cutoff.to_zoned(now.time_zone().clone());
+        let local_cutoff = cutoff.to_zoned_datetime(now.time_zone().clone());
 
         assert_eq!(local_cutoff.date(), now.date());
         assert_eq!(local_cutoff.strftime("%H:%M:%S").to_string(), "11:00:30");
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_parse_stale_cutoff_accepts_rfc3339() {
-        let now = timestamp_now().to_zoned(system_time_zone());
+        let now = timestamp_now().to_zoned_datetime(system_time_zone());
         let cutoff = parse_stale_cutoff("2026-05-12T11:00:00+01:00", &now)
             .unwrap()
             .unwrap();
@@ -696,13 +696,13 @@ mod tests {
 
     #[test]
     fn test_parse_stale_cutoff_blank_clears_cutoff() {
-        let now = timestamp_now().to_zoned(system_time_zone());
+        let now = timestamp_now().to_zoned_datetime(system_time_zone());
         assert_eq!(parse_stale_cutoff("   ", &now).unwrap(), None);
     }
 
     #[test]
     fn test_parse_stale_cutoff_rejects_invalid_input() {
-        let now = timestamp_now().to_zoned(system_time_zone());
+        let now = timestamp_now().to_zoned_datetime(system_time_zone());
         assert!(parse_stale_cutoff("not-a-time", &now).is_err());
     }
 

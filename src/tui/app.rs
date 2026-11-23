@@ -1658,7 +1658,7 @@ impl App {
     }
 
     fn apply_stale_cutoff_input(&mut self) {
-        let local_now = timestamp_now().to_zoned(system_time_zone());
+        let local_now = timestamp_now().to_zoned_datetime(system_time_zone());
         match parse_stale_cutoff(&self.stale_cutoff_input, &local_now) {
             Ok(cutoff) => {
                 self.stale_cutoff_at = cutoff;
@@ -2216,7 +2216,7 @@ pub fn latest_runner_contact(runner: &Runner) -> Option<Timestamp> {
 }
 
 fn format_stale_cutoff_input(cutoff: Timestamp) -> String {
-    let local_now = timestamp_now().to_zoned(system_time_zone());
+    let local_now = timestamp_now().to_zoned_datetime(system_time_zone());
     format_user_cutoff_input(cutoff, &local_now)
 }
 
