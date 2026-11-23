@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.23](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.22...v0.1.23) (2026-11-23)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate jiff to v1 ([#332](https://github.com/damacus/gitlab-runner-tui/issues/332)) ([f830e9a](https://github.com/damacus/gitlab-runner-tui/commit/f830e9a13cbb7cd4da24a11472ac6b86b7ca3cde))
+
 ## [0.1.22](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.21...v0.1.22) (2026-10-28)
 
 
