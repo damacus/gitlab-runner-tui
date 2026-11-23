@@ -9,7 +9,8 @@
     {
       "matchPackageNames": ["/.*/"],
       "automerge": false,
-      "minimumReleaseAge": "7 days"
+      "minimumReleaseAge": "7 days",
+      "semanticCommitType": "chore"
     },
     {
       "matchManagers": ["cargo", "github-actions", "mise"],
@@ -24,6 +25,39 @@
       "matchCurrentValue": "0.2",
       "matchNewValue": "1.*",
       "automerge": true
+    },
+    {
+      "description": "Release changes to Rust runtime and build dependencies",
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dependencies", "build-dependencies"],
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "Release changes to the native binary toolchain",
+      "matchManagers": ["mise"],
+      "matchFileNames": ["mise.toml"],
+      "matchDepNames": ["rust", "zig", "cargo:cargo-zigbuild"],
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "Release changes to images used in the published containers",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["Dockerfile"],
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "Release changes to the tools that build published binaries and images",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/release-please.yml"],
+      "matchPackageNames": [
+        "jdx/mise",
+        "jdx/mise-action",
+        "docker/setup-qemu-action",
+        "docker/setup-buildx-action",
+        "docker/metadata-action",
+        "docker/build-push-action"
+      ],
+      "semanticCommitType": "fix"
     }
   ]
 }
