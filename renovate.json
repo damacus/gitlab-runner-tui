@@ -4,11 +4,26 @@
     "local>damacus/renovate-config",
     "helpers:pinGitHubActionDigests"
   ],
+  "platformAutomerge": false,
   "packageRules": [
     {
       "matchPackageNames": ["/.*/"],
       "automerge": false,
       "minimumReleaseAge": "7 days"
+    },
+    {
+      "matchManagers": ["cargo", "github-actions", "mise"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "description": "Allow the jiff 0.2 to 1.x migration after CI passes",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["jiff"],
+      "matchUpdateTypes": ["major"],
+      "matchCurrentValue": "0.2",
+      "matchNewValue": "1.*",
+      "automerge": true
     }
   ]
 }
