@@ -25,9 +25,12 @@ use ratatui::widgets::{ListState, ScrollbarState, TableState};
 use reqwest::Url;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Instant;
 use termina::event::{KeyCode, KeyEvent, Modifiers};
 use tokio::sync::mpsc;
+
+const SEARCH_UPDATE_CAPACITY: usize = 64;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Tab {
@@ -337,7 +340,7 @@ pub enum SearchPhase {
 
 enum SearchUpdateKind {
     Summaries(QueryOutcome),
-    Enrichment(Box<EnrichmentProgress>),
+    Enrichment(EnrichmentProgress),
     Complete(Box<SearchCompletion>),
     Failed(anyhow::Error),
 }
@@ -469,7 +472,8 @@ pub struct App {
     pub last_fetch_failed: bool,
     search_generation: u64,
     pending_search: Option<PendingSearch>,
-    enrichment_cache: RunnerEnrichmentCache,
+    enrichment_cache: Arc<RunnerEnrichmentCache>,
+    search_runner_indices: Option<HashMap<u64, usize>>,
     /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
     pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
@@ -535,7 +539,8 @@ impl App {
             last_fetch_failed: false,
             search_generation: 0,
             pending_search: None,
-            enrichment_cache: RunnerEnrichmentCache::default(),
+            enrichment_cache: Arc::default(),
+            search_runner_indices: None,
             all_runners_fell_back: false,
             settings_draft,
             settings_message: None,
@@ -693,13 +698,13 @@ impl App {
         );
         self.settings_draft.discovery_mode = next;
         self.loaded_tab = None;
-        self.enrichment_cache.clear();
+        self.enrichment_cache = Arc::default();
     }
 
     fn install_runtime_configuration(&mut self, config: AppConfig, conductor: Conductor) {
         self.config = config;
         self.conductor = conductor;
-        self.enrichment_cache.clear();
+        self.enrichment_cache = Arc::default();
     }
 
     pub fn has_loaded_active_tab(&self) -> bool {
@@ -896,6 +901,7 @@ impl App {
             pending.handle.abort();
         }
         self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_runner_indices = None;
         let generation = self.search_generation;
         self.is_loading = true;
         self.search_phase = SearchPhase::Discovering;
@@ -905,13 +911,13 @@ impl App {
         let conductor = self.conductor.clone();
         let filters = self.build_filters();
         let summary_filters = summary_discovery_filters(&filters);
-        let enrichment_cache = self.enrichment_cache.clone();
         let tab = self.active_tab();
+        let enrichment_cache = (tab == Tab::Runners).then(|| Arc::clone(&self.enrichment_cache));
         let threshold = self.stale_contact_threshold();
-        let (updates_tx, updates_rx) = mpsc::channel(4);
+        let (updates_tx, updates_rx) = mpsc::channel(SEARCH_UPDATE_CAPACITY);
 
         let handle = tokio::spawn(async move {
-            if tab == Tab::Runners {
+            if let Some(enrichment_cache) = enrichment_cache {
                 match conductor
                     .fetch_runner_summaries_with_metrics(summary_filters.clone())
                     .await
@@ -944,9 +950,7 @@ impl App {
                                             .send(SearchUpdate {
                                                 generation,
                                                 tab,
-                                                kind: SearchUpdateKind::Enrichment(Box::new(
-                                                    outcome,
-                                                )),
+                                                kind: SearchUpdateKind::Enrichment(outcome),
                                             })
                                             .await
                                             .is_ok()
@@ -1030,7 +1034,7 @@ impl App {
         let mut updates = Vec::new();
         let mut channel_closed = false;
         if let Some(pending) = self.pending_search.as_mut() {
-            loop {
+            for _ in 0..SEARCH_UPDATE_CAPACITY {
                 match pending.updates.try_recv() {
                     Ok(update) => updates.push(update),
                     Err(mpsc::error::TryRecvError::Empty) => break,
@@ -1042,14 +1046,7 @@ impl App {
             }
         }
 
-        let mut saw_terminal = false;
-        for update in updates {
-            saw_terminal |= matches!(
-                &update.kind,
-                SearchUpdateKind::Complete(_) | SearchUpdateKind::Failed(_)
-            );
-            self.process_search_update(update);
-        }
+        let saw_terminal = self.process_search_updates(updates);
 
         // Only a drained, closed channel proves that no terminal update can still arrive.
         if saw_terminal || channel_closed {
@@ -1124,6 +1121,43 @@ impl App {
         }
     }
 
+    fn process_search_updates(&mut self, updates: Vec<SearchUpdate>) -> bool {
+        let mut enrichment: Option<(Tab, EnrichmentProgress)> = None;
+        let mut saw_terminal = false;
+        for update in updates {
+            if update.generation != self.search_generation {
+                continue;
+            }
+            match update.kind {
+                SearchUpdateKind::Enrichment(progress) => {
+                    if let Some((_, batch)) = &mut enrichment {
+                        batch.runners.extend(progress.runners);
+                        batch.metrics = progress.metrics;
+                    } else {
+                        enrichment = Some((update.tab, progress));
+                    }
+                }
+                SearchUpdateKind::Complete(_) => {
+                    // Completion already includes the pending updates and applies final filters.
+                    enrichment = None;
+                    self.process_search_update(update);
+                    saw_terminal = true;
+                }
+                _ => {
+                    if let Some((tab, progress)) = enrichment.take() {
+                        self.apply_enrichment_progress(tab, progress);
+                    }
+                    saw_terminal |= matches!(update.kind, SearchUpdateKind::Failed(_));
+                    self.process_search_update(update);
+                }
+            }
+        }
+        if let Some((tab, progress)) = enrichment {
+            self.apply_enrichment_progress(tab, progress);
+        }
+        saw_terminal
+    }
+
     fn process_search_update(&mut self, update: SearchUpdate) {
         if update.generation != self.search_generation {
             return;
@@ -1145,36 +1179,48 @@ impl App {
                 self.loaded_tab = Some(update.tab);
             }
             SearchUpdateKind::Enrichment(progress) => {
-                self.is_loading = true;
-                self.search_phase = SearchPhase::Enriching;
-                self.has_partial_results = true;
-                self.last_fetch_failed = false;
-                self.live_query_metrics = Some(progress.metrics);
-                let selected_runner_id = (self.loaded_tab == Some(update.tab))
-                    .then(|| self.selected_runner().map(|runner| runner.id))
-                    .flatten();
-                if let Some(index) = self
-                    .raw_runners
-                    .iter()
-                    .position(|runner| runner.id == progress.runner.id)
-                {
-                    self.raw_runners[index] = progress.runner;
-                }
-                self.rebuild_view_preserving_selection(
-                    update.tab,
-                    Some(RunnerFilters::default()),
-                    selected_runner_id,
-                );
-                self.loaded_tab = Some(update.tab);
+                self.apply_enrichment_progress(update.tab, progress);
             }
             SearchUpdateKind::Complete(completion) => {
                 if let Some(cache) = completion.cache {
-                    self.enrichment_cache = cache;
+                    self.enrichment_cache = Arc::new(cache);
                 }
                 self.process_search_success(update.tab, completion.outcome);
             }
             SearchUpdateKind::Failed(error) => self.process_search_failure(error),
         }
+    }
+
+    fn apply_enrichment_progress(&mut self, tab: Tab, progress: EnrichmentProgress) {
+        self.is_loading = true;
+        self.search_phase = SearchPhase::Enriching;
+        self.has_partial_results = true;
+        self.last_fetch_failed = false;
+        self.live_query_metrics = Some(progress.metrics);
+        let selected_runner_id = (self.loaded_tab == Some(tab))
+            .then(|| self.selected_runner().map(|runner| runner.id))
+            .flatten();
+        let indices = self.search_runner_indices.get_or_insert_with(|| {
+            self.raw_runners
+                .iter()
+                .enumerate()
+                .map(|(index, runner)| (runner.id, index))
+                .collect()
+        });
+        for runner in progress.runners {
+            if let Some(stored) = indices
+                .get(&runner.id)
+                .and_then(|&index| self.raw_runners.get_mut(index))
+            {
+                *stored = runner;
+            }
+        }
+        self.rebuild_view_preserving_selection(
+            tab,
+            Some(RunnerFilters::default()),
+            selected_runner_id,
+        );
+        self.loaded_tab = Some(tab);
     }
 
     fn process_search_success(&mut self, tab: Tab, outcome: QueryOutcome) {
@@ -1195,6 +1241,7 @@ impl App {
     }
 
     fn process_search_failure(&mut self, error: anyhow::Error) {
+        self.search_runner_indices = None;
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
         let error_message = format!("{error:#}");
@@ -1246,6 +1293,7 @@ impl App {
             .then(|| self.selected_runner().map(|runner| runner.id))
             .flatten();
         self.raw_runners = runners;
+        self.search_runner_indices = None;
         self.rebuild_view_preserving_selection(tab, filter_override, selected_runner_id);
     }
 
@@ -1281,7 +1329,7 @@ impl App {
     }
 
     pub fn seed_demo_data(&mut self, runners: Vec<Runner>) {
-        self.enrichment_cache.clear();
+        self.enrichment_cache = Arc::default();
         self.renders_from_runners(Tab::Runners, runners);
         self.loaded_tab = Some(Tab::Runners);
         self.last_refresh_at = Some(Instant::now());
@@ -1337,21 +1385,10 @@ impl App {
                 let sort_key = self.effective_sort_key();
                 let raw_runners = &self.raw_runners;
                 if sort_key == RunnerSortKey::LastContact {
-                    manager_rows.sort_by(|left, right| {
-                        let left_runner = &raw_runners[left.runner_index];
-                        let right_runner = &raw_runners[right.runner_index];
-                        let left_manager = &left_runner.managers[left.manager_index];
-                        let right_manager = &right_runner.managers[right.manager_index];
-                        let left_contact = parse_manager_contacted_at(left_manager);
-                        let right_contact = parse_manager_contacted_at(right_manager);
-                        match (left_contact, right_contact) {
-                            (Some(l), Some(r)) => l.cmp(&r),
-                            (None, Some(_)) => std::cmp::Ordering::Less,
-                            (Some(_), None) => std::cmp::Ordering::Greater,
-                            (None, None) => std::cmp::Ordering::Equal,
-                        }
-                        .then_with(|| left_runner.id.cmp(&right_runner.id))
-                        .then_with(|| left_manager.id.cmp(&right_manager.id))
+                    manager_rows.sort_by_cached_key(|row| {
+                        let runner = &raw_runners[row.runner_index];
+                        let manager = &runner.managers[row.manager_index];
+                        (parse_manager_contacted_at(manager), runner.id, manager.id)
                     });
                 } else if sort_key == RunnerSortKey::Status {
                     manager_rows.sort_by(|left, right| {
@@ -3779,10 +3816,10 @@ mod tests {
         app.process_search_update(SearchUpdate {
             generation: 4,
             tab: Tab::Runners,
-            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
-                runner: first,
+            kind: SearchUpdateKind::Enrichment(EnrichmentProgress {
+                runners: vec![first],
                 metrics: test_outcome(vec![second]).metrics,
-            })),
+            }),
         });
 
         assert_eq!(app.selected_runner().map(|runner| runner.id), Some(2));
@@ -3810,22 +3847,35 @@ mod tests {
         let mut metrics = test_outcome(Vec::new()).metrics;
         metrics.request_counts.detail_requests = 1;
         metrics.request_counts.manager_requests = 1;
-        app.process_search_update(SearchUpdate {
-            generation: 9,
-            tab: Tab::Runners,
-            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
-                runner: test_runner(1, vec![test_manager(1, "online")]),
-                metrics,
-            })),
-        });
-        app.process_search_update(SearchUpdate {
-            generation: 9,
-            tab: Tab::Runners,
-            kind: SearchUpdateKind::Failed(anyhow::anyhow!("enrichment disconnected")),
-        });
+        let mut latest = metrics.clone();
+        latest.request_counts.detail_requests += 1;
+        assert!(app.process_search_updates(vec![
+            SearchUpdate {
+                generation: 9,
+                tab: Tab::Runners,
+                kind: SearchUpdateKind::Enrichment(EnrichmentProgress {
+                    runners: vec![test_runner(1, vec![test_manager(1, "offline")])],
+                    metrics,
+                }),
+            },
+            SearchUpdate {
+                generation: 9,
+                tab: Tab::Runners,
+                kind: SearchUpdateKind::Enrichment(EnrichmentProgress {
+                    runners: vec![test_runner(1, vec![test_manager(1, "online")])],
+                    metrics: latest,
+                }),
+            },
+            SearchUpdate {
+                generation: 9,
+                tab: Tab::Runners,
+                kind: SearchUpdateKind::Failed(anyhow::anyhow!("enrichment disconnected")),
+            },
+        ]));
 
         assert_eq!(app.raw_runners.len(), 1);
         assert_eq!(app.raw_runners[0].id, 1);
+        assert_eq!(app.raw_runners[0].managers[0].status, "online");
         assert!(!app.is_loading);
         assert_eq!(app.search_phase, SearchPhase::Idle);
         assert!(app.has_partial_results);
@@ -3833,7 +3883,7 @@ mod tests {
         assert_eq!(app.poll_display_state(), PollDisplayState::Error);
         let metrics = app.live_query_metrics.as_ref().unwrap();
         assert!(!metrics.succeeded);
-        assert_eq!(metrics.request_counts.detail_requests, 1);
+        assert_eq!(metrics.request_counts.detail_requests, 2);
         assert_eq!(metrics.request_counts.manager_requests, 1);
         assert_eq!(
             app.error_message.as_deref(),
@@ -4497,14 +4547,55 @@ mod tests {
         app.process_search_update(SearchUpdate {
             generation: 12,
             tab: Tab::Runners,
-            kind: SearchUpdateKind::Enrichment(Box::new(EnrichmentProgress {
-                runner,
+            kind: SearchUpdateKind::Enrichment(EnrichmentProgress {
+                runners: vec![runner],
                 metrics: test_outcome(Vec::new()).metrics,
-            })),
+            }),
         });
 
         assert_eq!(app.runners[0].formatted_tags, "new-tag, linux");
         assert_eq!(app.selected_runner().map(|runner| runner.id), Some(1));
         assert_eq!(app.runners[0].runner_index, 0);
+    }
+
+    #[test]
+    fn worker_contact_sort_puts_missing_contacts_first_and_breaks_ties_by_id() {
+        let mut app = test_app();
+        app.active_tab_index = app
+            .tabs
+            .iter()
+            .position(|tab| *tab == Tab::Workers)
+            .unwrap();
+        app.sort_key = RunnerSortKey::LastContact;
+        let manager = |id, contact: Option<&str>| {
+            let mut manager = test_manager(id, "online");
+            manager.contacted_at = contact.map(str::to_owned);
+            manager
+        };
+        app.raw_runners = vec![
+            test_runner(
+                2,
+                vec![manager(5, Some("2024-01-20T14:22:00Z")), manager(6, None)],
+            ),
+            test_runner(
+                1,
+                vec![
+                    manager(8, Some("2024-01-20T14:22:00Z")),
+                    manager(7, Some("2024-01-20T14:22:00Z")),
+                    manager(9, Some("invalid")),
+                    manager(10, Some("2024-01-20T14:23:00Z")),
+                ],
+            ),
+        ];
+        app.apply_view_state(Tab::Workers);
+        let ordered: Vec<_> = app
+            .manager_rows
+            .iter()
+            .map(|row| {
+                let runner = &app.raw_runners[row.runner_index];
+                (runner.id, runner.managers[row.manager_index].id)
+            })
+            .collect();
+        assert_eq!(ordered, [(1, 9), (2, 6), (1, 7), (1, 8), (2, 5), (1, 10)]);
     }
 }

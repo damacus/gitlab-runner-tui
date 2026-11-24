@@ -170,6 +170,15 @@ Useful keys:
 | `?` | Open the built-in help |
 | `q` or `Ctrl-C` | Quit |
 
+The Runners view shows summary rows first, then fills in runner and manager
+details while you browse. On refresh, it reuses details from unchanged rows.
+If a request fails after summaries arrive, the view keeps the partial results
+and shows the error.
+
+Press `c` to open settings and `b` to rerun the local processing benchmarks
+for the currently loaded runners. These measure filtering, sorting and row
+preparation on this machine, separately from GitLab request time.
+
 ## Run one-shot commands
 
 Add a command to skip the dashboard and return machine-readable output:
