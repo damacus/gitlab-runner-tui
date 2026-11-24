@@ -3,7 +3,6 @@ all-features = true
 
 [advisories]
 db-urls = ["https://github.com/RustSec/advisory-db"]
-git-fetch-with-cli = true
 yanked = "deny"
 unmaintained = "workspace"
 unsound = "all"
