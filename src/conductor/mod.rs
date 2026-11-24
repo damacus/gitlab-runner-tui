@@ -127,7 +127,7 @@ pub struct Conductor {
 pub struct QueryOutcome {
     pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
-    /// True when AllRunners mode fell back from /runners/all to /runners due to 403.
+    /// True when `AllRunners` mode fell back from /runners/all to /runners due to 403.
     pub all_runners_fell_back: bool,
 }
 
@@ -211,7 +211,7 @@ fn is_forbidden(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<reqwest::Error>()
-            .and_then(|e| e.status())
+            .and_then(reqwest::Error::status)
             .is_some_and(|s| s == reqwest::StatusCode::FORBIDDEN)
     })
 }
@@ -258,11 +258,11 @@ impl Conductor {
         self.client.validate_token().await
     }
 
-    pub fn discovery_mode(&self) -> RunnerDiscoveryMode {
+    pub const fn discovery_mode(&self) -> RunnerDiscoveryMode {
         self.discovery_mode
     }
 
-    pub fn client(&self) -> &GitLabClient {
+    pub const fn client(&self) -> &GitLabClient {
         &self.client
     }
 
@@ -436,7 +436,7 @@ impl Conductor {
                 }
                 if let Some(entry) = cached.filter(|_| !reused.is_empty()) {
                     next_cache.entries.insert(runner.id, Arc::clone(entry));
-                    *runner = entry.enriched.clone();
+                    runner.clone_from(&entry.enriched);
                     reused_indices.push(index);
                 }
             }
@@ -490,7 +490,9 @@ impl Conductor {
                     enrichments.next().await
                 {
                     result.require(missing)?;
-                    runners[index] = result.runner.clone();
+                    if let Some(runner) = runners.get_mut(index) {
+                        runner.clone_from(&result.runner);
+                    }
                     if missing.detail {
                         request_counts.detail_requests += 1;
                     }
@@ -556,7 +558,8 @@ impl Conductor {
         reused_enrichments: EnrichmentReuseCounts,
     ) -> LiveQueryMetrics {
         let finished_at = now();
-        let duration_millis = elapsed_millis(finished_at, started_at).max(0) as u128;
+        let duration_millis =
+            u128::try_from(elapsed_millis(finished_at, started_at)).unwrap_or_default();
         LiveQueryMetrics::success_with_reuse(
             started_at,
             finished_at,
@@ -896,14 +899,14 @@ impl Conductor {
     }
 }
 
-async fn with_request_permit<T, F>(semaphore: Arc<Semaphore>, future: F) -> T
+async fn with_request_permit<T, F>(semaphore: Arc<Semaphore>, future: F) -> Result<T>
 where
-    F: Future<Output = T>,
+    F: Future<Output = Result<T>>,
 {
     let _permit = semaphore
         .acquire_owned()
         .await
-        .expect("enrichment request semaphore is never closed");
+        .context("Runner enrichment request semaphore closed")?;
     future.await
 }
 
@@ -995,19 +998,19 @@ fn filter_rotating_runners(runners: Vec<Runner>) -> Vec<Runner> {
 
 fn merge_runner(existing: &mut Runner, incoming: Runner) {
     if existing.description.is_none() {
-        existing.description = incoming.description.clone();
+        existing.description.clone_from(&incoming.description);
     }
     if existing.created_at.is_none() {
-        existing.created_at = incoming.created_at.clone();
+        existing.created_at.clone_from(&incoming.created_at);
     }
     if existing.ip_address.is_none() {
-        existing.ip_address = incoming.ip_address.clone();
+        existing.ip_address.clone_from(&incoming.ip_address);
     }
     if existing.version.is_none() {
-        existing.version = incoming.version.clone();
+        existing.version.clone_from(&incoming.version);
     }
     if existing.revision.is_none() {
-        existing.revision = incoming.revision.clone();
+        existing.revision.clone_from(&incoming.revision);
     }
 
     for tag in incoming.tag_list {
@@ -1028,6 +1031,10 @@ fn merge_runner(existing: &mut Runner, incoming: Runner) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Tests retain mock servers and guards until their assertions finish."
+)]
 mod tests {
     use super::*;
     use crate::config::{RunnerTarget, RunnerTargetKind};
@@ -1222,7 +1229,7 @@ mod tests {
         tags: &[&str],
         version: &str,
     ) -> String {
-        let tags_json: Vec<String> = tags.iter().map(|t| format!("\"{}\"", t)).collect();
+        let tags_json: Vec<String> = tags.iter().map(|t| format!("\"{t}\"")).collect();
         format!(
             r#"{{
                 "id": {},
@@ -1248,16 +1255,15 @@ mod tests {
     fn manager_response_body(id: u64, runner_id: u64, status: &str) -> String {
         format!(
             r#"{{
-                "id": {},
-                "system_id": "host-{}",
+                "id": {id},
+                "system_id": "host-{runner_id}",
                 "created_at": "2024-01-15T10:30:00.000Z",
                 "contacted_at": "2024-01-20T14:22:00.000Z",
                 "ip_address": "10.0.1.1",
-                "status": "{}",
+                "status": "{status}",
                 "version": "17.5.0",
                 "revision": "abc123"
-            }}"#,
-            id, runner_id, status
+            }}"#
         )
     }
 
@@ -1267,23 +1273,20 @@ mod tests {
         status: &str,
         contacted_at: Option<&str>,
     ) -> String {
-        let contacted_at_json = match contacted_at {
-            Some(value) => format!("\"{}\"", value),
-            None => "null".to_string(),
-        };
+        let contacted_at_json =
+            contacted_at.map_or_else(|| "null".to_string(), |value| format!("\"{value}\""));
 
         format!(
             r#"{{
-                "id": {},
-                "system_id": "host-{}",
+                "id": {id},
+                "system_id": "host-{runner_id}",
                 "created_at": "2024-01-15T10:30:00.000Z",
-                "contacted_at": {},
+                "contacted_at": {contacted_at_json},
                 "ip_address": "10.0.1.1",
-                "status": "{}",
+                "status": "{status}",
                 "version": "17.5.0",
                 "revision": "abc123"
-            }}"#,
-            id, runner_id, contacted_at_json, status
+            }}"#
         )
     }
 
@@ -1379,7 +1382,7 @@ mod tests {
         for (id, status, tags, managers) in runners {
             mocks.push(
                 server
-                    .mock("GET", format!("/api/v4/runners/{}", id).as_str())
+                    .mock("GET", format!("/api/v4/runners/{id}").as_str())
                     .with_status(200)
                     .with_body(detail_response_body(*id, status, tags))
                     .expect_at_most(1)
@@ -1394,7 +1397,7 @@ mod tests {
             let managers_body = format!("[{}]", manager_bodies.join(","));
             mocks.push(
                 server
-                    .mock("GET", format!("/api/v4/runners/{}/managers", id).as_str())
+                    .mock("GET", format!("/api/v4/runners/{id}/managers").as_str())
                     .with_status(200)
                     .with_body(managers_body)
                     .create_async()
@@ -1760,13 +1763,16 @@ mod tests {
                         maximum.fetch_max(now_active, Ordering::SeqCst);
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                         active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
                     }
                 };
 
-                tokio::join!(
+                let (detail, managers) = tokio::join!(
                     with_request_permit(Arc::clone(&semaphore), request()),
                     with_request_permit(Arc::clone(&semaphore), request())
                 );
+                detail.unwrap();
+                managers.unwrap();
             }
         });
 
@@ -2839,10 +2845,10 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(idx, (status, contacted_at))| RunnerManager {
-                id: id * 100 + idx as u64,
-                system_id: format!("host-{}-{}", id, idx),
+                id: id * 100 + u64::try_from(idx).unwrap(),
+                system_id: format!("host-{id}-{idx}"),
                 created_at: "2024-01-15T10:30:00.000Z".to_string(),
-                contacted_at: contacted_at.map(|c| c.to_string()),
+                contacted_at: contacted_at.map(std::string::ToString::to_string),
                 ip_address: Some("10.0.1.1".to_string()),
                 status: (*status).to_string(),
                 version: Some("17.5.0".to_string()),
@@ -2857,7 +2863,7 @@ mod tests {
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
-            description: Some(format!("Runner {}", id)),
+            description: Some(format!("Runner {id}")),
             created_at: Some("2024-01-15T10:30:00.000Z".to_string()),
             ip_address: Some("10.0.1.1".to_string()),
             is_shared: false,

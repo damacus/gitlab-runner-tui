@@ -53,6 +53,14 @@ run = "cargo fmt"
 description = "Run Clippy with CI settings"
 run = "cargo clippy --locked --all-targets --all-features -- -D warnings"
 
+[tasks."lint:report"]
+description = "Report Clippy diagnostics as JSON"
+run = "cargo clippy --locked --all-targets --all-features --message-format=json"
+
+[tasks."lint:fix"]
+description = "Apply Clippy's machine-applicable suggestions"
+run = "cargo clippy --fix --locked --all-targets --all-features"
+
 [tasks.security]
 description = "Check dependencies for RustSec advisories"
 run = "cargo deny --all-features check advisories"

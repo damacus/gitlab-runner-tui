@@ -4,14 +4,18 @@ use jiff::{Timestamp, ZonedDateTime};
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, cmp::Reverse, time::Instant};
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct RunnerGroup {
     pub id: u64,
     pub name: String,
     pub web_url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "GitLab uses runner_type in its runner JSON contract."
+)]
 pub struct Runner {
     pub id: u64,
     pub runner_type: String,
@@ -79,15 +83,15 @@ pub enum TagFilterMode {
 }
 
 impl TagFilterMode {
-    pub fn toggle(self) -> Self {
+    pub const fn toggle(self) -> Self {
         match self {
-            TagFilterMode::And => TagFilterMode::Or,
-            TagFilterMode::Or => TagFilterMode::And,
+            Self::And => Self::Or,
+            Self::Or => Self::And,
         }
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RunnerFilters {
     /// Text-filter tags — sent to the GitLab API (always AND).
     pub tag_list: Option<Vec<String>>,
@@ -110,13 +114,12 @@ pub enum ContactThreshold {
 
 impl ContactThreshold {
     pub fn is_contact_stale(self, contacted_at: Option<Timestamp>, now: Timestamp) -> bool {
-        match contacted_at {
-            Some(contacted_at) => match self {
-                Self::OlderThanSecs(seconds) => elapsed_seconds(now, contacted_at) > seconds as i64,
-                Self::Since(cutoff) => contacted_at <= cutoff,
-            },
-            None => true,
-        }
+        contacted_at.is_none_or(|contacted_at| match self {
+            Self::OlderThanSecs(seconds) => {
+                u64::try_from(elapsed_seconds(now, contacted_at)).is_ok_and(|age| age > seconds)
+            }
+            Self::Since(cutoff) => contacted_at <= cutoff,
+        })
     }
 }
 
@@ -172,7 +175,8 @@ pub fn latest_runner_contact_at(runner: &Runner) -> Option<Timestamp> {
 }
 
 pub fn runner_age_secs(runner: &Runner, now: Timestamp) -> Option<u64> {
-    parse_runner_created_at(runner).map(|created_at| elapsed_seconds(now, created_at).max(0) as u64)
+    parse_runner_created_at(runner)
+        .map(|created_at| u64::try_from(elapsed_seconds(now, created_at)).unwrap_or_default())
 }
 
 pub fn extract_runner_versions(runners: &[Runner]) -> Vec<String> {
@@ -311,7 +315,7 @@ pub fn sort_runners(runners: &mut [Runner], sort_key: RunnerSortKey, now: Timest
             .then_with(|| left.id.cmp(&right.id))
         }),
         RunnerSortKey::LastContact => {
-            sort_runners_by_last_contact_with(runners, latest_runner_contact_at)
+            sort_runners_by_last_contact_with(runners, latest_runner_contact_at);
         }
         RunnerSortKey::Tags => runners.sort_by(|left, right| {
             // Compare tag_list vectors directly to avoid expensive allocations
@@ -340,41 +344,36 @@ pub fn sort_runner_indices(
 ) {
     match sort_key {
         RunnerSortKey::None => {}
-        RunnerSortKey::Status => indices.sort_by(|left, right| {
-            let left = &runners[*left];
-            let right = &runners[*right];
-            left.status
-                .cmp(&right.status)
-                .then_with(|| left.id.cmp(&right.id))
+        RunnerSortKey::Status => indices.sort_by_key(|&index| {
+            runners
+                .get(index)
+                .map(|runner| (runner.status.as_str(), runner.id))
         }),
         RunnerSortKey::Version => indices.sort_by(|left, right| {
-            let left = &runners[*left];
-            let right = &runners[*right];
-            compare_versions_desc(
-                left.version.as_deref().unwrap_or(""),
-                right.version.as_deref().unwrap_or(""),
-            )
-            .then_with(|| left.id.cmp(&right.id))
+            let (left, right) = (runners.get(*left), runners.get(*right));
+            match (left, right) {
+                (Some(left), Some(right)) => compare_versions_desc(
+                    left.version.as_deref().unwrap_or(""),
+                    right.version.as_deref().unwrap_or(""),
+                )
+                .then_with(|| left.id.cmp(&right.id)),
+                _ => left.is_some().cmp(&right.is_some()),
+            }
         }),
-        RunnerSortKey::LastContact => indices.sort_by_cached_key(|index| {
-            let runner = &runners[*index];
-            (latest_runner_contact_at(runner).map(Reverse), runner.id)
+        RunnerSortKey::LastContact => indices.sort_by_cached_key(|&index| {
+            runners
+                .get(index)
+                .map(|runner| (latest_runner_contact_at(runner).map(Reverse), runner.id))
         }),
-        RunnerSortKey::Tags => indices.sort_by(|left, right| {
-            let left = &runners[*left];
-            let right = &runners[*right];
-            left.tag_list
-                .cmp(&right.tag_list)
-                .then_with(|| left.id.cmp(&right.id))
+        RunnerSortKey::Tags => indices.sort_by_key(|&index| {
+            runners
+                .get(index)
+                .map(|runner| (&runner.tag_list, runner.id))
         }),
-        RunnerSortKey::Managers => indices.sort_by(|left, right| {
-            let left = &runners[*left];
-            let right = &runners[*right];
-            right
-                .managers
-                .len()
-                .cmp(&left.managers.len())
-                .then_with(|| left.id.cmp(&right.id))
+        RunnerSortKey::Managers => indices.sort_by_key(|&index| {
+            runners
+                .get(index)
+                .map(|runner| (Reverse(runner.managers.len()), runner.id))
         }),
     }
 
@@ -421,8 +420,9 @@ pub fn benchmark_runner_processing(
         seen_sample_sizes.push(sample_size);
 
         let filter_started = Instant::now();
-        let mut filtered: Vec<usize> = runners[..sample_size]
+        let mut filtered: Vec<usize> = runners
             .iter()
+            .take(sample_size)
             .enumerate()
             .filter_map(|(index, runner)| {
                 runner_matches_filters(runner, filters, now).then_some(index)
@@ -437,16 +437,17 @@ pub fn benchmark_runner_processing(
         let flatten_started = Instant::now();
         let worker_row_count = filtered
             .iter()
-            .map(|index| runners[*index].managers.len())
+            .filter_map(|&index| runners.get(index).map(|runner| runner.managers.len()))
             .sum();
         let _flattened: Vec<(usize, usize)> = filtered
             .iter()
-            .flat_map(|runner_index| {
-                runners[*runner_index]
+            .filter_map(|&index| runners.get(index).map(|runner| (index, runner)))
+            .flat_map(|(runner_index, runner)| {
+                runner
                     .managers
                     .iter()
                     .enumerate()
-                    .map(move |(manager_index, _)| (*runner_index, manager_index))
+                    .map(move |(manager_index, _)| (runner_index, manager_index))
             })
             .collect();
         let flatten_duration_micros = flatten_started.elapsed().as_micros();
@@ -599,13 +600,12 @@ mod tests {
                     "created_at": "2024-01-15T10:30:00.000Z",
                     "ip_address": null,
                     "is_shared": false,
-                    "status": "{}",
+                    "status": "{status}",
                     "version": null,
                     "revision": null,
                     "tag_list": [],
                     "managers": []
-                }}"#,
-                status
+                }}"#
             );
 
             let runner: Runner = serde_json::from_str(&json).expect("Failed to deserialize");
@@ -619,7 +619,7 @@ mod tests {
             let json = format!(
                 r#"{{
                     "id": 1,
-                    "runner_type": "{}",
+                    "runner_type": "{runner_type}",
                     "active": true,
                     "paused": false,
                     "description": null,
@@ -631,8 +631,7 @@ mod tests {
                     "revision": null,
                     "tag_list": [],
                     "managers": []
-                }}"#,
-                runner_type
+                }}"#
             );
 
             let runner: Runner = serde_json::from_str(&json).expect("Failed to deserialize");
@@ -718,21 +717,20 @@ mod tests {
     }
 
     fn create_test_runner(id: u64, status: &str, manager_status: Option<&str>) -> Runner {
-        let managers = match manager_status {
-            Some(s) => vec![RunnerManager {
+        let managers = manager_status.map_or_else(Vec::new, |status| {
+            vec![RunnerManager {
                 id: id * 10,
-                system_id: format!("host-{}", id),
+                system_id: format!("host-{id}"),
                 created_at: "2024-01-15T10:30:00.000Z".to_string(),
                 contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
                 ip_address: Some("10.0.1.1".to_string()),
-                status: s.to_string(),
+                status: status.to_string(),
                 version: Some("17.5.0".to_string()),
                 revision: None,
                 platform: None,
                 architecture: None,
-            }],
-            None => vec![],
-        };
+            }]
+        });
 
         Runner {
             id,
@@ -763,12 +761,7 @@ mod tests {
         // Filter for runners with online managers
         let online: Vec<_> = runners
             .iter()
-            .filter(|r| {
-                r.managers
-                    .first()
-                    .map(|m| m.status == "online")
-                    .unwrap_or(false)
-            })
+            .filter(|r| r.managers.first().is_some_and(|m| m.status == "online"))
             .collect();
 
         assert_eq!(online.len(), 1);
@@ -803,7 +796,7 @@ mod tests {
     #[test]
     fn test_extract_runner_tags_trims_and_drops_empty() {
         let mut r = create_test_runner(1, "online", None);
-        r.tag_list = vec!["  linux  ".to_owned(), "".to_owned(), " ".to_owned()];
+        r.tag_list = vec!["  linux  ".to_owned(), String::new(), " ".to_owned()];
         let tags = extract_runner_tags(&[r]);
         assert_eq!(tags, vec!["linux"]);
     }
@@ -884,7 +877,7 @@ mod tests {
         let offline = create_test_runner(1, "offline", Some("offline"));
         let online = create_test_runner(2, "online", Some("online"));
 
-        let mut runners = vec![online.clone(), offline.clone()];
+        let mut runners = vec![online, offline.clone()];
         sort_runners(&mut runners, RunnerSortKey::Status, now);
 
         assert_eq!(runners[0].id, offline.id);
@@ -998,7 +991,7 @@ mod tests {
 
         assert_eq!(
             parse_count.get(),
-            (RUNNER_COUNT * MANAGERS_PER_RUNNER) as usize
+            usize::try_from(RUNNER_COUNT * MANAGERS_PER_RUNNER).unwrap()
         );
     }
 
@@ -1010,7 +1003,7 @@ mod tests {
         let mut newer = create_test_runner(2, "online", Some("online"));
         newer.version = Some("17.5.0".to_string());
 
-        let mut runners = vec![older.clone(), newer.clone()];
+        let mut runners = vec![older, newer.clone()];
         sort_runners(&mut runners, RunnerSortKey::Version, now);
 
         assert_eq!(runners[0].id, newer.id);

@@ -8,6 +8,7 @@ use reqwest::{
     Client, Method, RequestBuilder, Response, StatusCode, Url,
 };
 use std::{
+    fmt::Write as _,
     net::IpAddr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -34,11 +35,12 @@ impl RunnerPage {
     pub fn next_page(&self, current_page: u32, per_page: u32) -> Option<u32> {
         match self.pagination {
             Pagination::Next(page) => Some(page),
-            Pagination::Complete | Pagination::Invalid => None,
-            Pagination::Missing if self.runners.len() >= per_page as usize => {
+            Pagination::Missing
+                if usize::try_from(per_page).is_ok_and(|size| self.runners.len() >= size) =>
+            {
                 current_page.checked_add(1)
             }
-            Pagination::Missing => None,
+            Pagination::Complete | Pagination::Invalid | Pagination::Missing => None,
         }
     }
 }
@@ -58,6 +60,10 @@ impl GitLabClient {
     ///
     /// Production callers should use [`Self::new`]. This opt-in exists for local development
     /// servers and test fixtures that cannot provide HTTPS.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The constructor owns its inputs and drops the token string after building the sensitive header."
+    )]
     pub fn new_with_insecure_loopback(
         host: String,
         token: String,
@@ -131,7 +137,7 @@ impl GitLabClient {
             tokio::time::sleep(delay).await;
         }
 
-        unreachable!("finite retry loop always returns or reports exhaustion")
+        anyhow::bail!("GitLab GET request for {operation} exhausted its retry attempts")
     }
 
     pub async fn validate_token(&self) -> Result<()> {
@@ -258,7 +264,7 @@ impl GitLabClient {
     }
 
     pub async fn fetch_runner_detail(&self, runner_id: u64) -> Result<Runner> {
-        let endpoint = format!("runners/{}", runner_id);
+        let endpoint = format!("runners/{runner_id}");
         let response = self
             .send_get_with_retry(
                 self.request(Method::GET, &endpoint),
@@ -276,7 +282,7 @@ impl GitLabClient {
     }
 
     pub async fn fetch_runner_managers(&self, runner_id: u64) -> Result<Vec<RunnerManager>> {
-        let endpoint = format!("runners/{}/managers", runner_id);
+        let endpoint = format!("runners/{runner_id}/managers");
         let response = self
             .send_get_with_retry(
                 self.request(Method::GET, &endpoint),
@@ -334,12 +340,13 @@ fn exponential_backoff_with_jitter(attempt: usize) -> Duration {
     let base = GET_BACKOFF_BASE
         .saturating_mul(multiplier)
         .min(GET_BACKOFF_CAP);
-    let jitter_ceiling_ms = (base.as_millis() / 4) as u64;
-    let jitter_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64
-        % (jitter_ceiling_ms + 1);
+    let jitter_ceiling_ms = u64::try_from(base.as_millis() / 4).unwrap_or(u64::MAX - 1);
+    let jitter_ms = u64::from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos(),
+    ) % (jitter_ceiling_ms + 1);
 
     base.saturating_add(Duration::from_millis(jitter_ms))
         .min(GET_BACKOFF_CAP)
@@ -356,16 +363,14 @@ fn pagination_from_headers(
             return pagination;
         }
 
-        return headers
-            .get(LINK)
-            .map(|link| pagination_from_link(link, response_url, current_page))
-            .unwrap_or(Pagination::Invalid);
+        return headers.get(LINK).map_or(Pagination::Invalid, |link| {
+            pagination_from_link(link, response_url, current_page)
+        });
     }
 
-    headers
-        .get(LINK)
-        .map(|link| pagination_from_link(link, response_url, current_page))
-        .unwrap_or(Pagination::Missing)
+    headers.get(LINK).map_or(Pagination::Missing, |link| {
+        pagination_from_link(link, response_url, current_page)
+    })
 }
 
 fn pagination_from_x_next_page(value: &HeaderValue, current_page: u32) -> Pagination {
@@ -444,15 +449,17 @@ fn encode_target_id(id: &str) -> String {
     for byte in id.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
+                encoded.push(char::from(byte));
             }
-            _ => encoded.push_str(&format!("%{:02X}", byte)),
+            _ => {
+                write!(encoded, "%{byte:02X}").ok();
+            }
         }
     }
     encoded
 }
 
-pub(crate) fn normalize_host(host: &str, allow_insecure_loopback: bool) -> Result<String> {
+pub fn normalize_host(host: &str, allow_insecure_loopback: bool) -> Result<String> {
     let trimmed = host.trim().trim_end_matches('/');
     let normalized = if trimmed.contains("://") {
         trimmed.to_string()
@@ -499,6 +506,10 @@ fn is_loopback_host(url: &Url) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Tests retain mock servers and guards until their assertions finish."
+)]
 mod tests {
     use super::*;
     use mockito::{Matcher, Server};
@@ -933,7 +944,7 @@ mod tests {
         let error = client.validate_token().await.unwrap_err();
 
         mock.assert_async().await;
-        assert!(format!("{:#}", error).contains("401"));
+        assert!(format!("{error:#}").contains("401"));
     }
 
     #[tokio::test]
@@ -1175,8 +1186,7 @@ mod tests {
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("500"),
-            "Error should mention 500, got: {}",
-            err_msg
+            "Error should mention 500, got: {err_msg}"
         );
     }
 
@@ -1237,8 +1247,7 @@ mod tests {
         let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("401"),
-            "Error should mention 401, got: {}",
-            err_msg
+            "Error should mention 401, got: {err_msg}"
         );
     }
 

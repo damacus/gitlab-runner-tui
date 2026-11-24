@@ -30,10 +30,10 @@ fn resolve_config_path(platform: ConfigPlatform, home_dir: &Path, config_dir: &P
         ConfigPlatform::Linux | ConfigPlatform::Windows => config_dir.to_path_buf(),
     };
 
-    config_path(config_dir)
+    config_path(&config_dir)
 }
 
-fn config_path(config_dir: PathBuf) -> PathBuf {
+fn config_path(config_dir: &Path) -> PathBuf {
     config_dir
         .join(CONFIG_DIRECTORY_NAME)
         .join(CONFIG_FILE_NAME)
@@ -64,7 +64,7 @@ pub struct RunnerTarget {
     pub label: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
     pub poll_interval_secs: u64,
@@ -141,7 +141,7 @@ impl AppConfig {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(AppConfig::default());
+                return Ok(Self::default());
             }
             Err(error) => {
                 return Err(error)
@@ -164,7 +164,7 @@ impl AppConfig {
         #[cfg(not(target_os = "macos"))]
         let config_dir = base_strategy.config_dir();
 
-        Ok(config_path(config_dir))
+        Ok(config_path(&config_dir))
     }
 
     pub fn save_to_canonical_path(&self) -> Result<PathBuf> {
@@ -206,11 +206,11 @@ impl AppConfig {
 
     #[cfg(test)]
     pub fn load_from_str(toml_str: &str) -> Result<Self> {
-        let config: AppConfig = toml::from_str(toml_str)?;
+        let config: Self = toml::from_str(toml_str)?;
         Ok(config)
     }
 
-    pub fn has_runner_targets(&self) -> bool {
+    pub const fn has_runner_targets(&self) -> bool {
         !self.runner_targets.is_empty()
     }
 
@@ -396,11 +396,11 @@ struct TemporaryFileGuard {
 }
 
 impl TemporaryFileGuard {
-    fn new(path: PathBuf) -> Self {
+    const fn new(path: PathBuf) -> Self {
         Self { path, armed: true }
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -556,9 +556,9 @@ mod tests {
 
     #[test]
     fn test_load_from_partial_toml_uses_defaults() {
-        let toml_str = r#"
+        let toml_str = r"
             poll_interval_secs = 10
-        "#;
+        ";
 
         let config = AppConfig::load_from_str(toml_str).unwrap();
         assert_eq!(config.poll_interval_secs, 10);
@@ -812,7 +812,9 @@ mod tests {
 
         let error = AppConfig::load_from_path(&path).unwrap_err();
         assert!(error.to_string().contains(&path.display().to_string()));
-        assert!(error.chain().any(|cause| cause.is::<std::io::Error>()));
+        assert!(error
+            .chain()
+            .any(<dyn std::error::Error + 'static>::is::<std::io::Error>));
     }
 
     #[test]
@@ -868,7 +870,7 @@ mod tests {
             rotation_wait: RotationWaitConfig::default(),
         };
 
-        let debug_output = format!("{:?}", config);
+        let debug_output = format!("{config:?}");
 
         assert!(!debug_output.contains("glpat-secret-token"));
         assert!(debug_output.contains("[REDACTED]"));

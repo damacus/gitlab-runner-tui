@@ -30,8 +30,8 @@ static RENDERED_RUNNER_ROWS: AtomicUsize = AtomicUsize::new(0);
 // ⚡ Bolt: Return `&str` instead of `String`
 // This avoids calling `.to_string()` and creating heap allocations
 // for every runner row rendered in the TUI table.
-fn dash_or(value: &Option<String>) -> &str {
-    value.as_deref().unwrap_or("-")
+fn dash_or(value: Option<&str>) -> &str {
+    value.unwrap_or("-")
 }
 
 fn display_or_dash(value: &str) -> &str {
@@ -43,23 +43,23 @@ fn display_or_dash(value: &str) -> &str {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
-    let chunks = Layout::vertical([
+    let [header, tabs, content, status] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
-    .split(frame.area());
+    .areas(frame.area());
 
-    render_header(app, frame, chunks[0]);
-    render_tabs(app, frame, chunks[1]);
+    render_header(app, frame, header);
+    render_tabs(app, frame, tabs);
 
     match app.mode {
-        AppMode::Help => render_help_view(frame, chunks[2]),
-        _ => render_content(app, frame, chunks[2]),
+        AppMode::Help => render_help_view(frame, content),
+        _ => render_content(app, frame, content),
     }
 
-    render_status_bar(app, frame, chunks[3]);
+    render_status_bar(app, frame, status);
 
     match app.mode {
         AppMode::Settings => render_settings_modal(app, frame),
@@ -92,7 +92,7 @@ fn visible_row_range(
 }
 
 fn table_viewport_capacity(area: Rect) -> usize {
-    area.height.saturating_sub(3) as usize
+    usize::from(area.height.saturating_sub(3))
 }
 
 fn table_needs_scrollbar(content_length: usize, area: Rect) -> bool {
@@ -101,23 +101,25 @@ fn table_needs_scrollbar(content_length: usize, area: Rect) -> bool {
 }
 
 fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
-    let vert = Layout::vertical([
+    let [_, vertical_center, _] = Layout::vertical([
         Constraint::Percentage((100 - height_percent) / 2),
         Constraint::Percentage(height_percent),
         Constraint::Percentage((100 - height_percent) / 2),
     ])
-    .split(area);
+    .areas(area);
 
-    Layout::horizontal([
+    let [_, center, _] = Layout::horizontal([
         Constraint::Percentage((100 - width_percent) / 2),
         Constraint::Percentage(width_percent),
         Constraint::Percentage((100 - width_percent) / 2),
     ])
-    .split(vert[1])[1]
+    .areas(vertical_center);
+    center
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(32)]).split(area);
+    let [header_area, poll_area] =
+        Layout::horizontal([Constraint::Min(24), Constraint::Length(32)]).areas(area);
 
     let title = if app.is_loading {
         format!(
@@ -132,8 +134,8 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     let title_line = styles::gradient_text(&title, (125, 207, 255), (187, 154, 247));
 
     let header = Paragraph::new(vec![title_line]).block(styles::block("Dashboard"));
-    frame.render_widget(header, chunks[0]);
-    render_polling_widget(app, frame, chunks[1]);
+    frame.render_widget(header, header_area);
+    render_polling_widget(app, frame, poll_area);
 }
 
 fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
@@ -156,12 +158,10 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
 
     let age = app
         .last_refresh_age_secs()
-        .map(format_age)
-        .unwrap_or_else(|| "never".to_string());
+        .map_or_else(|| "never".to_string(), format_age);
     let next = app
         .next_poll_in_secs()
-        .map(format_age)
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(|| "-".to_string(), format_age);
 
     let status_style = match state {
         PollDisplayState::Live | PollDisplayState::Refreshing => styles::accent_style(),
@@ -186,21 +186,22 @@ fn render_polling_widget(app: &App, frame: &mut Frame, area: Rect) {
 
 fn format_age(seconds: u64) -> String {
     match seconds {
-        0..=89 => format!("{}s", seconds),
+        0..=89 => format!("{seconds}s"),
         90..=3599 => format!("{}m", seconds / 60),
         3600..=86_399 => format!("{}h", seconds / 3600),
         _ => format!("{}d", seconds / 86_400),
     }
 }
 
-fn tab_chip_colors(tab: Tab) -> (Color, Color) {
+const fn tab_chip_colors(tab: Tab) -> (Color, Color) {
     match tab {
-        Tab::Runners => (Color::Rgb(125, 207, 255), Color::Rgb(30, 42, 66)),
+        Tab::Runners | Tab::Health | Tab::Workers => {
+            (Color::Rgb(125, 207, 255), Color::Rgb(30, 42, 66))
+        }
         Tab::Offline => (Color::Rgb(247, 118, 142), Color::Rgb(58, 26, 30)),
         Tab::Uncontacted => (Color::Rgb(224, 175, 104), Color::Rgb(58, 42, 10)),
         Tab::Empty => (Color::Rgb(86, 95, 137), Color::Rgb(34, 37, 58)),
         Tab::Rotating => (Color::Rgb(187, 154, 247), Color::Rgb(42, 26, 62)),
-        Tab::Health | Tab::Workers => (Color::Rgb(125, 207, 255), Color::Rgb(30, 42, 66)),
     }
 }
 
@@ -229,7 +230,6 @@ fn build_dashboard_shortcuts_line(compact: bool, active_tab: Tab) -> Line<'stati
         if active_tab == Tab::Uncontacted {
             push_hotkey_hint(&mut spans, "a", "cutoff", true);
         }
-        push_hotkey_hint(&mut spans, "q", "quit", true);
     } else {
         push_hotkey_hint(&mut spans, "p", "poll", true);
         push_hotkey_hint(&mut spans, "r", "refresh", true);
@@ -240,8 +240,8 @@ fn build_dashboard_shortcuts_line(compact: bool, active_tab: Tab) -> Line<'stati
         push_hotkey_hint(&mut spans, "s", "sort", false);
         push_hotkey_hint(&mut spans, "c", "settings", false);
         push_hotkey_hint(&mut spans, "?", "help", false);
-        push_hotkey_hint(&mut spans, "q", "quit", true);
     }
+    push_hotkey_hint(&mut spans, "q", "quit", true);
     Line::from(spans)
 }
 
@@ -282,12 +282,12 @@ fn render_tabs(app: &App, frame: &mut Frame, area: Rect) {
         spans.push(Span::styled(format!(" {} ", tab.title()), name_style));
 
         if let Some(&count) = app.tab_counts.get(tab) {
-            let (chip_fg, chip_bg) = tab_chip_colors(*tab);
+            let (foreground, background) = tab_chip_colors(*tab);
             spans.push(Span::raw(" "));
             spans.push(styles::soft_badge(
                 count.to_string(),
-                chip_fg,
-                chip_bg,
+                foreground,
+                background,
                 is_active,
             ));
         }
@@ -340,25 +340,27 @@ fn render_error(error: &str, frame: &mut Frame, area: Rect) {
 }
 
 fn render_health_tab(app: &mut App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).split(area);
+    let [summary, table] =
+        Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).areas(area);
 
-    render_health_summary(app, frame, chunks[0]);
-    render_runners_tab(app, frame, chunks[1]);
+    render_health_summary(app, frame, summary);
+    render_runners_tab(app, frame, table);
 }
 
 fn render_health_summary(app: &App, frame: &mut Frame, area: Rect) {
-    let text = if let Some(summary) = &app.health_summary {
-        let symbol = if summary.is_healthy() { "✓" } else { "✗" };
-        format!(
-            "{} {} of {} runners online ({:.1}%)",
-            symbol,
-            summary.online_count,
-            summary.total_count,
-            summary.percentage()
-        )
-    } else {
-        "No health data loaded yet.".to_string()
-    };
+    let text = app.health_summary.as_ref().map_or_else(
+        || "No health data loaded yet.".to_string(),
+        |summary| {
+            let symbol = if summary.is_healthy() { "✓" } else { "✗" };
+            format!(
+                "{} {} of {} runners online ({:.1}%)",
+                symbol,
+                summary.online_count,
+                summary.total_count,
+                summary.percentage()
+            )
+        },
+    );
 
     let paragraph = Paragraph::new(text)
         .style(styles::accent_style())
@@ -391,16 +393,17 @@ fn render_runner_like_tab(app: &mut App, frame: &mut Frame, area: Rect, rotating
 
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
-            let chunks =
+            let [table, detail] =
                 Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)])
-                    .split(area);
-            render_runner_table(app, frame, chunks[0], rotating);
-            render_runner_detail(app, frame, chunks[1]);
+                    .areas(area);
+            render_runner_table(app, frame, table, rotating);
+            render_runner_detail(app, frame, detail);
         }
         DetailLayoutMode::BottomPanel => {
-            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).split(area);
-            render_runner_table(app, frame, chunks[0], rotating);
-            render_runner_detail(app, frame, chunks[1]);
+            let [table, detail] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).areas(area);
+            render_runner_table(app, frame, table, rotating);
+            render_runner_detail(app, frame, detail);
         }
         DetailLayoutMode::Compact => {
             render_runner_table(app, frame, area, rotating);
@@ -443,7 +446,7 @@ fn sort_column_index(rotating: bool, tab: Tab, sort_key: RunnerSortKey) -> Optio
             RunnerSortKey::LastContact => Some(3),
             RunnerSortKey::Tags => Some(4),
             RunnerSortKey::Managers => Some(5),
-            _ => None,
+            RunnerSortKey::None => None,
         },
         Tab::Health => match sort_key {
             RunnerSortKey::Status => Some(1),
@@ -468,7 +471,7 @@ fn sort_column_index(rotating: bool, tab: Tab, sort_key: RunnerSortKey) -> Optio
             RunnerSortKey::LastContact => Some(4),
             _ => None,
         },
-        _ => None,
+        Tab::Rotating => None,
     }
 }
 
@@ -493,14 +496,6 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         ])
     } else {
         match active_tab {
-            Tab::Runners => Row::new(vec![
-                Cell::from("ID"),
-                header_with_indicator("Status", RunnerSortKey::Status, active_sort),
-                header_with_indicator("Version", RunnerSortKey::Version, active_sort),
-                header_with_indicator("Last Contact", RunnerSortKey::LastContact, active_sort),
-                header_with_indicator("Tags", RunnerSortKey::Tags, active_sort),
-                header_with_indicator("Mgrs", RunnerSortKey::Managers, active_sort),
-            ]),
             Tab::Health => Row::new(vec![
                 Cell::from("ID"),
                 header_with_indicator("Status", RunnerSortKey::Status, active_sort),
@@ -532,86 +527,75 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
     .style(styles::table_header_style());
 
     let raw_runners = &app.raw_runners;
-    let rows = app.runners[visible_range.clone()].iter().map(|uirunner| {
-        #[cfg(test)]
-        RENDERED_RUNNER_ROWS.fetch_add(1, Ordering::Relaxed);
-        let runner = &raw_runners[uirunner.runner_index];
-        if rotating {
-            let oldest = runner
-                .managers
-                .iter()
-                .min_by_key(|manager| &manager.created_at);
-            let newest = if runner.managers.len() > 1 {
-                runner
+    let rows = app
+        .runners
+        .get(visible_range.clone())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|uirunner| {
+            #[cfg(test)]
+            RENDERED_RUNNER_ROWS.fetch_add(1, Ordering::Relaxed);
+            let runner = raw_runners.get(uirunner.runner_index)?;
+            Some(if rotating {
+                let oldest = runner
                     .managers
                     .iter()
-                    .max_by_key(|manager| &manager.created_at)
+                    .min_by_key(|manager| &manager.created_at);
+                let newest = if runner.managers.len() > 1 {
+                    runner
+                        .managers
+                        .iter()
+                        .max_by_key(|manager| &manager.created_at)
+                } else {
+                    None
+                };
+
+                let overall_status = newest
+                    .map(|manager| manager.status.as_str())
+                    .or_else(|| oldest.map(|manager| manager.status.as_str()))
+                    .unwrap_or("-");
+
+                Row::new(vec![
+                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                    Cell::from(oldest.map_or("-", |manager| manager.system_id.as_str())),
+                    Cell::from(newest.map_or("-", |manager| manager.system_id.as_str())),
+                    Cell::from(styles::status_line(overall_status)),
+                    Cell::from(latest_runner_contact_label(runner, now)),
+                ])
             } else {
-                None
-            };
+                let status = Cell::from(styles::status_line(runner.status.as_str()));
+                let last_contact = Cell::from(latest_runner_contact_label(runner, now));
 
-            let overall_status = newest
-                .map(|manager| manager.status.as_str())
-                .or_else(|| oldest.map(|manager| manager.status.as_str()))
-                .unwrap_or("-");
-
-            Row::new(vec![
-                Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                Cell::from(
-                    oldest
-                        .map(|manager| manager.system_id.as_str())
-                        .unwrap_or("-"),
-                ),
-                Cell::from(
-                    newest
-                        .map(|manager| manager.system_id.as_str())
-                        .unwrap_or("-"),
-                ),
-                Cell::from(styles::status_line(overall_status)),
-                Cell::from(latest_runner_contact_label(runner, now)),
-            ])
-        } else {
-            let status = Cell::from(styles::status_line(runner.status.as_str()));
-            let last_contact = Cell::from(latest_runner_contact_label(runner, now));
-
-            match active_tab {
-                Tab::Runners => Row::new(vec![
-                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                    status,
-                    Cell::from(dash_or(&runner.version)),
-                    last_contact,
-                    Cell::from(uirunner.formatted_tags.as_str()),
-                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
-                ]),
-                Tab::Health => Row::new(vec![
-                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                    status,
-                    Cell::from(dash_or(&runner.version)),
-                    last_contact,
-                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
-                ]),
-                Tab::Offline | Tab::Uncontacted => Row::new(vec![
-                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                    Cell::from(dash_or(&runner.version)),
-                    last_contact,
-                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
-                ]),
-                Tab::Empty => Row::new(vec![
-                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                    Cell::from(dash_or(&runner.version)),
-                    status,
-                ]),
-                _ => Row::new(vec![
-                    Cell::from(runner.id.to_string()).style(styles::muted_style()),
-                    status,
-                    Cell::from(dash_or(&runner.version)),
-                    last_contact,
-                    Cell::from(uirunner.formatted_tags.as_str()),
-                    Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
-                ]),
-            }
-        }
-    });
+                match active_tab {
+                    Tab::Health => Row::new(vec![
+                        Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                        status,
+                        Cell::from(dash_or(runner.version.as_deref())),
+                        last_contact,
+                        Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
+                    ]),
+                    Tab::Offline | Tab::Uncontacted => Row::new(vec![
+                        Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                        Cell::from(dash_or(runner.version.as_deref())),
+                        last_contact,
+                        Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
+                    ]),
+                    Tab::Empty => Row::new(vec![
+                        Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                        Cell::from(dash_or(runner.version.as_deref())),
+                        status,
+                    ]),
+                    _ => Row::new(vec![
+                        Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                        status,
+                        Cell::from(dash_or(runner.version.as_deref())),
+                        last_contact,
+                        Cell::from(uirunner.formatted_tags.as_str()),
+                        Cell::from(runner.managers.len().to_string()).style(styles::muted_style()),
+                    ]),
+                }
+            })
+        });
 
     let widths = if rotating {
         vec![
@@ -623,14 +607,6 @@ fn render_runner_table(app: &mut App, frame: &mut Frame, area: Rect, rotating: b
         ]
     } else {
         match active_tab {
-            Tab::Runners => vec![
-                Constraint::Length(8),
-                Constraint::Length(10),
-                Constraint::Length(10),
-                Constraint::Length(14),
-                Constraint::Percentage(40),
-                Constraint::Length(6),
-            ],
             Tab::Health => vec![
                 Constraint::Length(8),
                 Constraint::Length(10),
@@ -694,16 +670,17 @@ fn render_workers_tab(app: &mut App, frame: &mut Frame, area: Rect) {
 
     match detail_layout_mode(area.width, area.height) {
         DetailLayoutMode::SidePanel => {
-            let chunks =
+            let [table, detail] =
                 Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
-                    .split(area);
-            render_workers_table(app, frame, chunks[0]);
-            render_worker_detail(app, frame, chunks[1]);
+                    .areas(area);
+            render_workers_table(app, frame, table);
+            render_worker_detail(app, frame, detail);
         }
         DetailLayoutMode::BottomPanel => {
-            let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).split(area);
-            render_workers_table(app, frame, chunks[0]);
-            render_worker_detail(app, frame, chunks[1]);
+            let [table, detail] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(10)]).areas(area);
+            render_workers_table(app, frame, table);
+            render_worker_detail(app, frame, detail);
         }
         DetailLayoutMode::Compact => {
             render_workers_table(app, frame, area);
@@ -731,17 +708,22 @@ fn render_workers_table(app: &mut App, frame: &mut Frame, area: Rect) {
     .style(styles::table_header_style());
 
     let raw_runners = &app.raw_runners;
-    let rows = app.manager_rows[visible_range.clone()].iter().map(|row| {
-        let runner = &raw_runners[row.runner_index];
-        let manager = &runner.managers[row.manager_index];
-        Row::new(vec![
-            Cell::from(runner.id.to_string()).style(styles::muted_style()),
-            Cell::from(manager.id.to_string()).style(styles::muted_style()),
-            Cell::from(manager.system_id.as_str()),
-            Cell::from(styles::status_line(manager.status.as_str())),
-            Cell::from(manager_contact_label(manager, now)),
-        ])
-    });
+    let rows = app
+        .manager_rows
+        .get(visible_range.clone())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|row| {
+            let runner = raw_runners.get(row.runner_index)?;
+            let manager = runner.managers.get(row.manager_index)?;
+            Some(Row::new(vec![
+                Cell::from(runner.id.to_string()).style(styles::muted_style()),
+                Cell::from(manager.id.to_string()).style(styles::muted_style()),
+                Cell::from(manager.system_id.as_str()),
+                Cell::from(styles::status_line(manager.status.as_str())),
+                Cell::from(manager_contact_label(manager, now)),
+            ]))
+        });
 
     let table = Table::new(
         rows,
@@ -814,7 +796,7 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
     let now = timestamp_now();
 
     // Compute wrappable tags lines given available inner width (subtract 2 for border).
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_width = usize::from(area.width.saturating_sub(2));
     let tag_items: Vec<ListItem> = if runner.tag_list.is_empty() {
         vec![ListItem::new("Tags: -")]
     } else {
@@ -832,11 +814,10 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
             if i > 0 && current_line.len() + added_len > inner_width {
                 lines.push(ratatui::text::Line::from(std::mem::take(&mut current_line)));
                 current_line.push_str(&indent);
-                current_line.push_str(tag);
             } else {
                 current_line.push_str(sep);
-                current_line.push_str(tag);
             }
+            current_line.push_str(tag);
         }
         lines.push(ratatui::text::Line::from(current_line));
         vec![ListItem::new(ratatui::text::Text::from(lines))]
@@ -853,11 +834,13 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
         .created_at
         .as_deref()
         .and_then(|timestamp| parse_rfc3339(timestamp).ok())
-        .map(|dt| {
-            let age = elapsed_seconds(now, dt).max(0) as u64;
-            format!("{} ago", format_age(age))
-        })
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(
+            || "-".to_string(),
+            |dt| {
+                let age = u64::try_from(elapsed_seconds(now, dt)).unwrap_or_default();
+                format!("{} ago", format_age(age))
+            },
+        );
 
     let mut items = vec![ListItem::new(format!("ID: {}", runner.id))];
 
@@ -911,8 +894,7 @@ fn render_runner_detail(app: &App, frame: &mut Frame, area: Rect) {
             let ip = manager
                 .ip_address
                 .as_deref()
-                .map(|ip| format!("  {ip}"))
-                .unwrap_or_default();
+                .map_or_default(|ip| format!("  {ip}"));
             items.push(ListItem::new(format!(
                 "{} [{}] {} {}{}{}",
                 manager.system_id,
@@ -968,15 +950,16 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     let area = centered_rect(60, 78, frame.area());
     frame.render_widget(Clear, area);
 
-    let sections = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(5),
-        Constraint::Length(5),
-        Constraint::Min(6),
-        Constraint::Length(7),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let [search_area, selected_area, status_area, tags_area, versions_area, footer_area] =
+        Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Min(6),
+            Constraint::Length(7),
+            Constraint::Length(1),
+        ])
+        .areas(area);
 
     // --- Tag search section ---
     let search_focused = app.filter_popup_section == FilterPopupSection::TagSearch;
@@ -1006,7 +989,7 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
         } else {
             styles::block(search_title)
         });
-    frame.render_widget(search_widget, sections[0]);
+    frame.render_widget(search_widget, search_area);
 
     // --- Tags section ---
     let selected_focused = app.filter_popup_section == FilterPopupSection::Selected;
@@ -1051,11 +1034,11 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
     if selected_focused {
         frame.render_stateful_widget(
             selected_list,
-            sections[1],
+            selected_area,
             &mut app.selected_filter_list_state,
         );
     } else {
-        frame.render_widget(selected_list, sections[1]);
+        frame.render_widget(selected_list, selected_area);
     }
 
     let status_focused = app.filter_popup_section == FilterPopupSection::Status;
@@ -1088,9 +1071,9 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(status_title)
         });
     if status_focused {
-        frame.render_stateful_widget(status_list, sections[2], &mut app.status_list_state);
+        frame.render_stateful_widget(status_list, status_area, &mut app.status_list_state);
     } else {
-        frame.render_widget(status_list, sections[2]);
+        frame.render_widget(status_list, status_area);
     }
 
     // --- Tags section ---
@@ -1137,9 +1120,9 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(tags_title)
         });
     if tags_focused {
-        frame.render_stateful_widget(tags_list, sections[3], &mut app.tag_list_state);
+        frame.render_stateful_widget(tags_list, tags_area, &mut app.tag_list_state);
     } else {
-        frame.render_widget(tags_list, sections[3]);
+        frame.render_widget(tags_list, tags_area);
     }
 
     // --- Versions section ---
@@ -1176,9 +1159,9 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
             styles::block(versions_title)
         });
     if versions_focused {
-        frame.render_stateful_widget(versions_list, sections[4], &mut app.version_list_state);
+        frame.render_stateful_widget(versions_list, versions_area, &mut app.version_list_state);
     } else {
-        frame.render_widget(versions_list, sections[4]);
+        frame.render_widget(versions_list, versions_area);
     }
 
     // --- Footer ---
@@ -1188,25 +1171,25 @@ fn render_filter_popup(app: &mut App, frame: &mut Frame) {
         "space:toggle/remove  m:AND/OR  c:clear section  a:clear all  tab:switch  esc:close"
     };
     let footer = Paragraph::new(footer_hint).style(styles::muted_style());
-    frame.render_widget(footer, sections[5]);
+    frame.render_widget(footer, footer_area);
 }
 
-fn render_settings_modal(app: &mut App, frame: &mut Frame) {
+fn render_settings_modal(app: &App, frame: &mut Frame) {
     let area = centered_rect(72, 70, frame.area());
     frame.render_widget(Clear, area);
 
-    let sections = Layout::vertical([
+    let [connection, behaviour, diagnostics, footer] = Layout::vertical([
         Constraint::Length(10),
         Constraint::Length(8),
         Constraint::Min(8),
         Constraint::Length(3),
     ])
-    .split(area);
+    .areas(area);
 
-    render_connection_section(app, frame, sections[0]);
-    render_behavior_section(app, frame, sections[1]);
-    render_diagnostics_section(app, frame, sections[2]);
-    render_settings_footer(app, frame, sections[3]);
+    render_connection_section(app, frame, connection);
+    render_behavior_section(app, frame, behaviour);
+    render_diagnostics_section(app, frame, diagnostics);
+    render_settings_footer(app, frame, footer);
 }
 
 fn render_connection_section(app: &App, frame: &mut Frame, area: Rect) {
@@ -1482,10 +1465,10 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             ResultsViewType::Workers => "workers",
             _ => "runners",
         };
-        let refreshed = app
-            .last_refresh_age_secs()
-            .map(|age| format!("last refresh {} ago", format_age(age)))
-            .unwrap_or_else(|| "not loaded yet".to_string());
+        let refreshed = app.last_refresh_age_secs().map_or_else(
+            || "not loaded yet".to_string(),
+            |age| format!("last refresh {} ago", format_age(age)),
+        );
         let mut left_summary = format!(
             "{} {} for {}",
             app.active_result_len(),
@@ -1524,22 +1507,22 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         64
     }
     .min(inner.width);
-    let cols =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcut_width)]).split(inner);
+    let [status_area, shortcut_area] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(shortcut_width)]).areas(inner);
 
     let block = styles::block("Status");
     frame.render_widget(block, area);
-    if cols[0].width < 20 {
+    if status_area.width < 20 {
         frame.render_widget(Paragraph::new(shortcuts).alignment(Alignment::Left), inner);
         return;
     }
     frame.render_widget(
         Paragraph::new(left_text).alignment(Alignment::Left),
-        cols[0],
+        status_area,
     );
     frame.render_widget(
         Paragraph::new(shortcuts).alignment(Alignment::Right),
-        cols[1],
+        shortcut_area,
     );
 }
 
@@ -1696,14 +1679,14 @@ mod tests {
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
-            description: Some(format!("Runner {}", id)),
+            description: Some(format!("Runner {id}")),
             created_at: Some("2024-01-15T10:30:00.000Z".to_string()),
             ip_address: Some("10.0.1.10".to_string()),
             is_shared: false,
             status: status.to_string(),
             version: Some("18.8.0".to_string()),
             revision: Some("9ffb4aa0".to_string()),
-            tag_list: tags.iter().map(|tag| tag.to_string()).collect(),
+            tag_list: tags.iter().map(std::string::ToString::to_string).collect(),
             managers,
             groups: vec![],
         }
@@ -1770,12 +1753,17 @@ mod tests {
         app.polling_active = true;
         app.last_refresh_at = Some(Instant::now());
         let runner = test_runner(
-            326689,
+            326_689,
             "online",
             &["platform", "prod"],
             vec![
-                test_manager(255550, "s_new", "online", Some("2024-01-21T09:15:00.000Z")),
-                test_manager(255373, "s_old", "offline", Some("2024-01-20T08:15:00.000Z")),
+                test_manager(255_550, "s_new", "online", Some("2024-01-21T09:15:00.000Z")),
+                test_manager(
+                    255_373,
+                    "s_old",
+                    "offline",
+                    Some("2024-01-20T08:15:00.000Z"),
+                ),
             ],
         );
         app.raw_runners = vec![runner.clone()];
@@ -1822,11 +1810,11 @@ READY 0 runners for Offline · no p poll · r refresh · f filter · s sort · c
         app.select_tab(Tab::Workers);
         app.loaded_tab = Some(Tab::Workers);
         app.raw_runners = vec![test_runner(
-            326759,
+            326_759,
             "online",
             &[],
             vec![test_manager(
-                256551,
+                256_551,
                 "s_859060915507",
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
@@ -1856,11 +1844,11 @@ READY 1 workers for Workers · Worker 256551 on s_859 p poll · r refresh · f f
         app.select_tab(Tab::Health);
         app.loaded_tab = Some(Tab::Health);
         let runner = test_runner(
-            326812,
+            326_812,
             "online",
             &["platform", "alm"],
             vec![test_manager(
-                255552,
+                255_552,
                 "s_04070b461d87",
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
@@ -1930,11 +1918,11 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         let mut app = test_app();
         app.loaded_tab = Some(Tab::Runners);
         let runner = test_runner(
-            326689,
+            326_689,
             "online",
             &["platform"],
             vec![test_manager(
-                255550,
+                255_550,
                 "s_new",
                 "online",
                 Some("2024-01-21T09:15:00.000Z"),
@@ -2164,7 +2152,7 @@ READY 1 runners for Health · Runner 326812 [online] p poll · r refresh · f fi
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let started = Instant::now();
-        let (_, allocations) = crate::allocation_counter::count_allocations(|| {
+        let ((), allocations) = crate::allocation_counter::count_allocations(|| {
             terminal
                 .draw(|frame| render(&mut app, frame))
                 .expect("draw");

@@ -51,7 +51,7 @@ impl EventSender {
 
     async fn send_result(&self, result: std::io::Result<Event>, token: &CancellationToken) -> bool {
         tokio::select! {
-            _ = token.cancelled() => false,
+            () = token.cancelled() => false,
             result = self.sender.send(result) => result.is_ok(),
         }
     }
@@ -165,7 +165,7 @@ async fn run_event_producer<S>(
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            _ = token.cancelled() => break,
+            () = token.cancelled() => break,
             event = reader.next() => match event {
                 Some(Ok(TerminaEvent::Key(key)))
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>

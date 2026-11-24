@@ -12,7 +12,7 @@ pub fn demo_runners() -> Vec<Runner> {
     vec![
         // --- ONLINE runners (6) ---
         Runner {
-            id: 100001,
+            id: 100_001,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -29,7 +29,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 "prod".to_string(),
             ],
             managers: vec![RunnerManager {
-                id: 200001,
+                id: 200_001,
                 system_id: "s_aabbccdd1122".to_string(),
                 created_at: "2022-06-15T08:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(15),
@@ -47,7 +47,7 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
         },
         Runner {
-            id: 100002,
+            id: 100_002,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -64,7 +64,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 "prod".to_string(),
             ],
             managers: vec![RunnerManager {
-                id: 200002,
+                id: 200_002,
                 system_id: "s_bbccddee2233".to_string(),
                 created_at: "2022-06-15T08:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(10),
@@ -82,7 +82,7 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
         },
         Runner {
-            id: 100003,
+            id: 100_003,
             runner_type: "instance_type".to_string(),
             active: true,
             paused: false,
@@ -96,7 +96,7 @@ pub fn demo_runners() -> Vec<Runner> {
             tag_list: vec!["k8s".to_string(), "linux".to_string()],
             managers: vec![
                 RunnerManager {
-                    id: 200003,
+                    id: 200_003,
                     system_id: "s_ccddee334455".to_string(),
                     created_at: "2023-01-10T12:00:00.000Z".to_string(),
                     contacted_at: contacted_minutes_ago(30),
@@ -108,7 +108,7 @@ pub fn demo_runners() -> Vec<Runner> {
                     architecture: Some("amd64".to_string()),
                 },
                 RunnerManager {
-                    id: 200004,
+                    id: 200_004,
                     system_id: "s_ddeeff445566".to_string(),
                     created_at: "2023-01-10T12:00:00.000Z".to_string(),
                     contacted_at: contacted_minutes_ago(45),
@@ -123,7 +123,7 @@ pub fn demo_runners() -> Vec<Runner> {
             groups: vec![],
         },
         Runner {
-            id: 100004,
+            id: 100_004,
             runner_type: "group_type".to_string(),
             active: true,
             paused: true,
@@ -140,7 +140,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 "linux".to_string(),
             ],
             managers: vec![RunnerManager {
-                id: 200005,
+                id: 200_005,
                 system_id: "s_eeff00556677".to_string(),
                 created_at: "2023-03-20T09:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(5),
@@ -158,7 +158,7 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
         },
         Runner {
-            id: 100005,
+            id: 100_005,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -175,7 +175,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 "local".to_string(),
             ],
             managers: vec![RunnerManager {
-                id: 200006,
+                id: 200_006,
                 system_id: "s_ff0011667788".to_string(),
                 created_at: "2021-11-05T14:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(20),
@@ -189,7 +189,7 @@ pub fn demo_runners() -> Vec<Runner> {
             groups: vec![],
         },
         Runner {
-            id: 100006,
+            id: 100_006,
             runner_type: "project_type".to_string(),
             active: true,
             paused: false,
@@ -202,7 +202,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("11223344".to_string()),
             tag_list: vec!["windows".to_string(), "dotnet".to_string()],
             managers: vec![RunnerManager {
-                id: 200007,
+                id: 200_007,
                 system_id: "s_001122778899".to_string(),
                 created_at: "2024-02-01T10:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(2),
@@ -217,7 +217,7 @@ pub fn demo_runners() -> Vec<Runner> {
         },
         // --- OFFLINE runners (3) ---
         Runner {
-            id: 100007,
+            id: 100_007,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -234,7 +234,7 @@ pub fn demo_runners() -> Vec<Runner> {
                 "prod".to_string(),
             ],
             managers: vec![RunnerManager {
-                id: 200008,
+                id: 200_008,
                 system_id: "s_112233889900".to_string(),
                 created_at: "2022-08-01T08:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(25),
@@ -252,7 +252,7 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
         },
         Runner {
-            id: 100008,
+            id: 100_008,
             runner_type: "instance_type".to_string(),
             active: true,
             paused: false,
@@ -265,7 +265,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("oldoldold".to_string()),
             tag_list: vec!["legacy".to_string()],
             managers: vec![RunnerManager {
-                id: 200009,
+                id: 200_009,
                 system_id: "s_223344990011".to_string(),
                 created_at: "2020-05-12T00:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(35),
@@ -279,7 +279,7 @@ pub fn demo_runners() -> Vec<Runner> {
             groups: vec![],
         },
         Runner {
-            id: 100009,
+            id: 100_009,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -292,7 +292,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("aabbddeeff".to_string()),
             tag_list: vec!["runner:type:local".to_string(), "linux".to_string()],
             managers: vec![RunnerManager {
-                id: 200010,
+                id: 200_010,
                 system_id: "s_334455001122".to_string(),
                 created_at: "2023-07-19T11:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(40),
@@ -311,7 +311,7 @@ pub fn demo_runners() -> Vec<Runner> {
         },
         // --- STALE runners (3) ---
         Runner {
-            id: 100010,
+            id: 100_010,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -324,7 +324,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("stale001".to_string()),
             tag_list: vec!["linux".to_string(), "prod".to_string()],
             managers: vec![RunnerManager {
-                id: 200011,
+                id: 200_011,
                 system_id: "s_445566112233".to_string(),
                 created_at: "2022-04-01T00:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(120),
@@ -338,7 +338,7 @@ pub fn demo_runners() -> Vec<Runner> {
             groups: vec![],
         },
         Runner {
-            id: 100011,
+            id: 100_011,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -351,7 +351,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("stale002".to_string()),
             tag_list: vec!["windows".to_string()],
             managers: vec![RunnerManager {
-                id: 200012,
+                id: 200_012,
                 system_id: "s_556677223344".to_string(),
                 created_at: "2021-09-14T00:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(4_320),
@@ -365,7 +365,7 @@ pub fn demo_runners() -> Vec<Runner> {
             groups: vec![],
         },
         Runner {
-            id: 100012,
+            id: 100_012,
             runner_type: "instance_type".to_string(),
             active: true,
             paused: false,
@@ -378,7 +378,7 @@ pub fn demo_runners() -> Vec<Runner> {
             revision: Some("stale003".to_string()),
             tag_list: vec!["linux".to_string(), "k8s".to_string()],
             managers: vec![RunnerManager {
-                id: 200013,
+                id: 200_013,
                 system_id: "s_667788334455".to_string(),
                 created_at: "2020-11-30T00:00:00.000Z".to_string(),
                 contacted_at: contacted_minutes_ago(14_400),
@@ -393,7 +393,7 @@ pub fn demo_runners() -> Vec<Runner> {
         },
         // --- NEVER CONTACTED runners (2) ---
         Runner {
-            id: 100013,
+            id: 100_013,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
@@ -413,7 +413,7 @@ pub fn demo_runners() -> Vec<Runner> {
             }],
         },
         Runner {
-            id: 100014,
+            id: 100_014,
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,

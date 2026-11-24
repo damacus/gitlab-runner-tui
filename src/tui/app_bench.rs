@@ -16,7 +16,7 @@ mod tests {
             for j in 0..10 {
                 managers.push(RunnerManager {
                     id: j,
-                    system_id: format!("test-host-{}", j),
+                    system_id: format!("test-host-{j}"),
                     created_at: "2024-01-15T10:30:00.000Z".to_string(),
                     contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
                     ip_address: Some("10.0.1.1".to_string()),
