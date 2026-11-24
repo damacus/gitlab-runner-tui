@@ -200,6 +200,7 @@ impl AppConfig {
         reject_symlink_target(path)?;
         atomic_replace(&temporary_path, path)?;
         temporary_guard.disarm();
+        #[cfg(unix)]
         sync_parent_directory(parent)?;
         Ok(())
     }
@@ -383,11 +384,6 @@ fn sync_parent_directory(path: &Path) -> Result<()> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .with_context(|| format!("Failed to sync config directory {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 struct TemporaryFileGuard {
