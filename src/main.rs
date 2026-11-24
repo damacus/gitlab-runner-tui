@@ -1,3 +1,46 @@
+#![warn(
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo,
+    clippy::cognitive_complexity,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::exit,
+    clippy::dbg_macro,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable,
+    clippy::undocumented_unsafe_blocks,
+    clippy::as_conversions
+)]
+#![allow(
+    // Transitive duplicate versions are outside our control.
+    clippy::multiple_crate_versions,
+    // Error behaviour is documented at module level, not via per-fn
+    // `# Errors` sections; the public surface is consumed internally.
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    // Function length is governed by cognitive-complexity, not lines.
+    clippy::too_many_lines,
+    // Licence/keyword metadata is a maintainer decision, not a lint.
+    clippy::cargo_common_metadata,
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::unreachable,
+        clippy::disallowed_methods,
+        clippy::future_not_send,
+        clippy::assert_is_empty,
+    )
+)]
+
 mod client;
 mod conductor;
 mod config;
@@ -23,6 +66,7 @@ mod allocation_counter {
 
     pub struct CountingAllocator;
 
+    // SAFETY: allocation and deallocation use the system allocator unchanged.
     unsafe impl GlobalAlloc for CountingAllocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             ENABLED.with(|enabled| {
@@ -30,10 +74,12 @@ mod allocation_counter {
                     ALLOCATIONS.with(|count| count.set(count.get() + 1));
                 }
             });
+            // SAFETY: the caller supplies the layout under the GlobalAlloc contract.
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            // SAFETY: the caller supplies the original system allocation and layout.
             unsafe { System.dealloc(pointer, layout) }
         }
     }
@@ -164,6 +210,14 @@ impl std::fmt::Debug for Args {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Read GitLab configuration at the CLI boundary."
+)]
+fn gitlab_environment(name: &str) -> Option<String> {
+    env::var(name).ok()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     load_explicit_dotenv(args.dotenv.as_deref())?;
@@ -183,7 +237,7 @@ async fn run(args: Args) -> Result<()> {
     validate_cli_args(&args)?;
     config.validate_enrichment_request_limit()?;
     if !args.demo && args.config.is_none() && env::var_os("GITLAB_TOKEN").is_none() {
-        let host = resolve_gitlab_host(&args, &config, env::var("GITLAB_HOST").ok());
+        let host = resolve_gitlab_host(&args, &config, gitlab_environment("GITLAB_HOST"));
         credentials::migrate_legacy_config_token(&config, &host)?;
     }
 
@@ -239,6 +293,11 @@ async fn run(args: Args) -> Result<()> {
             )
             .await?;
             if !completed {
+                #[allow(
+                    clippy::disallowed_methods,
+                    clippy::exit,
+                    reason = "Rotation wait uses status 2 to distinguish an expired deadline."
+                )]
                 std::process::exit(2);
             }
         } else {
@@ -266,19 +325,18 @@ async fn run(args: Args) -> Result<()> {
 }
 
 fn run_auth_command(command: AuthCommand, args: &Args, config: &AppConfig) -> Result<()> {
-    let host = resolve_gitlab_host(args, config, env::var("GITLAB_HOST").ok());
+    let host = resolve_gitlab_host(args, config, gitlab_environment("GITLAB_HOST"));
     let config_path = args
         .config
         .clone()
-        .map(Ok)
-        .unwrap_or_else(AppConfig::canonical_path)?;
+        .map_or_else(AppConfig::canonical_path, Ok)?;
 
     match command {
         AuthCommand::Status => {
             let source = credentials::credential_source(
                 config,
                 &host,
-                env::var("GITLAB_TOKEN").ok().as_deref(),
+                gitlab_environment("GITLAB_TOKEN").as_deref(),
             )?;
             println!("GitLab host: {host}");
             match source {
@@ -388,7 +446,7 @@ fn platform_terminal() -> std::io::Result<PlatformTerminal> {
     PlatformTerminal::new()
 }
 
-fn terminal_mode(mode: DecPrivateModeCode, enabled: bool) -> Csi {
+const fn terminal_mode(mode: DecPrivateModeCode, enabled: bool) -> Csi {
     let mode = DecPrivateMode::Code(mode);
     if enabled {
         Csi::Mode(Mode::SetDecPrivateMode(mode))
@@ -417,7 +475,7 @@ where
     let alternate_screen = terminal_mode(DecPrivateModeCode::ClearAndEnableAlternateScreen, false);
     let show_cursor = terminal_mode(DecPrivateModeCode::ShowCursor, true);
     let screen_result =
-        write!(backend, "{alternate_screen}{show_cursor}").and_then(|_| backend.flush());
+        write!(backend, "{alternate_screen}{show_cursor}").and_then(|()| backend.flush());
     let raw_mode_result = backend.terminal_mut().enter_cooked_mode();
     screen_result.and(raw_mode_result)
 }
@@ -487,8 +545,8 @@ fn resolve_runtime_settings(args: &Args, config: AppConfig) -> Result<(String, S
     resolve_runtime_settings_with_token_loader(
         args,
         config,
-        env::var("GITLAB_HOST").ok(),
-        env::var("GITLAB_TOKEN").ok(),
+        gitlab_environment("GITLAB_HOST"),
+        gitlab_environment("GITLAB_TOKEN"),
         credentials::load_token,
     )
 }
@@ -498,7 +556,10 @@ async fn bootstrap_interactive_conductor(
     token: String,
     config: AppConfig,
 ) -> Result<(Conductor, AppConfig)> {
-    bootstrap_interactive_conductor_with_setup(host, token, config, run_first_time_setup).await
+    bootstrap_interactive_conductor_with_setup(host, token, config, |host, config| {
+        run_first_time_setup(&host, config)
+    })
+    .await
 }
 
 async fn bootstrap_interactive_conductor_with_setup<F>(
@@ -550,7 +611,7 @@ fn is_auth_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<reqwest::Error>()
-            .and_then(|reqwest_error| reqwest_error.status())
+            .and_then(reqwest::Error::status)
             .is_some_and(|status| {
                 status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN
             })
@@ -599,7 +660,7 @@ where
             config.gitlab_token = Some(token.clone());
             Ok((host, token, config))
         }
-        None => run_first_time_setup(host, &mut config),
+        None => run_first_time_setup(&host, &mut config),
     }
 }
 
@@ -622,15 +683,12 @@ fn load_explicit_dotenv(path: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
-fn run_first_time_setup(
-    host: String,
-    config: &mut AppConfig,
-) -> Result<(String, String, AppConfig)> {
+fn run_first_time_setup(host: &str, config: &mut AppConfig) -> Result<(String, String, AppConfig)> {
     println!("GitLab configuration is incomplete. Starting setup.");
     println!("This will write a config file to the canonical gitlab-runner-tui config path.");
     println!();
 
-    let host = prompt_with_default("GitLab host", &host)?;
+    let host = prompt_with_default("GitLab host", host)?;
     let token = prompt_required("GitLab personal access token")?;
     let discovery_mode = prompt_discovery_mode(config.discovery_mode)?;
     let runner_targets =
@@ -653,7 +711,7 @@ fn run_first_time_setup(
 }
 
 fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
-    print!("{} [{}]: ", prompt, default);
+    print!("{prompt} [{default}]: ");
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -669,7 +727,7 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
 
 fn prompt_required(prompt: &str) -> Result<String> {
     loop {
-        print!("{}: ", prompt);
+        print!("{prompt}: ");
         io::stdout().flush()?;
 
         let input = rpassword::read_password()?;
@@ -690,7 +748,7 @@ fn prompt_discovery_mode(default: RunnerDiscoveryMode) -> Result<RunnerDiscovery
             RunnerDiscoveryMode::VisibleRunners => "visible",
         };
 
-        print!("Discovery mode [all/targets/visible] [{}]: ", default_label);
+        print!("Discovery mode [all/targets/visible] [{default_label}]: ");
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -855,37 +913,34 @@ fn resolve_rotation_window_start(
     let time = parse_clock_time(start.trim())
         .with_context(|| "rotation_window_start must use HH:MM or HH:MM:SS")?;
 
-    match config
+    if let Some(timezone) = config
         .timezone
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        Some(timezone) => {
-            let time_zone = TimeZone::get(timezone)
-                .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
-            let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
-            let local_window = local_now.date().to_datetime(time);
-            match classify_civil_timestamp(&time_zone, local_window)? {
-                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
-                    Ok(timestamp)
-                }
-                CivilTimestamp::Gap => anyhow::bail!(
-                    "rotation_window_start does not exist in timezone {timezone} today"
-                ),
+        let time_zone = TimeZone::get(timezone)
+            .with_context(|| format!("Unsupported rotation_wait timezone: {timezone}"))?;
+        let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
+        let local_window = local_now.date().to_datetime(time);
+        match classify_civil_timestamp(&time_zone, local_window)? {
+            CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                Ok(timestamp)
+            }
+            CivilTimestamp::Gap => {
+                anyhow::bail!("rotation_window_start does not exist in timezone {timezone} today")
             }
         }
-        None => {
-            let time_zone = system_time_zone();
-            let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
-            let local_window = local_now.date().to_datetime(time);
-            match classify_civil_timestamp(&time_zone, local_window)? {
-                CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
-                    Ok(timestamp)
-                }
-                CivilTimestamp::Gap => anyhow::bail!(
-                    "rotation_window_start does not exist in the system timezone today"
-                ),
+    } else {
+        let time_zone = system_time_zone();
+        let local_now = command_started_at.to_zoned_datetime(time_zone.clone());
+        let local_window = local_now.date().to_datetime(time);
+        match classify_civil_timestamp(&time_zone, local_window)? {
+            CivilTimestamp::Unambiguous(timestamp) | CivilTimestamp::Fold(timestamp) => {
+                Ok(timestamp)
+            }
+            CivilTimestamp::Gap => {
+                anyhow::bail!("rotation_window_start does not exist in the system timezone today")
             }
         }
     }
@@ -907,7 +962,6 @@ fn build_stale_threshold(
                 .context("--stale-cutoff cannot be blank")?;
             Ok(ContactThreshold::Since(cutoff))
         }
-        (CliCommand::Flames, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
         (_, Some(_)) => anyhow::bail!("--stale-cutoff is only supported with flames"),
         (_, None) => Ok(ContactThreshold::OlderThanSecs(3600)),
     }
@@ -931,12 +985,16 @@ fn build_runner_filters(tags: Option<&str>, version: Option<&str>) -> RunnerFilt
 
     RunnerFilters {
         tag_list,
-        version_prefix: version.map(|v| v.to_string()),
+        version_prefix: version.map(std::string::ToString::to_string),
         ..RunnerFilters::default()
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Tests retain mock servers and guards until their assertions finish."
+)]
 mod tests {
     use super::*;
     use crate::config::RunnerTargetKind;
@@ -964,7 +1022,7 @@ mod tests {
     }
 
     fn detail_response_body(id: u64, status: &str, tags: &[&str]) -> String {
-        let tags_json: Vec<String> = tags.iter().map(|tag| format!("\"{}\"", tag)).collect();
+        let tags_json: Vec<String> = tags.iter().map(|tag| format!("\"{tag}\"")).collect();
         format!(
             r#"{{
                 "id": {},
@@ -1005,16 +1063,15 @@ mod tests {
     ) -> String {
         format!(
             r#"{{
-                "id": {},
-                "system_id": "host-{}",
-                "created_at": "{}",
-                "contacted_at": "{}",
+                "id": {id},
+                "system_id": "host-{runner_id}",
+                "created_at": "{created_at}",
+                "contacted_at": "{contacted_at}",
                 "ip_address": "10.0.1.1",
-                "status": "{}",
+                "status": "{status}",
                 "version": "17.5.0",
                 "revision": "abc123"
-            }}"#,
-            id, runner_id, created_at, contacted_at, status
+            }}"#
         )
     }
 
@@ -1049,7 +1106,7 @@ mod tests {
         for (id, manager_ids) in [(1, vec![11, 12]), (2, vec![21])] {
             mocks.push(
                 server
-                    .mock("GET", format!("/api/v4/runners/{}", id).as_str())
+                    .mock("GET", format!("/api/v4/runners/{id}").as_str())
                     .with_status(200)
                     .with_body(detail_response_body(id, "online", &["prod"]))
                     .expect(usize::from(expected_detail_ids.contains(&id)))
@@ -1064,9 +1121,9 @@ mod tests {
                 .join(",");
             mocks.push(
                 server
-                    .mock("GET", format!("/api/v4/runners/{}/managers", id).as_str())
+                    .mock("GET", format!("/api/v4/runners/{id}/managers").as_str())
                     .with_status(200)
-                    .with_body(format!("[{}]", manager_body))
+                    .with_body(format!("[{manager_body}]"))
                     .create_async()
                     .await,
             );
@@ -1882,9 +1939,9 @@ mod tests {
     impl CleanupTerminal {
         fn new(fail_writes: bool) -> Self {
             Self {
-                output: Default::default(),
-                raw_mode_calls: Default::default(),
-                cooked_mode_calls: Default::default(),
+                output: std::sync::Arc::default(),
+                raw_mode_calls: std::sync::Arc::default(),
+                cooked_mode_calls: std::sync::Arc::default(),
                 producer_stopped: None,
                 cleanup_after_producer_stop: None,
                 fail_writes,

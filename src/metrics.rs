@@ -3,6 +3,10 @@ use jiff::Timestamp;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "Request count names are part of the metrics JSON contract."
+)]
 pub struct QueryRequestCounts {
     pub list_requests: usize,
     pub detail_requests: usize,
@@ -72,7 +76,7 @@ impl LiveQueryMetrics {
         }
     }
 
-    pub fn success_with_reuse(
+    pub const fn success_with_reuse(
         started_at: Timestamp,
         finished_at: Timestamp,
         duration_millis: u128,

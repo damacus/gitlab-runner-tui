@@ -44,93 +44,92 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: &[Tab] = &[
-        Tab::Runners,
-        Tab::Health,
-        Tab::Offline,
-        Tab::Uncontacted,
-        Tab::Empty,
-        Tab::Rotating,
-        Tab::Workers,
+    pub const ALL: &[Self] = &[
+        Self::Runners,
+        Self::Health,
+        Self::Offline,
+        Self::Uncontacted,
+        Self::Empty,
+        Self::Rotating,
+        Self::Workers,
     ];
 
-    pub fn title(self) -> &'static str {
+    pub const fn title(self) -> &'static str {
         match self {
-            Tab::Runners => "Runners",
-            Tab::Health => "Health",
-            Tab::Offline => "Offline",
-            Tab::Uncontacted => "Stale",
-            Tab::Empty => "Idle",
-            Tab::Rotating => "Rotating",
-            Tab::Workers => "Workers",
+            Self::Runners => "Runners",
+            Self::Health => "Health",
+            Self::Offline => "Offline",
+            Self::Uncontacted => "Stale",
+            Self::Empty => "Idle",
+            Self::Rotating => "Rotating",
+            Self::Workers => "Workers",
         }
     }
 
-    pub fn shortcut(self) -> char {
+    pub const fn shortcut(self) -> char {
         match self {
-            Tab::Runners => '1',
-            Tab::Health => '2',
-            Tab::Offline => '3',
-            Tab::Uncontacted => '4',
-            Tab::Empty => '5',
-            Tab::Rotating => '6',
-            Tab::Workers => '7',
+            Self::Runners => '1',
+            Self::Health => '2',
+            Self::Offline => '3',
+            Self::Uncontacted => '4',
+            Self::Empty => '5',
+            Self::Rotating => '6',
+            Self::Workers => '7',
         }
     }
 
-    pub fn from_shortcut(shortcut: char) -> Option<Self> {
+    pub const fn from_shortcut(shortcut: char) -> Option<Self> {
         match shortcut {
-            '1' => Some(Tab::Runners),
-            '2' => Some(Tab::Health),
-            '3' => Some(Tab::Offline),
-            '4' => Some(Tab::Uncontacted),
-            '5' => Some(Tab::Empty),
-            '6' => Some(Tab::Rotating),
-            '7' => Some(Tab::Workers),
+            '1' => Some(Self::Runners),
+            '2' => Some(Self::Health),
+            '3' => Some(Self::Offline),
+            '4' => Some(Self::Uncontacted),
+            '5' => Some(Self::Empty),
+            '6' => Some(Self::Rotating),
+            '7' => Some(Self::Workers),
             _ => None,
         }
     }
 
-    pub fn results_view_type(self) -> ResultsViewType {
+    pub const fn results_view_type(self) -> ResultsViewType {
         match self {
-            Tab::Health => ResultsViewType::HealthCheck,
-            Tab::Rotating => ResultsViewType::Rotation,
-            Tab::Workers => ResultsViewType::Workers,
+            Self::Health => ResultsViewType::HealthCheck,
+            Self::Rotating => ResultsViewType::Rotation,
+            Self::Workers => ResultsViewType::Workers,
             _ => ResultsViewType::Runners,
         }
     }
 
-    pub fn loading_label(self) -> &'static str {
+    pub const fn loading_label(self) -> &'static str {
         match self {
-            Tab::Runners => "Loading runners",
-            Tab::Health => "Loading health data",
-            Tab::Offline => "Loading offline runners",
-            Tab::Uncontacted => "Loading uncontacted runners",
-            Tab::Empty => "Loading runners without managers",
-            Tab::Rotating => "Loading rotating runners",
-            Tab::Workers => "Loading workers",
+            Self::Runners => "Loading runners",
+            Self::Health => "Loading health data",
+            Self::Offline => "Loading offline runners",
+            Self::Uncontacted => "Loading uncontacted runners",
+            Self::Empty => "Loading runners without managers",
+            Self::Rotating => "Loading rotating runners",
+            Self::Workers => "Loading workers",
         }
     }
 
-    pub fn empty_label(self) -> &'static str {
+    pub const fn empty_label(self) -> &'static str {
         match self {
-            Tab::Runners => "No runners found for the current tag filter.",
-            Tab::Health => "No runners found for the current tag filter.",
-            Tab::Offline => "No offline runners matched the current tag filter.",
-            Tab::Uncontacted => "No uncontacted runners matched the current tag filter.",
-            Tab::Empty => "No runners without managers matched the current tag filter.",
-            Tab::Rotating => "No rotating runners matched the current tag filter.",
-            Tab::Workers => "No worker rows matched the current tag filter.",
+            Self::Runners | Self::Health => "No runners found for the current tag filter.",
+            Self::Offline => "No offline runners matched the current tag filter.",
+            Self::Uncontacted => "No uncontacted runners matched the current tag filter.",
+            Self::Empty => "No runners without managers matched the current tag filter.",
+            Self::Rotating => "No rotating runners matched the current tag filter.",
+            Self::Workers => "No worker rows matched the current tag filter.",
         }
     }
 
-    fn query_mode(self) -> TabQueryMode {
+    const fn query_mode(self) -> TabQueryMode {
         match self {
-            Tab::Runners | Tab::Health | Tab::Workers => TabQueryMode::Full,
-            Tab::Offline => TabQueryMode::Offline,
-            Tab::Uncontacted => TabQueryMode::Uncontacted,
-            Tab::Empty => TabQueryMode::Empty,
-            Tab::Rotating => TabQueryMode::Rotating,
+            Self::Runners | Self::Health | Self::Workers => TabQueryMode::Full,
+            Self::Offline => TabQueryMode::Offline,
+            Self::Uncontacted => TabQueryMode::Uncontacted,
+            Self::Empty => TabQueryMode::Empty,
+            Self::Rotating => TabQueryMode::Rotating,
         }
     }
 }
@@ -208,15 +207,15 @@ pub enum SettingsField {
 }
 
 impl SettingsField {
-    const ALL: [SettingsField; 8] = [
-        SettingsField::Host,
-        SettingsField::Token,
-        SettingsField::DiscoveryMode,
-        SettingsField::Targets,
-        SettingsField::PollInterval,
-        SettingsField::PollTimeout,
-        SettingsField::Save,
-        SettingsField::Cancel,
+    const ALL: [Self; 8] = [
+        Self::Host,
+        Self::Token,
+        Self::DiscoveryMode,
+        Self::Targets,
+        Self::PollInterval,
+        Self::PollTimeout,
+        Self::Save,
+        Self::Cancel,
     ];
 
     fn next(self) -> Self {
@@ -224,7 +223,10 @@ impl SettingsField {
             .iter()
             .position(|candidate| *candidate == self)
             .unwrap_or(0);
-        Self::ALL[(index + 1) % Self::ALL.len()]
+        Self::ALL
+            .get((index + 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 
     fn previous(self) -> Self {
@@ -232,7 +234,10 @@ impl SettingsField {
             .iter()
             .position(|candidate| *candidate == self)
             .unwrap_or(0);
-        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        Self::ALL
+            .get((index + Self::ALL.len() - 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 }
 
@@ -299,7 +304,7 @@ impl SettingsDraft {
         Ok(config)
     }
 
-    fn selected_value_mut(&mut self) -> Option<&mut String> {
+    const fn selected_value_mut(&mut self) -> Option<&mut String> {
         match self.selected_field {
             SettingsField::Host => Some(&mut self.host),
             SettingsField::Token => Some(&mut self.token),
@@ -381,6 +386,11 @@ pub struct HealthSummary {
 }
 
 impl HealthSummary {
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "The displayed percentage is a rounded ratio of row counts."
+    )]
     pub fn percentage(&self) -> f64 {
         if self.total_count == 0 {
             0.0
@@ -389,7 +399,7 @@ impl HealthSummary {
         }
     }
 
-    pub fn is_healthy(&self) -> bool {
+    pub const fn is_healthy(&self) -> bool {
         self.online_count == self.total_count && self.total_count > 0
     }
 }
@@ -424,6 +434,10 @@ fn build_runner_view_row(runner_index: usize, runner: &Runner) -> UIRunner {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Independent dashboard and session flags can be active together."
+)]
 pub struct App {
     pub conductor: Conductor,
     pub config: AppConfig,
@@ -474,7 +488,7 @@ pub struct App {
     pending_search: Option<PendingSearch>,
     enrichment_cache: Arc<RunnerEnrichmentCache>,
     search_runner_indices: Option<HashMap<u64, usize>>,
-    /// True after the last AllRunners fetch fell back from /runners/all to /runners (403).
+    /// True after the last `AllRunners` fetch fell back from /runners/all to /runners (403).
     pub all_runners_fell_back: bool,
     pub settings_draft: SettingsDraft,
     pub settings_message: Option<String>,
@@ -551,7 +565,10 @@ impl App {
     }
 
     pub fn spinner_char(&self) -> char {
-        SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
+        SPINNER_FRAMES
+            .get(self.spinner_frame % SPINNER_FRAMES.len())
+            .copied()
+            .unwrap_or(' ')
     }
 
     pub fn loading_status_label(&self) -> &'static str {
@@ -561,12 +578,15 @@ impl App {
         }
     }
 
-    pub fn advance_spinner(&mut self) {
+    pub const fn advance_spinner(&mut self) {
         self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
     }
 
     pub fn active_tab(&self) -> Tab {
-        self.tabs[self.active_tab_index]
+        self.tabs
+            .get(self.active_tab_index)
+            .copied()
+            .unwrap_or(Tab::Runners)
     }
 
     pub fn current_results_view_type(&self) -> ResultsViewType {
@@ -634,8 +654,7 @@ impl App {
     pub fn focus_stale_cutoff(&mut self) {
         self.stale_cutoff_input = self
             .stale_cutoff_at
-            .map(format_stale_cutoff_input)
-            .unwrap_or_default();
+            .map_or_default(format_stale_cutoff_input);
         self.mode = AppMode::StaleCutoffInput;
         self.error_message = None;
     }
@@ -724,9 +743,10 @@ impl App {
     }
 
     fn stale_contact_threshold(&self) -> ContactThreshold {
-        self.stale_cutoff_at
-            .map(ContactThreshold::Since)
-            .unwrap_or(ContactThreshold::OlderThanSecs(UNCONTACTED_THRESHOLD_SECS))
+        self.stale_cutoff_at.map_or(
+            ContactThreshold::OlderThanSecs(UNCONTACTED_THRESHOLD_SECS),
+            ContactThreshold::Since,
+        )
     }
 
     pub fn stale_cutoff_summary(&self) -> String {
@@ -834,18 +854,17 @@ impl App {
     pub fn current_tab_title(&self) -> String {
         match self.active_tab() {
             Tab::Runners => format!("Runners ({})", self.runners.len()),
-            Tab::Health => {
-                if let Some(summary) = &self.health_summary {
+            Tab::Health => self.health_summary.as_ref().map_or_else(
+                || "Health".to_string(),
+                |summary| {
                     format!(
                         "Health ({}/{} online, {:.1}%)",
                         summary.online_count,
                         summary.total_count,
                         summary.percentage()
                     )
-                } else {
-                    "Health".to_string()
-                }
-            }
+                },
+            ),
             Tab::Offline => format!("Offline ({})", self.runners.len()),
             Tab::Uncontacted => format!(
                 "Stale ({}, {})",
@@ -1053,12 +1072,12 @@ impl App {
             if let Some(pending) = self.pending_search.take() {
                 if let Err(error) = pending.handle.await {
                     if !error.is_cancelled() && self.is_loading {
-                        self.process_search_failure(anyhow::anyhow!(
+                        self.process_search_failure(&anyhow::anyhow!(
                             "Search task failed unexpectedly: {error}"
                         ));
                     }
                 } else if channel_closed && !saw_terminal && self.is_loading {
-                    self.process_search_failure(anyhow::anyhow!(
+                    self.process_search_failure(&anyhow::anyhow!(
                         "Search task ended without a final update"
                     ));
                 }
@@ -1117,7 +1136,7 @@ impl App {
     fn process_search_result(&mut self, tab: Tab, result: anyhow::Result<QueryOutcome>) {
         match result {
             Ok(outcome) => self.process_search_success(tab, outcome),
-            Err(error) => self.process_search_failure(error),
+            Err(error) => self.process_search_failure(&error),
         }
     }
 
@@ -1187,7 +1206,7 @@ impl App {
                 }
                 self.process_search_success(update.tab, completion.outcome);
             }
-            SearchUpdateKind::Failed(error) => self.process_search_failure(error),
+            SearchUpdateKind::Failed(error) => self.process_search_failure(&error),
         }
     }
 
@@ -1240,7 +1259,7 @@ impl App {
         self.loaded_tab = Some(tab);
     }
 
-    fn process_search_failure(&mut self, error: anyhow::Error) {
+    fn process_search_failure(&mut self, error: &anyhow::Error) {
         self.search_runner_indices = None;
         self.is_loading = false;
         self.search_phase = SearchPhase::Idle;
@@ -1263,7 +1282,8 @@ impl App {
             if let Some(metrics) = self.live_query_metrics.as_mut() {
                 metrics.finished_at = timestamp_now();
                 metrics.duration_millis =
-                    elapsed_millis(metrics.finished_at, metrics.started_at).max(0) as u128;
+                    u128::try_from(elapsed_millis(metrics.finished_at, metrics.started_at))
+                        .unwrap_or_default();
                 metrics.succeeded = false;
                 metrics.error_message = Some(error_message.clone());
             }
@@ -1369,53 +1389,47 @@ impl App {
             })
             .collect();
 
-        match tab {
-            Tab::Workers => {
-                let mut manager_rows: Vec<ManagerRow> = filtered_indices
-                    .into_iter()
-                    .flat_map(|runner_index| {
-                        (0..self.raw_runners[runner_index].managers.len()).map(
-                            move |manager_index| ManagerRow {
-                                runner_index,
-                                manager_index,
-                            },
-                        )
+        if tab == Tab::Workers {
+            let mut manager_rows: Vec<ManagerRow> = filtered_indices
+                .into_iter()
+                .filter_map(|index| self.raw_runners.get(index).map(|runner| (index, runner)))
+                .flat_map(|(runner_index, runner)| {
+                    (0..runner.managers.len()).map(move |manager_index| ManagerRow {
+                        runner_index,
+                        manager_index,
                     })
-                    .collect();
-                let sort_key = self.effective_sort_key();
-                let raw_runners = &self.raw_runners;
-                if sort_key == RunnerSortKey::LastContact {
-                    manager_rows.sort_by_cached_key(|row| {
-                        let runner = &raw_runners[row.runner_index];
-                        let manager = &runner.managers[row.manager_index];
-                        (parse_manager_contacted_at(manager), runner.id, manager.id)
-                    });
-                } else if sort_key == RunnerSortKey::Status {
-                    manager_rows.sort_by(|left, right| {
-                        let left_runner = &raw_runners[left.runner_index];
-                        let right_runner = &raw_runners[right.runner_index];
-                        let left_manager = &left_runner.managers[left.manager_index];
-                        let right_manager = &right_runner.managers[right.manager_index];
-                        left_manager
-                            .status
-                            .cmp(&right_manager.status)
-                            .then_with(|| left_runner.id.cmp(&right_runner.id))
-                            .then_with(|| left_manager.id.cmp(&right_manager.id))
-                    });
-                }
-                self.manager_rows = manager_rows;
+                })
+                .collect();
+            let sort_key = self.effective_sort_key();
+            let raw_runners = &self.raw_runners;
+            let manager_for = |row: &ManagerRow| {
+                let runner = raw_runners.get(row.runner_index)?;
+                Some((runner.id, runner.managers.get(row.manager_index)?))
+            };
+            if sort_key == RunnerSortKey::LastContact {
+                manager_rows.sort_by_cached_key(|row| {
+                    manager_for(row)
+                        .map(|(id, manager)| (parse_manager_contacted_at(manager), id, manager.id))
+                });
+            } else if sort_key == RunnerSortKey::Status {
+                manager_rows.sort_by_key(|row| {
+                    manager_for(row).map(|(id, manager)| (manager.status.as_str(), id, manager.id))
+                });
             }
-            Tab::Health => {
-                sort_runner_indices(
-                    &self.raw_runners,
-                    &mut filtered_indices,
-                    self.effective_sort_key(),
-                    now,
-                );
+            self.manager_rows = manager_rows;
+        } else {
+            sort_runner_indices(
+                &self.raw_runners,
+                &mut filtered_indices,
+                self.effective_sort_key(),
+                now,
+            );
+            if tab == Tab::Health {
                 let online_count = filtered_indices
                     .iter()
-                    .filter(|index| {
-                        self.raw_runners[**index]
+                    .filter_map(|&index| self.raw_runners.get(index))
+                    .filter(|runner| {
+                        runner
                             .managers
                             .iter()
                             .any(|manager| manager.status == "online")
@@ -1425,23 +1439,14 @@ impl App {
                     online_count,
                     total_count: filtered_indices.len(),
                 });
-                self.runners = filtered_indices
-                    .into_iter()
-                    .map(|index| build_runner_view_row(index, &self.raw_runners[index]))
-                    .collect();
             }
-            _ => {
-                sort_runner_indices(
-                    &self.raw_runners,
-                    &mut filtered_indices,
-                    self.effective_sort_key(),
-                    now,
-                );
-                self.runners = filtered_indices
-                    .into_iter()
-                    .map(|index| build_runner_view_row(index, &self.raw_runners[index]))
-                    .collect();
-            }
+            let mut runners = Vec::with_capacity(filtered_indices.len());
+            runners.extend(filtered_indices.into_iter().filter_map(|index| {
+                self.raw_runners
+                    .get(index)
+                    .map(|runner| build_runner_view_row(index, runner))
+            }));
+            self.runners = runners;
         }
 
         let result_count = self.active_result_len();
@@ -1755,7 +1760,7 @@ impl App {
                 self.start_search();
             }
             Err(error) => {
-                self.settings_message = Some(format!("{:#}", error));
+                self.settings_message = Some(format!("{error:#}"));
             }
         }
     }
@@ -1775,8 +1780,7 @@ impl App {
 
     pub fn poll_elapsed_secs(&self) -> u64 {
         self.poll_started_at
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0)
+            .map_or(0, |started| started.elapsed().as_secs())
     }
 
     pub fn poll_timed_out(&self) -> bool {
@@ -1793,8 +1797,9 @@ impl App {
 
         self.last_refresh_at
             .max(self.last_poll_at)
-            .map(|last_poll| last_poll.elapsed().as_secs() >= self.config.poll_interval_secs)
-            .unwrap_or(false)
+            .is_some_and(|last_poll| {
+                last_poll.elapsed().as_secs() >= self.config.poll_interval_secs
+            })
     }
 
     pub async fn tick(&mut self) {
@@ -1811,6 +1816,231 @@ impl App {
 
         if self.polling_active && self.poll_timed_out() {
             self.polling_active = false;
+        }
+    }
+
+    fn handle_filter_popup_key(&mut self, key: KeyEvent) {
+        match self.filter_popup_section {
+            FilterPopupSection::TagSearch => match key.code {
+                KeyCode::Escape => {
+                    if self.tag_search_input.is_empty() {
+                        self.mode = AppMode::Dashboard;
+                    } else {
+                        self.tag_search_input.clear();
+                        let filtered_count = self.filtered_tag_options().count();
+                        if filtered_count == 0 {
+                            self.tag_list_state.select(None);
+                        } else {
+                            self.tag_list_state.select(Some(0));
+                        }
+                    }
+                }
+                KeyCode::Char('f') if key.modifiers.is_empty() => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                    self.filter_popup_section = FilterPopupSection::Selected;
+                }
+                KeyCode::BackTab => {
+                    self.filter_popup_section = FilterPopupSection::Versions;
+                }
+                KeyCode::Backspace => {
+                    self.tag_search_input.pop();
+                    let filtered_count = self.filtered_tag_options().count();
+                    if filtered_count == 0 {
+                        self.tag_list_state.select(None);
+                    } else {
+                        self.tag_list_state.select(Some(0));
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.tag_search_input.push(c);
+                    let filtered_count = self.filtered_tag_options().count();
+                    if filtered_count == 0 {
+                        self.tag_list_state.select(None);
+                    } else {
+                        self.tag_list_state.select(Some(0));
+                    }
+                }
+                _ => {}
+            },
+            FilterPopupSection::Selected
+            | FilterPopupSection::Status
+            | FilterPopupSection::Tags
+            | FilterPopupSection::Versions => match key.code {
+                KeyCode::Escape | KeyCode::Char('f') => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Tab => {
+                    self.filter_popup_section = match self.filter_popup_section {
+                        FilterPopupSection::Selected => FilterPopupSection::Status,
+                        FilterPopupSection::Status => FilterPopupSection::Tags,
+                        FilterPopupSection::Tags => FilterPopupSection::Versions,
+                        FilterPopupSection::Versions => FilterPopupSection::TagSearch,
+                        FilterPopupSection::TagSearch => self.filter_popup_section,
+                    };
+                }
+                KeyCode::BackTab => {
+                    self.filter_popup_section = match self.filter_popup_section {
+                        FilterPopupSection::Selected => FilterPopupSection::TagSearch,
+                        FilterPopupSection::Status => FilterPopupSection::Selected,
+                        FilterPopupSection::Tags => FilterPopupSection::Status,
+                        FilterPopupSection::Versions => FilterPopupSection::Tags,
+                        FilterPopupSection::TagSearch => self.filter_popup_section,
+                    };
+                }
+                KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => {
+                        if !self.selected_filter_items().is_empty() {
+                            self.selected_filter_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Status => {
+                        if !self.status_options.is_empty() {
+                            self.status_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        if self.filtered_tag_options().count() > 0 {
+                            self.tag_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => {
+                        if !self.selected_filter_items().is_empty() {
+                            self.selected_filter_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Status => {
+                        if !self.status_options.is_empty() {
+                            self.status_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        if self.filtered_tag_options().count() > 0 {
+                            self.tag_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Char(' ') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => self.remove_selected_filter(),
+                    FilterPopupSection::Status => self.toggle_selected_status(),
+                    FilterPopupSection::Tags => self.toggle_selected_tag(),
+                    FilterPopupSection::Versions => self.toggle_selected_version(),
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Char('m') => {
+                    self.tag_filter_mode = self.tag_filter_mode.toggle();
+                    if self.has_loaded_active_tab() {
+                        self.apply_view_state(self.active_tab());
+                    }
+                }
+                KeyCode::Char('c') => match self.filter_popup_section {
+                    FilterPopupSection::Selected | FilterPopupSection::TagSearch => {}
+                    FilterPopupSection::Status => {
+                        self.selected_status = None;
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        self.selected_tags.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        self.selected_versions.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                },
+                KeyCode::Char('a') => {
+                    self.clear_all_filters();
+                }
+                _ => {}
+            },
+        }
+    }
+
+    async fn handle_settings_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Escape | KeyCode::Enter
+                if key.code == KeyCode::Escape
+                    || self.settings_draft.selected_field == SettingsField::Cancel =>
+            {
+                self.mode = AppMode::Dashboard;
+                self.settings_draft = SettingsDraft::from_config(&self.config);
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.settings_draft.selected_field = self.settings_draft.selected_field.previous();
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.settings_draft.selected_field = self.settings_draft.selected_field.next();
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter
+                if matches!(
+                    self.settings_draft.selected_field,
+                    SettingsField::DiscoveryMode
+                ) =>
+            {
+                self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
+                    RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
+                    RunnerDiscoveryMode::VisibleRunners => RunnerDiscoveryMode::ConfiguredTargets,
+                    RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
+                };
+            }
+            KeyCode::Backspace => {
+                if let Some(value) = self.settings_draft.selected_value_mut() {
+                    value.pop();
+                }
+            }
+            KeyCode::Char('b') => self.refresh_local_benchmarks(),
+            KeyCode::Char('s') if key.modifiers.contains(Modifiers::CONTROL) => {
+                self.save_settings().await;
+            }
+            KeyCode::Enter if matches!(self.settings_draft.selected_field, SettingsField::Save) => {
+                self.save_settings().await;
+            }
+            KeyCode::Char(character)
+                if matches!(
+                    self.settings_draft.selected_field,
+                    SettingsField::DiscoveryMode
+                ) =>
+            {
+                match character {
+                    't' | 'T' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::ConfiguredTargets;
+                    }
+                    'v' | 'V' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::VisibleRunners;
+                    }
+                    'a' | 'A' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::AllRunners;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char(character) => {
+                if let Some(value) = self.settings_draft.selected_value_mut() {
+                    value.push(character);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1859,260 +2089,12 @@ impl App {
         }
 
         if self.mode == AppMode::FilterPopup {
-            match self.filter_popup_section {
-                FilterPopupSection::TagSearch => match key.code {
-                    KeyCode::Escape => {
-                        if !self.tag_search_input.is_empty() {
-                            self.tag_search_input.clear();
-                            let filtered_count = self.filtered_tag_options().count();
-                            if filtered_count == 0 {
-                                self.tag_list_state.select(None);
-                            } else {
-                                self.tag_list_state.select(Some(0));
-                            }
-                        } else {
-                            self.mode = AppMode::Dashboard;
-                        }
-                    }
-                    KeyCode::Char('f') if key.modifiers.is_empty() => {
-                        self.mode = AppMode::Dashboard;
-                    }
-                    KeyCode::Tab => {
-                        self.filter_popup_section = FilterPopupSection::Selected;
-                    }
-                    KeyCode::BackTab => {
-                        self.filter_popup_section = FilterPopupSection::Versions;
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.filter_popup_section = FilterPopupSection::Selected;
-                    }
-                    KeyCode::Backspace => {
-                        self.tag_search_input.pop();
-                        let filtered_count = self.filtered_tag_options().count();
-                        if filtered_count == 0 {
-                            self.tag_list_state.select(None);
-                        } else {
-                            self.tag_list_state.select(Some(0));
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        self.tag_search_input.push(c);
-                        let filtered_count = self.filtered_tag_options().count();
-                        if filtered_count == 0 {
-                            self.tag_list_state.select(None);
-                        } else {
-                            self.tag_list_state.select(Some(0));
-                        }
-                    }
-                    _ => {}
-                },
-                FilterPopupSection::Selected
-                | FilterPopupSection::Status
-                | FilterPopupSection::Tags
-                | FilterPopupSection::Versions => match key.code {
-                    KeyCode::Escape | KeyCode::Char('f') => {
-                        self.mode = AppMode::Dashboard;
-                    }
-                    KeyCode::Tab => {
-                        self.filter_popup_section = match self.filter_popup_section {
-                            FilterPopupSection::Selected => FilterPopupSection::Status,
-                            FilterPopupSection::Status => FilterPopupSection::Tags,
-                            FilterPopupSection::Tags => FilterPopupSection::Versions,
-                            FilterPopupSection::Versions => FilterPopupSection::TagSearch,
-                            FilterPopupSection::TagSearch => unreachable!(),
-                        };
-                    }
-                    KeyCode::BackTab => {
-                        self.filter_popup_section = match self.filter_popup_section {
-                            FilterPopupSection::Selected => FilterPopupSection::TagSearch,
-                            FilterPopupSection::Status => FilterPopupSection::Selected,
-                            FilterPopupSection::Tags => FilterPopupSection::Status,
-                            FilterPopupSection::Versions => FilterPopupSection::Tags,
-                            FilterPopupSection::TagSearch => unreachable!(),
-                        };
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => {
-                            if !self.selected_filter_items().is_empty() {
-                                self.selected_filter_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Status => {
-                            if !self.status_options.is_empty() {
-                                self.status_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            if self.filtered_tag_options().count() > 0 {
-                                self.tag_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            if !self.version_options.is_empty() {
-                                self.version_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::TagSearch => unreachable!(),
-                    },
-                    KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => {
-                            if !self.selected_filter_items().is_empty() {
-                                self.selected_filter_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Status => {
-                            if !self.status_options.is_empty() {
-                                self.status_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            if self.filtered_tag_options().count() > 0 {
-                                self.tag_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            if !self.version_options.is_empty() {
-                                self.version_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::TagSearch => unreachable!(),
-                    },
-                    KeyCode::Char(' ') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => self.remove_selected_filter(),
-                        FilterPopupSection::Status => self.toggle_selected_status(),
-                        FilterPopupSection::Tags => self.toggle_selected_tag(),
-                        FilterPopupSection::Versions => self.toggle_selected_version(),
-                        FilterPopupSection::TagSearch => unreachable!(),
-                    },
-                    KeyCode::Char('m') => {
-                        self.tag_filter_mode = self.tag_filter_mode.toggle();
-                        if self.has_loaded_active_tab() {
-                            self.apply_view_state(self.active_tab());
-                        }
-                    }
-                    KeyCode::Char('c') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => {}
-                        FilterPopupSection::Status => {
-                            self.selected_status = None;
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            self.selected_tags.clear();
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            self.selected_versions.clear();
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                        FilterPopupSection::TagSearch => unreachable!(),
-                    },
-                    KeyCode::Char('a') => {
-                        self.clear_all_filters();
-                    }
-                    _ => {}
-                },
-            }
+            self.handle_filter_popup_key(key);
             return;
         }
 
         if self.mode == AppMode::Settings {
-            match key.code {
-                KeyCode::Escape => {
-                    self.mode = AppMode::Dashboard;
-                    self.settings_draft = SettingsDraft::from_config(&self.config);
-                }
-                KeyCode::Up => {
-                    self.settings_draft.selected_field =
-                        self.settings_draft.selected_field.previous();
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.settings_draft.selected_field = self.settings_draft.selected_field.next();
-                }
-                KeyCode::BackTab => {
-                    self.settings_draft.selected_field =
-                        self.settings_draft.selected_field.previous();
-                }
-                KeyCode::Left | KeyCode::Right
-                    if matches!(
-                        self.settings_draft.selected_field,
-                        SettingsField::DiscoveryMode
-                    ) =>
-                {
-                    self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
-                        RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
-                        RunnerDiscoveryMode::VisibleRunners => {
-                            RunnerDiscoveryMode::ConfiguredTargets
-                        }
-                        RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
-                    };
-                }
-                KeyCode::Backspace => {
-                    if let Some(value) = self.settings_draft.selected_value_mut() {
-                        value.pop();
-                    }
-                }
-                KeyCode::Char('b') => self.refresh_local_benchmarks(),
-                KeyCode::Char('s') if key.modifiers.contains(Modifiers::CONTROL) => {
-                    self.save_settings().await;
-                }
-                KeyCode::Enter
-                    if matches!(self.settings_draft.selected_field, SettingsField::Save) =>
-                {
-                    self.save_settings().await;
-                }
-                KeyCode::Enter
-                    if matches!(self.settings_draft.selected_field, SettingsField::Cancel) =>
-                {
-                    self.mode = AppMode::Dashboard;
-                    self.settings_draft = SettingsDraft::from_config(&self.config);
-                }
-                KeyCode::Enter
-                    if matches!(
-                        self.settings_draft.selected_field,
-                        SettingsField::DiscoveryMode
-                    ) =>
-                {
-                    self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
-                        RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
-                        RunnerDiscoveryMode::VisibleRunners => {
-                            RunnerDiscoveryMode::ConfiguredTargets
-                        }
-                        RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
-                    };
-                }
-                KeyCode::Char(character)
-                    if matches!(
-                        self.settings_draft.selected_field,
-                        SettingsField::DiscoveryMode
-                    ) =>
-                {
-                    match character {
-                        't' | 'T' => {
-                            self.settings_draft.discovery_mode =
-                                RunnerDiscoveryMode::ConfiguredTargets
-                        }
-                        'v' | 'V' => {
-                            self.settings_draft.discovery_mode = RunnerDiscoveryMode::VisibleRunners
-                        }
-                        'a' | 'A' => {
-                            self.settings_draft.discovery_mode = RunnerDiscoveryMode::AllRunners
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::Char(character) => {
-                    if let Some(value) = self.settings_draft.selected_value_mut() {
-                        value.push(character);
-                    }
-                }
-                _ => {}
-            }
+            self.handle_settings_key(key).await;
             return;
         }
 
@@ -2150,17 +2132,15 @@ impl App {
             KeyCode::Char('a') if self.active_tab() == Tab::Uncontacted => {
                 self.focus_stale_cutoff();
             }
-            KeyCode::Char('/') | KeyCode::Char('f') => {
+            KeyCode::Char('/' | 'f') => {
                 self.open_filter_popup();
             }
             KeyCode::Tab if self.next_tab() => {
                 self.start_search();
             }
-            KeyCode::Tab => {}
             KeyCode::BackTab if self.previous_tab() => {
                 self.start_search();
             }
-            KeyCode::BackTab => {}
             KeyCode::Char(shortcut @ '1'..='7') => {
                 if let Some(tab) = Tab::from_shortcut(shortcut) {
                     if self.select_tab(tab) {
@@ -2173,7 +2153,7 @@ impl App {
                     self.start_search();
                 }
             }
-            KeyCode::Escape => {
+            KeyCode::Escape | KeyCode::Backspace => {
                 self.error_message = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -2186,7 +2166,6 @@ impl App {
                 self.table_state.select_first();
                 self.update_scroll_state();
             }
-            KeyCode::Home | KeyCode::Char('g') => {}
             KeyCode::End | KeyCode::Char('G') => {
                 let len = self.active_result_len();
                 if len > 0 {
@@ -2198,14 +2177,9 @@ impl App {
                 self.table_state.scroll_down_by(10);
                 self.update_scroll_state();
             }
-            KeyCode::PageDown => {}
             KeyCode::PageUp if self.active_result_len() > 0 => {
                 self.table_state.scroll_up_by(10);
                 self.update_scroll_state();
-            }
-            KeyCode::PageUp => {}
-            KeyCode::Backspace => {
-                self.error_message = None;
             }
             _ => {}
         }
@@ -2234,7 +2208,7 @@ impl App {
     }
 }
 
-pub fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
+pub const fn detail_layout_mode(width: u16, height: u16) -> DetailLayoutMode {
     if width >= 130 {
         DetailLayoutMode::SidePanel
     } else if width >= 90 && height >= 26 {
@@ -2296,7 +2270,7 @@ fn open_with_shell_execute(url: &str) -> std::io::Result<()> {
     use std::{ffi::c_void, ptr};
 
     const SW_SHOWNORMAL: i32 = 1;
-    const OPEN: [u16; 5] = [b'o' as u16, b'p' as u16, b'e' as u16, b'n' as u16, 0];
+    const OPEN: [u16; 5] = [0x006F, 0x0070, 0x0065, 0x006E, 0]; // "open\0" in UTF-16.
 
     #[link(name = "shell32")]
     extern "system" {
@@ -2389,22 +2363,22 @@ pub fn runner_admin_url(host: &str, runner_id: u64) -> Result<Url> {
 }
 
 pub fn latest_runner_contact_label(runner: &Runner, now: Timestamp) -> String {
-    latest_runner_contact(runner)
-        .map(|contact| relative_timestamp_label(contact, now))
-        .unwrap_or_else(|| "Never".to_string())
+    latest_runner_contact(runner).map_or_else(
+        || "Never".to_string(),
+        |contact| relative_timestamp_label(contact, now),
+    )
 }
 
 #[cfg(test)]
 pub fn latest_runner_contact_detail(runner: &Runner) -> String {
-    latest_runner_contact(runner)
-        .map(format_absolute_timestamp)
-        .unwrap_or_else(|| "Never".to_string())
+    latest_runner_contact(runner).map_or_else(|| "Never".to_string(), format_absolute_timestamp)
 }
 
 pub fn manager_contact_label(manager: &RunnerManager, now: Timestamp) -> String {
-    parse_contact_timestamp(manager.contacted_at.as_deref())
-        .map(|contact| relative_timestamp_label(contact, now))
-        .unwrap_or_else(|| "Never".to_string())
+    parse_contact_timestamp(manager.contacted_at.as_deref()).map_or_else(
+        || "Never".to_string(),
+        |contact| relative_timestamp_label(contact, now),
+    )
 }
 
 pub fn manager_contact_detail(manager: &RunnerManager) -> String {
@@ -2431,6 +2405,10 @@ fn relative_timestamp_label(timestamp: Timestamp, now: Timestamp) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Tests retain mock servers and guards until their assertions finish."
+)]
 mod tests {
     use super::*;
     use crate::client::GitLabClient;
@@ -2675,7 +2653,7 @@ mod tests {
             runner_type: "group_type".to_string(),
             active: true,
             paused: false,
-            description: Some(format!("Runner {}", id)),
+            description: Some(format!("Runner {id}")),
             created_at: Some("2024-01-15T10:30:00.000Z".to_string()),
             ip_address: Some("10.0.1.1".to_string()),
             is_shared: false,
@@ -2703,7 +2681,7 @@ mod tests {
     fn test_manager(id: u64, status: &str) -> RunnerManager {
         RunnerManager {
             id,
-            system_id: format!("runner-host-{}", id),
+            system_id: format!("runner-host-{id}"),
             created_at: "2024-01-15T10:30:00.000Z".to_string(),
             contacted_at: Some("2024-01-20T14:22:00.000Z".to_string()),
             ip_address: Some("10.0.1.1".to_string()),
@@ -3338,9 +3316,9 @@ mod tests {
         app.polling_active = true;
         app.poll_started_at = Some(now);
         app.config.poll_interval_secs = 60;
-        app.last_refresh_at = Some(now - Duration::from_secs(61));
+        app.last_refresh_at = Some(now.checked_sub(Duration::from_secs(61)).unwrap());
         app.last_poll_at = Some(now);
-        app.process_search_failure(anyhow::anyhow!("temporary failure"));
+        app.process_search_failure(&anyhow::anyhow!("temporary failure"));
 
         assert!(!app.should_poll_now());
         assert_eq!(app.next_poll_in_secs(), Some(60));

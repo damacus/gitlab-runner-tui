@@ -48,7 +48,7 @@ pub fn status_line(status: &str) -> Line<'static> {
     };
 
     Line::from(vec![
-        Span::styled(format!("{} ", symbol), style),
+        Span::styled(format!("{symbol} "), style),
         Span::styled(status.to_string(), style),
     ])
 }
@@ -127,7 +127,7 @@ pub fn block(title: impl Into<String>) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_BORDER))
         .title(Span::styled(
-            format!(" {} ", title),
+            format!(" {title} "),
             Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD),
         ))
 }
@@ -138,7 +138,7 @@ pub fn focused_block(title: impl Into<String>) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ACCENT))
         .title(Span::styled(
-            format!(" {} ", title),
+            format!(" {title} "),
             Style::default()
                 .fg(COLOR_ACCENT)
                 .add_modifier(Modifier::BOLD),
@@ -167,13 +167,20 @@ pub fn error_block(title: impl Into<String>) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COLOR_ERROR))
         .title(Span::styled(
-            format!(" {} ", title),
+            format!(" {title} "),
             Style::default()
                 .fg(COLOR_ERROR)
                 .add_modifier(Modifier::BOLD),
         ))
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "The gradient interpolates within the u8 channel range and truncates fractional colours."
+)]
 pub fn gradient_text(text: &str, start_rgb: (u8, u8, u8), end_rgb: (u8, u8, u8)) -> Line<'static> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -190,9 +197,21 @@ pub fn gradient_text(text: &str, start_rgb: (u8, u8, u8), end_rgb: (u8, u8, u8))
     let mut spans = Vec::with_capacity(n);
     for (i, &c) in chars.iter().enumerate() {
         let ratio = i as f32 / (n - 1) as f32;
-        let r = (start_rgb.0 as f32 + (end_rgb.0 as f32 - start_rgb.0 as f32) * ratio) as u8;
-        let g = (start_rgb.1 as f32 + (end_rgb.1 as f32 - start_rgb.1 as f32) * ratio) as u8;
-        let b = (start_rgb.2 as f32 + (end_rgb.2 as f32 - start_rgb.2 as f32) * ratio) as u8;
+        let r = f32::mul_add(
+            f32::from(end_rgb.0) - f32::from(start_rgb.0),
+            ratio,
+            f32::from(start_rgb.0),
+        ) as u8;
+        let g = f32::mul_add(
+            f32::from(end_rgb.1) - f32::from(start_rgb.1),
+            ratio,
+            f32::from(start_rgb.1),
+        ) as u8;
+        let b = f32::mul_add(
+            f32::from(end_rgb.2) - f32::from(start_rgb.2),
+            ratio,
+            f32::from(start_rgb.2),
+        ) as u8;
         spans.push(Span::styled(
             c.to_string(),
             Style::default()

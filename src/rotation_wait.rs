@@ -55,7 +55,7 @@ pub struct RotationWaitState {
 }
 
 impl RotationWaitState {
-    pub fn new(options: RotationWaitOptions) -> Self {
+    pub const fn new(options: RotationWaitOptions) -> Self {
         Self {
             options,
             tracked: BTreeMap::new(),
@@ -85,28 +85,25 @@ impl RotationWaitState {
             current_runner_ids.insert(runner.id);
             let created_after_window = self.has_manager_created_after_window(runner);
 
-            match self.tracked.get_mut(&runner.id) {
-                Some(tracked) => {
-                    tracked.missing_polls = 0;
-                    if !tracked.completed
-                        && (created_after_window || has_new_system_id(runner, tracked))
-                    {
-                        tracked.completed = true;
-                        rotated_runner_ids.push(runner.id);
-                    }
+            if let Some(tracked) = self.tracked.get_mut(&runner.id) {
+                tracked.missing_polls = 0;
+                if !tracked.completed
+                    && (created_after_window || has_new_system_id(runner, tracked))
+                {
+                    tracked.completed = true;
+                    rotated_runner_ids.push(runner.id);
                 }
-                None => {
-                    let completed = created_after_window;
-                    let tracked = TrackedRunner {
-                        baseline_system_ids: runner_system_ids(runner),
-                        completed,
-                        missing_polls: 0,
-                    };
-                    self.tracked.insert(runner.id, tracked);
-                    added_runner_ids.push(runner.id);
-                    if completed {
-                        rotated_runner_ids.push(runner.id);
-                    }
+            } else {
+                let completed = created_after_window;
+                let tracked = TrackedRunner {
+                    baseline_system_ids: runner_system_ids(runner),
+                    completed,
+                    missing_polls: 0,
+                };
+                self.tracked.insert(runner.id, tracked);
+                added_runner_ids.push(runner.id);
+                if completed {
+                    rotated_runner_ids.push(runner.id);
                 }
             }
         }
@@ -198,8 +195,8 @@ impl RotationWaitState {
     fn is_eligible(&self, runner: &Runner, now: Timestamp) -> bool {
         runner.managers.iter().any(|manager| {
             parse_manager_contacted_at(manager).is_some_and(|contacted_at| {
-                elapsed_seconds(now, contacted_at)
-                    <= self.options.active_contacted_within_secs as i64
+                u64::try_from(elapsed_seconds(now, contacted_at))
+                    .map_or(true, |age| age <= self.options.active_contacted_within_secs)
             })
         })
     }
@@ -250,7 +247,7 @@ mod tests {
             managers: system_ids
                 .iter()
                 .enumerate()
-                .map(|(index, system_id)| manager(index as u64 + 1, system_id))
+                .map(|(index, system_id)| manager(u64::try_from(index).unwrap() + 1, system_id))
                 .collect(),
             groups: Vec::new(),
         }
@@ -309,9 +306,9 @@ mod tests {
     fn excludes_stale_runners_and_never_completes_empty_fleet() {
         let mut stale = runner(1, &["old-system"]);
         stale.managers[0].contacted_at = Some("2026-06-29T08:00:00Z".to_string());
-        let mut state = RotationWaitState::new(options());
+        let mut wait = RotationWaitState::new(options());
 
-        let event = state.observe(&[stale], observed_at());
+        let event = wait.observe(&[stale], observed_at());
 
         assert_eq!(event.eligible_count, 0);
         assert_eq!(event.stale_excluded_count, 1);

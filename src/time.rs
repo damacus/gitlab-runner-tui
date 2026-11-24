@@ -71,14 +71,11 @@ fn preserve_leap_second(input: &str, timestamp: Timestamp) -> Result<Timestamp, 
 
 fn contains_leap_second(input: &str) -> bool {
     input.as_bytes().windows(8).any(|time| {
-        time[0].is_ascii_digit()
-            && time[1].is_ascii_digit()
-            && time[2] == b':'
-            && time[3].is_ascii_digit()
-            && time[4].is_ascii_digit()
-            && time[5] == b':'
-            && time[6] == b'6'
-            && time[7] == b'0'
+        matches!(
+            time,
+            [h1, h2, b':', m1, m2, b':', b'6', b'0']
+                if [h1, h2, m1, m2].into_iter().all(u8::is_ascii_digit)
+        )
     })
 }
 

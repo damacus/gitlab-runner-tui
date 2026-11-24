@@ -43,7 +43,7 @@ macro_rules! decreset {
 /// Termina's terminal APIs and typed escape sequences to configure those application-level modes
 /// before drawing.
 ///
-pub(crate) struct TerminaBackend<T>
+pub struct TerminaBackend<T>
 where
     T: Terminal,
 {
@@ -109,7 +109,7 @@ where
             // the previous one on the same row, accounting for the width of what was printed.
             if !matches!(last, Some((p, w)) if p.x.checked_add(w) == Some(x) && y == p.y) {
                 let command = Csi::Cursor(cursor_position(Position { x, y })?);
-                write!(string, "{command}").unwrap();
+                write!(string, "{command}").ok();
             }
             let width = cell.cell_width();
             // A VS16 cluster's terminal cursor advance is not reliably predictable.
@@ -139,7 +139,7 @@ where
                 modifier = cell.modifier;
             }
             if !attributes.is_empty() {
-                write!(string, "{}", Csi::Sgr(Sgr::Attributes(attributes))).unwrap();
+                write!(string, "{}", Csi::Sgr(Sgr::Attributes(attributes))).ok();
             }
 
             string.push_str(cell.symbol());
@@ -425,7 +425,7 @@ mod tests {
         }
 
         fn event_reader(&self) -> EventReader {
-            unimplemented!("backend tests do not use event_reader")
+            panic!("rendering-only test terminal does not provide events")
         }
 
         fn poll<F: Fn(&Event) -> bool>(
