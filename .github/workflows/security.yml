@@ -91,15 +91,18 @@ jobs:
           install: false
 
       - name: Scan current tracked tree
-        run: mise run security:secrets
+        env:
+          MISE_OFFLINE: 'true'
+        run: mise run --skip-tools security:secrets
 
       - name: Scan commits introduced by this change
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
+          MISE_OFFLINE: 'true'
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: mise run security:changes
+        run: mise run --skip-tools security:changes
 
   full-history-secret-audit:
     name: "Full history (blocked by issue #155)"
