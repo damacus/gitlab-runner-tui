@@ -161,6 +161,8 @@ async fn run_event_producer<S>(
 ) where
     S: Stream<Item = std::io::Result<TerminaEvent>> + Unpin,
 {
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + tick_rate, tick_rate);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -198,7 +200,7 @@ async fn run_event_producer<S>(
                     break;
                 }
             },
-            _ = tokio::time::sleep(tick_rate) => {
+            _ = ticks.tick() => {
                 if !sender.try_send_tick() {
                     break;
                 }
@@ -286,6 +288,24 @@ mod tests {
             .expect("key sender task should not panic"));
         assert_eq!(handler.next().await.unwrap(), Event::Key(key('b')));
         assert_eq!(handler.next().await.unwrap(), Event::Key(key('c')));
+    }
+
+    #[tokio::test]
+    async fn steady_input_does_not_postpone_ticks_until_the_stream_ends() {
+        let reader = Box::pin(stream::unfold(0, |sent| async move {
+            if sent == 20 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Some((Ok(TerminaEvent::Key(key('j'))), sent + 1))
+        }));
+        let mut handler = EventHandler::with_stream(Duration::from_millis(50), 4, reader);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while handler.next().await.expect("tick should arrive before EOF") != Event::Tick {}
+        })
+        .await
+        .expect("sustained keys should not starve the refresh tick");
+        handler.stop().await;
     }
 
     struct DropAwarePendingStream {

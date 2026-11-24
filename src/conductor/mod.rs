@@ -7,7 +7,8 @@ use crate::config::{
 };
 use crate::metrics::{EnrichmentReuseCounts, LiveQueryMetrics, QueryRequestCounts};
 use crate::models::runner::{
-    apply_runner_filters, parse_manager_contacted_at, ContactThreshold, Runner, RunnerFilters,
+    apply_runner_filters, parse_manager_contacted_at, runner_matches_filters, ContactThreshold,
+    Runner, RunnerFilters,
 };
 use crate::time::{elapsed_millis, now};
 use anyhow::{Context, Result};
@@ -131,17 +132,16 @@ pub struct QueryOutcome {
 }
 
 pub struct EnrichmentProgress {
-    pub runner: Runner,
+    pub runners: Vec<Runner>,
     pub metrics: LiveQueryMetrics,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct RunnerEnrichmentCache {
     scope: Option<RunnerFilters>,
-    entries: HashMap<u64, CachedEnrichment>,
+    entries: HashMap<u64, Arc<CachedEnrichment>>,
 }
 
-#[derive(Clone)]
 struct CachedEnrichment {
     summary: Runner,
     enriched: Runner,
@@ -195,18 +195,6 @@ struct PendingRunnerEnrichment {
 }
 
 impl RunnerEnrichmentCache {
-    fn begin_scope(&mut self, scope: RunnerFilters) {
-        if self.scope.as_ref() != Some(&scope) {
-            self.entries.clear();
-            self.scope = Some(scope);
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.scope = None;
-        self.entries.clear();
-    }
-
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -379,7 +367,7 @@ impl Conductor {
             .await
     }
 
-    /// Enriches summaries and publishes one runner update after each enrichment finishes.
+    /// Publishes reusable enrichments together, then publishes each network result as it finishes.
     ///
     /// The caller retains the initial summary rows while applying individual updates. Returning
     /// false from `publish` stops enrichment and returns the partially enriched outcome/cache.
@@ -392,7 +380,7 @@ impl Conductor {
         filters: RunnerFilters,
         cache_scope: RunnerFilters,
         profile: QueryProfile,
-        mut cache: RunnerEnrichmentCache,
+        cache: Arc<RunnerEnrichmentCache>,
         mut publish: F,
     ) -> Result<CachedQueryOutcome>
     where
@@ -410,7 +398,8 @@ impl Conductor {
             .union(EnrichmentProfile::for_filters(&filters));
         let all_runners_fell_back = summaries.all_runners_fell_back;
         let mut runners = summaries.runners;
-        cache.begin_scope(cache_scope.clone());
+        let previous_entries =
+            (cache.scope.as_ref() == Some(&cache_scope)).then_some(&cache.entries);
         let mut next_cache = RunnerEnrichmentCache {
             scope: Some(cache_scope),
             entries: HashMap::new(),
@@ -418,17 +407,14 @@ impl Conductor {
 
         if !required_profile.is_empty() && !runners.is_empty() && !self.demo_mode {
             let mut pending = Vec::new();
-            let mut publishing_open = true;
+            let mut reused_indices = Vec::new();
 
-            for (index, summary) in runners.clone().into_iter().enumerate() {
-                let cached = cache
-                    .entries
-                    .get(&summary.id)
-                    .filter(|entry| entry.summary == summary);
-                let (base, available) = cached.map_or_else(
-                    || (summary.clone(), EnrichmentProfile::default()),
-                    |entry| (entry.enriched.clone(), entry.available),
-                );
+            for (index, runner) in runners.iter_mut().enumerate() {
+                let cached = previous_entries
+                    .and_then(|entries| entries.get(&runner.id))
+                    .filter(|entry| entry.summary == *runner);
+                let available =
+                    cached.map_or_else(EnrichmentProfile::default, |entry| entry.available);
                 let missing = required_profile.missing_from(available);
                 let reused = required_profile.intersection(available);
 
@@ -439,41 +425,41 @@ impl Conductor {
                     reused_enrichments.manager_enrichments += 1;
                 }
 
-                if !reused.is_empty() {
-                    runners[index] = base.clone();
-                    next_cache.entries.insert(
-                        summary.id,
-                        CachedEnrichment {
-                            summary: summary.clone(),
-                            enriched: base.clone(),
-                            available,
-                        },
-                    );
-                    publishing_open = publish(EnrichmentProgress {
-                        runner: base.clone(),
-                        metrics: self.success_metrics(
-                            started_at,
-                            runners.len(),
-                            request_counts.clone(),
-                            reused_enrichments.clone(),
-                        ),
-                    })
-                    .await;
-                    if !publishing_open {
-                        break;
-                    }
-                }
-
                 if !missing.is_empty() {
                     pending.push(PendingRunnerEnrichment {
                         index,
-                        summary,
-                        base,
+                        summary: runner.clone(),
+                        base: cached.map_or_else(|| runner.clone(), |entry| entry.enriched.clone()),
                         available,
                         missing,
                     });
                 }
+                if let Some(entry) = cached.filter(|_| !reused.is_empty()) {
+                    next_cache.entries.insert(runner.id, Arc::clone(entry));
+                    *runner = entry.enriched.clone();
+                    reused_indices.push(index);
+                }
             }
+
+            let publishing_open = if pending.is_empty() || reused_indices.is_empty() {
+                // A fully cached refresh can publish its filtered results immediately.
+                true
+            } else {
+                let reused_runners = reused_indices
+                    .into_iter()
+                    .filter_map(|index| runners.get(index).cloned())
+                    .collect();
+                publish(EnrichmentProgress {
+                    runners: reused_runners,
+                    metrics: self.success_metrics(
+                        started_at,
+                        runners.len(),
+                        request_counts.clone(),
+                        reused_enrichments.clone(),
+                    ),
+                })
+                .await
+            };
 
             let enrichment_permits = Arc::new(Semaphore::new(self.max_enrichment_requests));
             let enrichments = stream::iter(pending.into_iter().map(|pending| {
@@ -483,40 +469,48 @@ impl Conductor {
                     let result = Self::enrich_runner(
                         client,
                         enrichment_permits,
-                        pending.base.clone(),
+                        pending.base,
                         pending.missing,
                     )
                     .await;
-                    (pending, result)
+                    (
+                        pending.index,
+                        pending.summary,
+                        pending.available,
+                        pending.missing,
+                        result,
+                    )
                 }
             }))
             .buffer_unordered(self.max_enrichment_requests);
             tokio::pin!(enrichments);
 
             if publishing_open {
-                while let Some((pending, mut result)) = enrichments.next().await {
-                    result.require(pending.missing)?;
-                    runners[pending.index] = result.runner.clone();
-                    if pending.missing.detail {
+                while let Some((index, summary, available, missing, mut result)) =
+                    enrichments.next().await
+                {
+                    result.require(missing)?;
+                    runners[index] = result.runner.clone();
+                    if missing.detail {
                         request_counts.detail_requests += 1;
                     }
-                    if pending.missing.managers {
+                    if missing.managers {
                         request_counts.manager_requests += 1;
                     }
-                    let available = pending.available.union(result.succeeded);
+                    let available = available.union(result.succeeded);
                     if !available.is_empty() {
                         next_cache.entries.insert(
-                            pending.summary.id,
-                            CachedEnrichment {
-                                summary: pending.summary,
+                            summary.id,
+                            Arc::new(CachedEnrichment {
+                                summary,
                                 enriched: result.runner.clone(),
                                 available,
-                            },
+                            }),
                         );
                     }
 
                     let progress = EnrichmentProgress {
-                        runner: result.runner,
+                        runners: vec![result.runner],
                         metrics: self.success_metrics(
                             started_at,
                             runners.len(),
@@ -535,7 +529,8 @@ impl Conductor {
         if !self.demo_mode {
             local_filters.tag_list = None;
         }
-        let runners = apply_runner_filters(&runners, &local_filters, now());
+        let now = now();
+        runners.retain(|runner| runner_matches_filters(runner, &local_filters, now));
         let metrics = self.success_metrics(
             started_at,
             runners.len(),
@@ -1940,8 +1935,8 @@ mod tests {
             .fetch_runners_with_metrics(RunnerFilters::default())
             .await
             .unwrap();
-        let ids: Vec<u64> = outcome.runners.iter().map(|runner| runner.id).collect();
-
+        let mut ids: Vec<u64> = outcome.runners.iter().map(|runner| runner.id).collect();
+        ids.sort_unstable();
         assert_eq!(ids, vec![1, 2, 3]);
         assert_eq!(outcome.metrics.request_counts.list_requests, 2);
 
