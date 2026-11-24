@@ -33,7 +33,7 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
 
-      - uses: commit-check/commit-check-action@c5dada87aeb05ca77ded9618d51be580fdfb1023 # v2.22.1
+      - uses: commit-check/commit-check-action@c535fd72e270c2eba22da6ef9860eebda7ec6ebe # v2.23.0
         with:
           message: false
           branch: false
