@@ -68,6 +68,10 @@ jobs:
       - name: Run tests
         run: mise run test
 
+      - name: Check platform-specific code with Clippy
+        if: runner.os != 'Linux'
+        run: mise run lint
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

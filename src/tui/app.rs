@@ -1819,6 +1819,231 @@ impl App {
         }
     }
 
+    fn handle_filter_popup_key(&mut self, key: KeyEvent) {
+        match self.filter_popup_section {
+            FilterPopupSection::TagSearch => match key.code {
+                KeyCode::Escape => {
+                    if self.tag_search_input.is_empty() {
+                        self.mode = AppMode::Dashboard;
+                    } else {
+                        self.tag_search_input.clear();
+                        let filtered_count = self.filtered_tag_options().count();
+                        if filtered_count == 0 {
+                            self.tag_list_state.select(None);
+                        } else {
+                            self.tag_list_state.select(Some(0));
+                        }
+                    }
+                }
+                KeyCode::Char('f') if key.modifiers.is_empty() => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                    self.filter_popup_section = FilterPopupSection::Selected;
+                }
+                KeyCode::BackTab => {
+                    self.filter_popup_section = FilterPopupSection::Versions;
+                }
+                KeyCode::Backspace => {
+                    self.tag_search_input.pop();
+                    let filtered_count = self.filtered_tag_options().count();
+                    if filtered_count == 0 {
+                        self.tag_list_state.select(None);
+                    } else {
+                        self.tag_list_state.select(Some(0));
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.tag_search_input.push(c);
+                    let filtered_count = self.filtered_tag_options().count();
+                    if filtered_count == 0 {
+                        self.tag_list_state.select(None);
+                    } else {
+                        self.tag_list_state.select(Some(0));
+                    }
+                }
+                _ => {}
+            },
+            FilterPopupSection::Selected
+            | FilterPopupSection::Status
+            | FilterPopupSection::Tags
+            | FilterPopupSection::Versions => match key.code {
+                KeyCode::Escape | KeyCode::Char('f') => {
+                    self.mode = AppMode::Dashboard;
+                }
+                KeyCode::Tab => {
+                    self.filter_popup_section = match self.filter_popup_section {
+                        FilterPopupSection::Selected => FilterPopupSection::Status,
+                        FilterPopupSection::Status => FilterPopupSection::Tags,
+                        FilterPopupSection::Tags => FilterPopupSection::Versions,
+                        FilterPopupSection::Versions => FilterPopupSection::TagSearch,
+                        FilterPopupSection::TagSearch => self.filter_popup_section,
+                    };
+                }
+                KeyCode::BackTab => {
+                    self.filter_popup_section = match self.filter_popup_section {
+                        FilterPopupSection::Selected => FilterPopupSection::TagSearch,
+                        FilterPopupSection::Status => FilterPopupSection::Selected,
+                        FilterPopupSection::Tags => FilterPopupSection::Status,
+                        FilterPopupSection::Versions => FilterPopupSection::Tags,
+                        FilterPopupSection::TagSearch => self.filter_popup_section,
+                    };
+                }
+                KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => {
+                        if !self.selected_filter_items().is_empty() {
+                            self.selected_filter_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Status => {
+                        if !self.status_options.is_empty() {
+                            self.status_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        if self.filtered_tag_options().count() > 0 {
+                            self.tag_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_previous();
+                        }
+                    }
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => {
+                        if !self.selected_filter_items().is_empty() {
+                            self.selected_filter_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Status => {
+                        if !self.status_options.is_empty() {
+                            self.status_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        if self.filtered_tag_options().count() > 0 {
+                            self.tag_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        if !self.version_options.is_empty() {
+                            self.version_list_state.select_next();
+                        }
+                    }
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Char(' ') => match self.filter_popup_section {
+                    FilterPopupSection::Selected => self.remove_selected_filter(),
+                    FilterPopupSection::Status => self.toggle_selected_status(),
+                    FilterPopupSection::Tags => self.toggle_selected_tag(),
+                    FilterPopupSection::Versions => self.toggle_selected_version(),
+                    FilterPopupSection::TagSearch => {}
+                },
+                KeyCode::Char('m') => {
+                    self.tag_filter_mode = self.tag_filter_mode.toggle();
+                    if self.has_loaded_active_tab() {
+                        self.apply_view_state(self.active_tab());
+                    }
+                }
+                KeyCode::Char('c') => match self.filter_popup_section {
+                    FilterPopupSection::Selected | FilterPopupSection::TagSearch => {}
+                    FilterPopupSection::Status => {
+                        self.selected_status = None;
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    FilterPopupSection::Tags => {
+                        self.selected_tags.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                    FilterPopupSection::Versions => {
+                        self.selected_versions.clear();
+                        if self.has_loaded_active_tab() {
+                            self.apply_view_state(self.active_tab());
+                        }
+                    }
+                },
+                KeyCode::Char('a') => {
+                    self.clear_all_filters();
+                }
+                _ => {}
+            },
+        }
+    }
+
+    async fn handle_settings_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Escape | KeyCode::Enter
+                if key.code == KeyCode::Escape
+                    || self.settings_draft.selected_field == SettingsField::Cancel =>
+            {
+                self.mode = AppMode::Dashboard;
+                self.settings_draft = SettingsDraft::from_config(&self.config);
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.settings_draft.selected_field = self.settings_draft.selected_field.previous();
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.settings_draft.selected_field = self.settings_draft.selected_field.next();
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Enter
+                if matches!(
+                    self.settings_draft.selected_field,
+                    SettingsField::DiscoveryMode
+                ) =>
+            {
+                self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
+                    RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
+                    RunnerDiscoveryMode::VisibleRunners => RunnerDiscoveryMode::ConfiguredTargets,
+                    RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
+                };
+            }
+            KeyCode::Backspace => {
+                if let Some(value) = self.settings_draft.selected_value_mut() {
+                    value.pop();
+                }
+            }
+            KeyCode::Char('b') => self.refresh_local_benchmarks(),
+            KeyCode::Char('s') if key.modifiers.contains(Modifiers::CONTROL) => {
+                self.save_settings().await;
+            }
+            KeyCode::Enter if matches!(self.settings_draft.selected_field, SettingsField::Save) => {
+                self.save_settings().await;
+            }
+            KeyCode::Char(character)
+                if matches!(
+                    self.settings_draft.selected_field,
+                    SettingsField::DiscoveryMode
+                ) =>
+            {
+                match character {
+                    't' | 'T' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::ConfiguredTargets;
+                    }
+                    'v' | 'V' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::VisibleRunners;
+                    }
+                    'a' | 'A' => {
+                        self.settings_draft.discovery_mode = RunnerDiscoveryMode::AllRunners;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char(character) => {
+                if let Some(value) = self.settings_draft.selected_value_mut() {
+                    value.push(character);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub async fn handle_key(&mut self, key: KeyEvent) {
         if matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(Modifiers::CONTROL) {
             self.should_quit = true;
@@ -1864,236 +2089,12 @@ impl App {
         }
 
         if self.mode == AppMode::FilterPopup {
-            match self.filter_popup_section {
-                FilterPopupSection::TagSearch => match key.code {
-                    KeyCode::Escape => {
-                        if self.tag_search_input.is_empty() {
-                            self.mode = AppMode::Dashboard;
-                        } else {
-                            self.tag_search_input.clear();
-                            let filtered_count = self.filtered_tag_options().count();
-                            if filtered_count == 0 {
-                                self.tag_list_state.select(None);
-                            } else {
-                                self.tag_list_state.select(Some(0));
-                            }
-                        }
-                    }
-                    KeyCode::Char('f') if key.modifiers.is_empty() => {
-                        self.mode = AppMode::Dashboard;
-                    }
-                    KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
-                        self.filter_popup_section = FilterPopupSection::Selected;
-                    }
-                    KeyCode::BackTab => {
-                        self.filter_popup_section = FilterPopupSection::Versions;
-                    }
-                    KeyCode::Backspace => {
-                        self.tag_search_input.pop();
-                        let filtered_count = self.filtered_tag_options().count();
-                        if filtered_count == 0 {
-                            self.tag_list_state.select(None);
-                        } else {
-                            self.tag_list_state.select(Some(0));
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        self.tag_search_input.push(c);
-                        let filtered_count = self.filtered_tag_options().count();
-                        if filtered_count == 0 {
-                            self.tag_list_state.select(None);
-                        } else {
-                            self.tag_list_state.select(Some(0));
-                        }
-                    }
-                    _ => {}
-                },
-                FilterPopupSection::Selected
-                | FilterPopupSection::Status
-                | FilterPopupSection::Tags
-                | FilterPopupSection::Versions => match key.code {
-                    KeyCode::Escape | KeyCode::Char('f') => {
-                        self.mode = AppMode::Dashboard;
-                    }
-                    KeyCode::Tab => {
-                        self.filter_popup_section = match self.filter_popup_section {
-                            FilterPopupSection::Selected => FilterPopupSection::Status,
-                            FilterPopupSection::Status => FilterPopupSection::Tags,
-                            FilterPopupSection::Tags => FilterPopupSection::Versions,
-                            FilterPopupSection::Versions => FilterPopupSection::TagSearch,
-                            FilterPopupSection::TagSearch => self.filter_popup_section,
-                        };
-                    }
-                    KeyCode::BackTab => {
-                        self.filter_popup_section = match self.filter_popup_section {
-                            FilterPopupSection::Selected => FilterPopupSection::TagSearch,
-                            FilterPopupSection::Status => FilterPopupSection::Selected,
-                            FilterPopupSection::Tags => FilterPopupSection::Status,
-                            FilterPopupSection::Versions => FilterPopupSection::Tags,
-                            FilterPopupSection::TagSearch => self.filter_popup_section,
-                        };
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => {
-                            if !self.selected_filter_items().is_empty() {
-                                self.selected_filter_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Status => {
-                            if !self.status_options.is_empty() {
-                                self.status_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            if self.filtered_tag_options().count() > 0 {
-                                self.tag_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            if !self.version_options.is_empty() {
-                                self.version_list_state.select_previous();
-                            }
-                        }
-                        FilterPopupSection::TagSearch => {}
-                    },
-                    KeyCode::Down | KeyCode::Char('j') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => {
-                            if !self.selected_filter_items().is_empty() {
-                                self.selected_filter_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Status => {
-                            if !self.status_options.is_empty() {
-                                self.status_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            if self.filtered_tag_options().count() > 0 {
-                                self.tag_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            if !self.version_options.is_empty() {
-                                self.version_list_state.select_next();
-                            }
-                        }
-                        FilterPopupSection::TagSearch => {}
-                    },
-                    KeyCode::Char(' ') => match self.filter_popup_section {
-                        FilterPopupSection::Selected => self.remove_selected_filter(),
-                        FilterPopupSection::Status => self.toggle_selected_status(),
-                        FilterPopupSection::Tags => self.toggle_selected_tag(),
-                        FilterPopupSection::Versions => self.toggle_selected_version(),
-                        FilterPopupSection::TagSearch => {}
-                    },
-                    KeyCode::Char('m') => {
-                        self.tag_filter_mode = self.tag_filter_mode.toggle();
-                        if self.has_loaded_active_tab() {
-                            self.apply_view_state(self.active_tab());
-                        }
-                    }
-                    KeyCode::Char('c') => match self.filter_popup_section {
-                        FilterPopupSection::Selected | FilterPopupSection::TagSearch => {}
-                        FilterPopupSection::Status => {
-                            self.selected_status = None;
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                        FilterPopupSection::Tags => {
-                            self.selected_tags.clear();
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                        FilterPopupSection::Versions => {
-                            self.selected_versions.clear();
-                            if self.has_loaded_active_tab() {
-                                self.apply_view_state(self.active_tab());
-                            }
-                        }
-                    },
-                    KeyCode::Char('a') => {
-                        self.clear_all_filters();
-                    }
-                    _ => {}
-                },
-            }
+            self.handle_filter_popup_key(key);
             return;
         }
 
         if self.mode == AppMode::Settings {
-            match key.code {
-                KeyCode::Escape | KeyCode::Enter
-                    if key.code == KeyCode::Escape
-                        || self.settings_draft.selected_field == SettingsField::Cancel =>
-                {
-                    self.mode = AppMode::Dashboard;
-                    self.settings_draft = SettingsDraft::from_config(&self.config);
-                }
-                KeyCode::Up | KeyCode::BackTab => {
-                    self.settings_draft.selected_field =
-                        self.settings_draft.selected_field.previous();
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.settings_draft.selected_field = self.settings_draft.selected_field.next();
-                }
-                KeyCode::Left | KeyCode::Right | KeyCode::Enter
-                    if matches!(
-                        self.settings_draft.selected_field,
-                        SettingsField::DiscoveryMode
-                    ) =>
-                {
-                    self.settings_draft.discovery_mode = match self.settings_draft.discovery_mode {
-                        RunnerDiscoveryMode::AllRunners => RunnerDiscoveryMode::VisibleRunners,
-                        RunnerDiscoveryMode::VisibleRunners => {
-                            RunnerDiscoveryMode::ConfiguredTargets
-                        }
-                        RunnerDiscoveryMode::ConfiguredTargets => RunnerDiscoveryMode::AllRunners,
-                    };
-                }
-                KeyCode::Backspace => {
-                    if let Some(value) = self.settings_draft.selected_value_mut() {
-                        value.pop();
-                    }
-                }
-                KeyCode::Char('b') => self.refresh_local_benchmarks(),
-                KeyCode::Char('s') if key.modifiers.contains(Modifiers::CONTROL) => {
-                    self.save_settings().await;
-                }
-                KeyCode::Enter
-                    if matches!(self.settings_draft.selected_field, SettingsField::Save) =>
-                {
-                    self.save_settings().await;
-                }
-                KeyCode::Char(character)
-                    if matches!(
-                        self.settings_draft.selected_field,
-                        SettingsField::DiscoveryMode
-                    ) =>
-                {
-                    match character {
-                        't' | 'T' => {
-                            self.settings_draft.discovery_mode =
-                                RunnerDiscoveryMode::ConfiguredTargets;
-                        }
-                        'v' | 'V' => {
-                            self.settings_draft.discovery_mode =
-                                RunnerDiscoveryMode::VisibleRunners;
-                        }
-                        'a' | 'A' => {
-                            self.settings_draft.discovery_mode = RunnerDiscoveryMode::AllRunners;
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::Char(character) => {
-                    if let Some(value) = self.settings_draft.selected_value_mut() {
-                        value.push(character);
-                    }
-                }
-                _ => {}
-            }
+            self.handle_settings_key(key).await;
             return;
         }
 
@@ -2269,7 +2270,7 @@ fn open_with_shell_execute(url: &str) -> std::io::Result<()> {
     use std::{ffi::c_void, ptr};
 
     const SW_SHOWNORMAL: i32 = 1;
-    const OPEN: [u16; 5] = [b'o' as u16, b'p' as u16, b'e' as u16, b'n' as u16, 0];
+    const OPEN: [u16; 5] = [0x006F, 0x0070, 0x0065, 0x006E, 0]; // "open\0" in UTF-16.
 
     #[link(name = "shell32")]
     extern "system" {

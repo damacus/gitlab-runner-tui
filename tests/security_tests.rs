@@ -2,6 +2,7 @@
     clippy::pedantic,
     clippy::nursery,
     clippy::cargo,
+    clippy::cognitive_complexity,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
