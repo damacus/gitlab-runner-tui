@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.24](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.23...v0.1.24) (2026-11-28)
+
+
+### Bug Fixes
+
+* **deps:** update dependency jdx/mise to v2026.11.10 ([#346](https://github.com/damacus/gitlab-runner-tui/issues/346)) ([78176a7](https://github.com/damacus/gitlab-runner-tui/commit/78176a797c080663c65b79119035c9a1557c5e0b))
+* **deps:** update dependency jdx/mise to v2026.11.11 ([#353](https://github.com/damacus/gitlab-runner-tui/issues/353)) ([5df619b](https://github.com/damacus/gitlab-runner-tui/commit/5df619b6ad3870ea9f7424af9a08f1509b473e62))
+* **deps:** update jdx/mise-action action to v5.2.10 ([#347](https://github.com/damacus/gitlab-runner-tui/issues/347)) ([41ef91c](https://github.com/damacus/gitlab-runner-tui/commit/41ef91c7c4749255637863e8d0bdf8685f0286d2))
+* **deps:** update rust crate clap to v4.6.8 ([#340](https://github.com/damacus/gitlab-runner-tui/issues/340)) ([be7ddcc](https://github.com/damacus/gitlab-runner-tui/commit/be7ddccd1f8ec9002645b1740f4945f47edfe5a9))
+* **deps:** update rust crate clap to v4.6.9 ([#352](https://github.com/damacus/gitlab-runner-tui/issues/352)) ([0c85898](https://github.com/damacus/gitlab-runner-tui/commit/0c8589817240b13a68ffd2581198da034224a0ff))
+* **deps:** update rust crate jiff to v1.0.1 ([#344](https://github.com/damacus/gitlab-runner-tui/issues/344)) ([afadf05](https://github.com/damacus/gitlab-runner-tui/commit/afadf05a2b9f505a909b60149b8f6b92978b4d10))
+
+
+### Performance Improvements
+
+* batch runner refresh updates ([#342](https://github.com/damacus/gitlab-runner-tui/issues/342)) ([66a0a74](https://github.com/damacus/gitlab-runner-tui/commit/66a0a7449349cfc42320b7cfde8d909ec7fcef38))
+
 ## [0.1.23](https://github.com/damacus/gitlab-runner-tui/compare/v0.1.22...v0.1.23) (2026-11-23)
 
 
